@@ -1,52 +1,100 @@
+"""Live terminal feedback for long-running jobs.
+
+Modes:
+- default: Rich live dashboard (TTY) or a periodic one-line heartbeat (non-TTY/log files).
+- ``--verbose``: dashboard plus scrolling detail lines (queries, URLs, scoring, retries, errors).
+- ``--quiet``: no live output; only the final summary printed by the CLI.
+"""
 from __future__ import annotations
 
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass, field
+from datetime import datetime
 from time import monotonic
 
-from rich.console import Console
+from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
 
+def _hms(seconds: float) -> str:
+    seconds = int(max(0, seconds))
+    return f"{seconds // 3600:02d}:{seconds % 3600 // 60:02d}:{seconds % 60:02d}"
+
+
 @dataclass
 class DashboardState:
     title: str
+    universe: str = ""
     total: int = 0
     completed: int = 0
+    skipped_done: int = 0
     current: str = ""
+    publication: str = ""
     phase: str = "starting"
-    candidates: int = 0
-    high_confidence: int = 0
-    pages_fetched: int = 0
-    skipped: int = 0
-    errors: int = 0
-    robots_blocked: int = 0
+    active: int = 0
+    # search
     searches_live: int = 0
     searches_cached: int = 0
+    searches_failed: int = 0
     credits_estimated: int = 0
-    recent: deque[str] = field(default_factory=lambda: deque(maxlen=6))
+    budget_limit: int | None = None
+    # results
+    candidates: int = 0
+    high_confidence: int = 0
+    publications: int = 0
+    policies_found: int = 0
+    stances: Counter = field(default_factory=Counter)
+    evidence_unique: int = 0
+    high_similarity: int = 0
+    # fetching
+    pages_fetched: int = 0
+    skipped: int = 0
+    robots_blocked: int = 0
+    access_blocked: int = 0
+    malformed_skipped: int = 0
+    retries: int = 0
+    errors: int = 0
+    # lifecycle
+    checkpoint: str = "-"
+    stop_message: str = ""
+    recent: deque = field(default_factory=lambda: deque(maxlen=8))
+
+
+STANCE_ROWS = [
+    ("Supportive", ("SUPPORTS_RELIEF", "SUPPORTS_CHANGED_CIRCUMSTANCES")),
+    ("Case-by-case", ("CASE_BY_CASE",)),
+    ("Update-only", ("UPDATE_ONLY",)),
+    ("Restrictive", ("STRICT_ARCHIVE",)),
+    ("Mixed", ("MIXED",)),
+    ("No guidance", ("NO_RELEVANT_GUIDANCE",)),
+    ("Unresolved", ("UNDETERMINED",)),
+]
 
 
 class RunDashboard:
-    """Small Rich live dashboard for long-running discovery/research jobs."""
-
-    def __init__(self, title: str, total: int = 0, *, quiet: bool = False, verbose: bool = False):
-        self.console = Console()
-        self.state = DashboardState(title=title, total=total)
+    def __init__(self, title: str, total: int = 0, *, quiet: bool = False, verbose: bool = False,
+                 universe: str = "", console: Console | None = None, heartbeat_seconds: float = 30.0,
+                 force_terminal: bool | None = None):
+        self.console = console or Console(stderr=False, force_terminal=force_terminal)
+        self.state = DashboardState(title=title, total=total, universe=universe)
         self.quiet = quiet
         self.verbose = verbose
         self._started = monotonic()
         self._live: Live | None = None
+        self._heartbeat = heartbeat_seconds
+        self._last_beat = 0.0
 
+    # ------------------------------------------------------------------ lifecycle
     def __enter__(self) -> "RunDashboard":
         if not self.quiet and self.console.is_terminal:
-            self._live = Live(self.render(), console=self.console, refresh_per_second=5, transient=False)
+            self._live = Live(self.render(), console=self.console, refresh_per_second=4, transient=False,
+                              redirect_stdout=True, redirect_stderr=True)
             self._live.__enter__()
         elif not self.quiet:
-            self.console.print(f"[bold]{self.state.title}[/bold] | total={self.state.total}")
+            self.console.print(f"[bold]{self.state.title}[/bold] | {self.state.universe} | total={self.state.total}")
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
@@ -56,19 +104,35 @@ class RunDashboard:
         elif not self.quiet:
             self.console.print(self.summary_line())
 
+    def _refresh(self) -> None:
+        if self._live:
+            self._live.update(self.render())
+        elif not self.quiet:
+            now = monotonic()
+            if now - self._last_beat >= self._heartbeat:
+                self._last_beat = now
+                self.console.print(self.summary_line())
+
+    # ------------------------------------------------------------------ updates
     def update(self, **kwargs) -> None:
         for key, value in kwargs.items():
             if hasattr(self.state, key):
                 setattr(self.state, key, value)
-        if self._live:
-            self._live.update(self.render())
+        self._refresh()
 
     def increment(self, **kwargs) -> None:
         for key, value in kwargs.items():
             if hasattr(self.state, key):
                 setattr(self.state, key, getattr(self.state, key) + value)
-        if self._live:
-            self._live.update(self.render())
+        self._refresh()
+
+    def stance(self, stance: str) -> None:
+        self.state.stances[stance] += 1
+        self._refresh()
+
+    def checkpoint(self) -> None:
+        self.state.checkpoint = datetime.now().strftime("%H:%M:%S")
+        self._refresh()
 
     def add_recent(self, message: str) -> None:
         self.state.recent.appendleft(message)
@@ -78,44 +142,115 @@ class RunDashboard:
             self.console.print(message)
 
     def log(self, message: str) -> None:
+        """Verbose-only detail line (queries, URLs, scoring decisions, retries, errors)."""
         if self.verbose and not self.quiet:
             if self._live:
-                self.console.log(message)
+                self._live.console.log(message, markup=False, highlight=False)
             else:
-                self.console.print(message)
+                self.console.print(message, markup=False, highlight=False)
 
+    def notice(self, message: str) -> None:
+        """Important lifecycle message shown in every non-quiet mode."""
+        self.state.stop_message = message
+        if self._live:
+            self._live.update(self.render())
+        elif not self.quiet:
+            self.console.print(message)
+
+    # ------------------------------------------------------------------ rendering
     def _elapsed(self) -> float:
         return max(0.001, monotonic() - self._started)
 
+    def rate_per_min(self) -> float:
+        return (self.state.completed - self.state.skipped_done) / self._elapsed() * 60.0
+
+    def eta_seconds(self) -> float | None:
+        rate = self.rate_per_min()
+        remaining = self.state.total - self.state.completed
+        if rate <= 0 or remaining <= 0 or self.state.completed - self.state.skipped_done < 2:
+            return None
+        return remaining / rate * 60.0
+
     def summary_line(self) -> str:
         s = self.state
-        rate = (s.completed / self._elapsed()) * 60.0
+        pct = (100.0 * s.completed / s.total) if s.total else 0.0
         return (
-            f"{s.completed}/{s.total} complete | candidates={s.candidates} | "
-            f"searches live/cached={s.searches_live}/{s.searches_cached} | "
-            f"errors={s.errors} | rate={rate:.1f}/min"
+            f"[{_hms(self._elapsed())}] {s.completed}/{s.total} ({pct:.1f}%) | {s.phase} | {s.current[:40]} | "
+            f"searches live {s.searches_live} cached {s.searches_cached} credits {s.credits_estimated} | "
+            f"pages {s.pages_fetched} | evidence {s.evidence_unique} | errors {s.errors} | "
+            f"rate {self.rate_per_min():.1f}/min"
         )
 
     def render(self):
         s = self.state
         elapsed = self._elapsed()
-        rate = (s.completed / elapsed) * 60.0
         pct = (100.0 * s.completed / s.total) if s.total else 0.0
 
-        table = Table.grid(expand=True)
-        table.add_column(ratio=1)
-        table.add_column(ratio=1)
-        table.add_row("Progress", f"{s.completed:,} / {s.total:,}  ({pct:.1f}%)")
-        table.add_row("Current", s.current or "-")
-        table.add_row("Phase", s.phase)
-        table.add_row("Candidates", f"{s.candidates:,}  | high confidence {s.high_confidence:,}")
-        table.add_row("Searches", f"live {s.searches_live:,} | cached {s.searches_cached:,} | est. credits {s.credits_estimated:,}")
-        table.add_row("Fetches", f"pages {s.pages_fetched:,} | skipped {s.skipped:,} | robots {s.robots_blocked:,}")
-        table.add_row("Errors", f"{s.errors:,}")
-        table.add_row("Rate", f"{rate:.1f} entities/min | elapsed {elapsed/60:.1f} min")
+        def grid() -> Table:
+            t = Table.grid(padding=(0, 2))
+            t.add_column(style="dim", min_width=16)
+            t.add_column()
+            return t
+
+        top = grid()
+        if s.universe:
+            top.add_row("Universe", s.universe)
+        bar_w = 24
+        filled = int(bar_w * pct / 100)
+        top.add_row("Progress", f"{s.completed:,} / {s.total:,}   {pct:5.1f}%   [cyan]{'█' * filled}{'░' * (bar_w - filled)}[/cyan]")
+        active = f"  (+{s.active - 1} more in flight)" if s.active > 1 else ""
+        top.add_row("Current", (s.current or "-") + active)
+        if s.publication:
+            top.add_row("Publication", s.publication)
+        top.add_row("Phase", s.phase)
+
+        search = grid()
+        budget = f"{s.credits_estimated:,} / {s.budget_limit:,}" if s.budget_limit else f"{s.credits_estimated:,} (no --max-searches)"
+        search.add_row("Queries used", f"{s.searches_live:,}")
+        search.add_row("Cache hits", f"{s.searches_cached:,}")
+        search.add_row("Credits / budget", budget)
+        if s.searches_failed:
+            search.add_row("Failed queries", f"[yellow]{s.searches_failed:,}[/yellow]")
+
+        results = grid()
+        if s.candidates or s.publications or s.high_confidence:
+            results.add_row("Candidates", f"{s.candidates:,}  (high confidence {s.high_confidence:,})")
+        if s.publications:
+            results.add_row("Publications", f"{s.publications:,}")
+        if s.policies_found or s.stances:
+            results.add_row("Policies found", f"{s.policies_found:,}")
+        for label, keys in STANCE_ROWS:
+            n = sum(s.stances.get(k, 0) for k in keys)
+            if n or s.stances:
+                results.add_row(label, f"{n:,}")
+        results.add_row("Evidence", f"{s.evidence_unique:,} unique excerpts")
+        results.add_row("High similarity", f"{s.high_similarity:,}")
+
+        fetch = grid()
+        fetch.add_row("Pages fetched", f"{s.pages_fetched:,}")
+        fetch.add_row("Robots blocks", f"{s.robots_blocked:,}")
+        fetch.add_row("Access blocked", f"{s.access_blocked:,}")
+        fetch.add_row("Malformed skipped", f"{s.malformed_skipped:,}")
+        fetch.add_row("Retries", f"{s.retries:,}")
+        fetch.add_row("Errors", f"[red]{s.errors:,}[/red]" if s.errors else "0")
+
+        timing = grid()
+        timing.add_row("Rate", f"{self.rate_per_min():.1f} entities/min")
+        timing.add_row("Elapsed", _hms(elapsed))
+        eta = self.eta_seconds()
+        timing.add_row("Remaining (est.)", _hms(eta) if eta else "calculating…")
+        timing.add_row("Last checkpoint", s.checkpoint)
+        if s.skipped_done:
+            timing.add_row("Resumed (skipped)", f"{s.skipped_done:,} already complete")
+
+        cols = Table.grid(expand=True, padding=(0, 1))
+        cols.add_column(ratio=1)
+        cols.add_column(ratio=1)
+        cols.add_row(Panel(search, title="Serper", border_style="blue"), Panel(results, title="Results", border_style="green"))
+        cols.add_row(Panel(fetch, title="Fetching", border_style="magenta"), Panel(timing, title="Timing", border_style="cyan"))
 
         recent = Text("\n".join(s.recent) if s.recent else "No discoveries yet")
-        outer = Table.grid(expand=True)
-        outer.add_row(Panel(table, title=s.title, border_style="cyan"))
-        outer.add_row(Panel(recent, title="Recent findings", border_style="green"))
-        return outer
+        parts = [Panel(top, title=s.title, border_style="bold cyan"), cols, Panel(recent, title="Recent", border_style="white")]
+        if s.stop_message:
+            parts.append(Text(s.stop_message, style="bold yellow"))
+        return Group(*parts)

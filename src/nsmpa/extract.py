@@ -6,10 +6,114 @@ import xml.etree.ElementTree as ET
 from io import BytesIO
 from urllib.parse import urljoin
 
-from bs4 import BeautifulSoup
+from dataclasses import dataclass, field
+
+from bs4 import BeautifulSoup, UnicodeDammit
 
 from .models import PageAnalysis
-from .utils import compact_ws, normalize_url
+from .utils import compact_ws, normalize_url, prepare_request_url
+
+try:  # lxml is faster and more tolerant; html.parser is the always-available fallback
+    import lxml  # noqa: F401
+    _PARSER = "lxml"
+except ImportError:  # pragma: no cover
+    _PARSER = "html.parser"
+
+BOILERPLATE_TAGS = ["script", "style", "noscript", "svg", "template", "nav", "header", "footer", "aside",
+                    "form", "iframe", "button", "select", "dialog", "menu"]
+BOILERPLATE_ATTR = re.compile(
+    r"(?:^|[-_ ])(?:nav|navbar|menu|footer|header|sidebar|side-bar|widget|cookie|consent|gdpr|banner|"
+    r"subscribe|newsletter|share|sharing|social|breadcrumb|comments?|related|recommend|promo|advert|"
+    r"ads?|sponsor|popup|modal|masthead|skip|search-form|pagination|tags?-list|byline-social)(?:$|[-_ ])",
+    re.I,
+)
+LISTING_URL = re.compile(r"/(?:tag|tags|category|categories|topics?|author|search|page/\d+)(?:/|$)|[?&](?:s|q|query|search)=", re.I)
+
+
+@dataclass
+class MainText:
+    url: str
+    title: str
+    main_text: str
+    full_text: str
+    canonical_url: str | None
+    meta_robots: str | None
+    x_robots_tag: str | None
+    noindex: bool
+    nofollow: bool
+    links: list[tuple[str, str]] = field(default_factory=list)
+    is_listing: bool = False
+    is_pdf: bool = False
+    parse_error: str | None = None
+
+
+def decode_html(content: bytes, content_type_header: str | None = None) -> str:
+    declared = None
+    if content_type_header and "charset=" in content_type_header.lower():
+        declared = content_type_header.lower().split("charset=", 1)[1].split(";")[0].strip(" \"'")
+    try:
+        dammit = UnicodeDammit(content, [declared] if declared else [], is_html=True)
+        if dammit.unicode_markup is not None:
+            return dammit.unicode_markup
+    except Exception:
+        pass
+    return content.decode("utf-8", errors="replace")
+
+
+def _strip_boilerplate(soup: BeautifulSoup) -> None:
+    for tag in soup(BOILERPLATE_TAGS):
+        tag.decompose()
+    for tag in soup.find_all(True):
+        if tag.decomposed if hasattr(tag, "decomposed") else False:
+            continue
+        attrs = getattr(tag, "attrs", None) or {}
+        ident = " ".join([str(attrs.get("id", ""))] + [str(c) for c in (attrs.get("class") or [])])
+        role = str(attrs.get("role", "")).lower()
+        if role in {"navigation", "banner", "contentinfo", "complementary", "search", "dialog"} or (
+                ident.strip() and BOILERPLATE_ATTR.search(ident) and tag.name not in {"body", "html", "main", "article"}):
+            tag.decompose()
+
+
+def extract_main_text(content: bytes, content_type: str, url: str, headers: dict[str, str]) -> MainText:
+    """Parse a page into main-content text plus technical indexing signals. Never raises."""
+    x_robots = headers.get("x-robots-tag")
+    if content_type == "application/pdf" or url.lower().split("?", 1)[0].endswith(".pdf"):
+        text = compact_ws(_extract_pdf_text(content))
+        noindex, nofollow = _directives(None, x_robots)
+        return MainText(url, "", text, text, None, None, x_robots, noindex, nofollow, [], False, True,
+                        None if text else "pdf_text_unavailable")
+    try:
+        decoded = decode_html(content, headers.get("content-type"))
+        soup = BeautifulSoup(decoded, _PARSER)
+        title = compact_ws(soup.title.get_text(" ", strip=True)) if soup.title else ""
+        canonical = None
+        can = soup.find("link", attrs={"rel": lambda v: v and "canonical" in str(v).lower()})
+        if can and can.get("href"):
+            canonical = normalize_url(str(can.get("href")), url)
+        meta_robots = None
+        robots_meta = soup.find_all("meta", attrs={"name": lambda v: v and str(v).lower() in {"robots", "googlebot", "bingbot"}})
+        if robots_meta:
+            meta_robots = "; ".join(compact_ws(str(m.get("content", ""))) for m in robots_meta if m.get("content")) or None
+        links: list[tuple[str, str]] = []
+        for a in soup.find_all("a", href=True):
+            href = prepare_request_url(str(a.get("href")), base=url)
+            if href:
+                links.append((compact_ws(a.get_text(" ", strip=True))[:200], href))
+        for t in soup(["script", "style", "noscript", "template"]):
+            t.decompose()
+        full_text = compact_ws(soup.get_text(" ", strip=True))
+        _strip_boilerplate(soup)
+        root = soup.find("main") or soup.find(attrs={"role": "main"}) or soup.find("article") or soup.body or soup
+        main_text = compact_ws(root.get_text(" ", strip=True)) if root else ""
+        if len(main_text) < 200 and root is not soup.body and soup.body is not None:
+            main_text = compact_ws(soup.body.get_text(" ", strip=True))
+        noindex, nofollow = _directives(meta_robots, x_robots)
+        return MainText(url, title, main_text, full_text, canonical, meta_robots, x_robots, noindex, nofollow,
+                        list(dict.fromkeys(links)), bool(LISTING_URL.search(url)))
+    except Exception as exc:  # malformed markup must never terminate a run
+        noindex, nofollow = _directives(None, x_robots)
+        return MainText(url, "", "", "", None, None, x_robots, noindex, nofollow, [], False, False,
+                        f"{type(exc).__name__}: {exc}"[:300])
 
 POLICY_TERMS: dict[str, tuple[re.Pattern[str], float]] = {
     "deindex": (re.compile(r"\bde[- ]?index(?:ing|ed)?\b", re.I), 8.0),
@@ -122,34 +226,12 @@ def _excerpt_windows(text: str, tags: list[str], radius: int = 360) -> list[tupl
 
 
 def analyze_page(url: str, content: bytes, content_type: str, headers: dict[str, str]) -> PageAnalysis:
-    title = ""
-    canonical = None
-    meta_robots = None
-    links: list[str] = []
-
-    if content_type == "application/pdf" or url.lower().endswith(".pdf"):
-        text = _extract_pdf_text(content)
-    else:
-        decoded = content.decode("utf-8", errors="replace")
-        soup = BeautifulSoup(decoded, "html.parser")
-        for tag in soup(["script", "style", "noscript", "svg", "template"]):
-            tag.decompose()
-        if soup.title:
-            title = compact_ws(soup.title.get_text(" ", strip=True))
-        can = soup.find("link", attrs={"rel": lambda v: v and "canonical" in str(v).lower()})
-        if can and can.get("href"):
-            canonical = normalize_url(can.get("href"), url)
-        robots_meta = soup.find("meta", attrs={"name": lambda v: v and str(v).lower() in {"robots", "googlebot", "bingbot"}})
-        if robots_meta and robots_meta.get("content"):
-            meta_robots = compact_ws(str(robots_meta.get("content")))
-        for a in soup.find_all("a", href=True):
-            normalized = normalize_url(str(a.get("href")), url)
-            if normalized:
-                links.append(normalized)
-        text = compact_ws(soup.get_text(" ", strip=True))
-
-    x_robots = headers.get("x-robots-tag")
-    noindex, nofollow = _directives(meta_robots, x_robots)
+    """v0.1-compatible page analysis used by the deep student-site crawler."""
+    page = extract_main_text(content, content_type, url, headers)
+    text = page.main_text or page.full_text
+    title, canonical, meta_robots, x_robots = page.title, page.canonical_url, page.meta_robots, page.x_robots_tag
+    noindex, nofollow = page.noindex, page.nofollow
+    links = [u for _, u in page.links]
     score, tags = policy_score_for(url, title, text)
     excerpts = _excerpt_windows(text, tags)
     return PageAnalysis(
