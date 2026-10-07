@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "nsmpa"
-version = "0.2.0"
+version = "0.3.0"
 description = "NSMPA: a resumable national journalism post-publication policy, precedent, and guidance research engine."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -17,6 +17,8 @@ dependencies = [
   "typer>=0.12",
   "rich>=13.7",
   "tenacity>=9.0",
+  "lxml>=5.0",
+  "pypdf>=5.0",
 ]
 
 [project.optional-dependencies]
@@ -25,7 +27,7 @@ playwright = ["playwright>=1.48"]
 dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "ruff>=0.7"]
 
 [project.scripts]
-nsmpa = "nsmpa.cli:app"
+nsmpa = "nsmpa.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/nsmpa"]

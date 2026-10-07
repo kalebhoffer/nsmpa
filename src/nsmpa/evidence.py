@@ -131,6 +131,11 @@ PRACTICE_SUPPORT = re.compile(
     r"\b(?:was|were|has been|have been|had been)\s+(?:quietly\s+)?(?:removed|unpublished|deleted|taken down|de-?indexed|anonymi[sz]ed|redacted)\b",
     re.I,
 )
+# Named-newsroom subject ("The Relief Daily removed ..."); deliberately case-sensitive on the name.
+PRACTICE_NAMED = re.compile(
+    r"\b(?:The\s+)?(?:[A-Z][\w'&.-]+\s+){1,6}(?:has\s+|had\s+|have\s+)?(?:recently\s+|quietly\s+|ultimately\s+|later\s+)?"
+    r"(?:removed|unpublished|deleted|took down|de-?indexed|anonymi[sz]ed|redacted|agreed to (?:remove|unpublish|anonymi[sz]e|de-?index))\b"
+)
 PRACTICE_ADVERSE = re.compile(
     r"\b(?:declined|refused|denied|rejected)\s+(?:a |the |their |his |her |several |many |)?(?:request|requests|to (?:remove|unpublish|delete|take down|de-?index|anonymi[sz]e))\b|"
     r"\b(?:stood by|kept)\s+(?:the |its |our )?(?:story|article|archive|reporting)\b",
@@ -271,7 +276,7 @@ def classify_statement(sentence: str, context: str = "") -> Statement:
     if PRACTICE_ADVERSE.search(sentence) and (has_object or request):
         cues.append("practice:denied")
         return done("practice_relief_denied", 0.75)
-    if PRACTICE_SUPPORT.search(sentence) and (has_object or relief) and not prohibitive:
+    if (PRACTICE_SUPPORT.search(sentence) or PRACTICE_NAMED.search(sentence)) and (has_object or relief) and not prohibitive:
         cues.append("practice:granted")
         return done("practice_relief_granted", 0.75 if changed_ctx else 0.65)
     if PRACTICE_UPDATE.search(sentence) and (has_object or changed_ctx):

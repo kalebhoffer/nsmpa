@@ -501,6 +501,7 @@ def migrate_v3(conn: sqlite3.Connection) -> None:
         ("redirect_chain_json", "TEXT NOT NULL DEFAULT '[]'"),
         ("in_sitemap", "INTEGER"),
         ("query_id", "INTEGER"),
+        ("first_party", "INTEGER NOT NULL DEFAULT 0"),
     ]:
         _add_column(conn, "research_pages", col, decl)
     for col, decl in [
@@ -535,7 +536,7 @@ def migrate_v3(conn: sqlite3.Connection) -> None:
         ("verified_score", "REAL"),
     ]:
         _add_column(conn, "publication_candidates", col, decl)
-    for col, decl in [("entity_id", "INTEGER"), ("host", "TEXT")]:
+    for col, decl in [("entity_id", "INTEGER"), ("host", "TEXT"), ("research_run_id", "TEXT")]:
         _add_column(conn, "errors", col, decl)
 
     # Record provenance for pre-existing seeded/imported entities so that later merges keep it.
@@ -560,7 +561,9 @@ SELECT i.unitid, i.name, i.state, i.included,
   CAST(json_extract(i.raw_json,'$.C21BASIC') AS INTEGER) AS carnegie_basic,
   CAST(json_extract(i.raw_json,'$.HBCU') AS INTEGER) AS hbcu,
   CAST(json_extract(i.raw_json,'$.LANDGRNT') AS INTEGER) AS land_grant,
-  CASE WHEN CAST(json_extract(i.raw_json,'$.C21BASIC') AS INTEGER) IN (15,16) THEN 1 ELSE 0 END AS research_university
+  CASE WHEN CAST(json_extract(i.raw_json,'$.C21BASIC') AS INTEGER) IN (15,16) THEN 1 ELSE 0 END AS research_university,
+  CASE WHEN CAST(json_extract(i.raw_json,'$.C21BASIC') AS INTEGER) BETWEEN 15 AND 23 THEN 1 ELSE 0 END AS core_stratum,
+  json_extract(i.raw_json,'$.COUNTYNM') AS county
 FROM institutions i;
 
 DROP VIEW IF EXISTS v_evidence_unique;
