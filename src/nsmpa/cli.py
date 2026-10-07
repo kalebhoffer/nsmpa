@@ -1,67 +1,142 @@
 from __future__ import annotations
 
 import asyncio
+import csv
 import json
+import os
+import shlex
+import sys
 from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.panel import Panel
 from rich.table import Table
 
+from . import __version__
+from .benchmarks import seed_benchmark_newsrooms
 from .classify import classify_all
-from .config import load_settings
+from .config import load_settings, resolve_config_path
 from .crawl import complete_run, crawl_all, create_run
 from .db import Database
 from .discovery import discover_all, promote_candidates
-from .export import export_run
+from .export import export_research, export_run
 from .ingest import import_ipeds
-from .utils import normalize_url, registrableish_domain
-from .research import (create_research_run, complete_research_run, export_research, import_entities_csv, research_all, sync_student_entities)
+from .research import (COHORTS, import_entities_csv, merge_duplicate_entities, research_all, start_research,
+                       sync_student_entities)
+from .runs import item_counts, latest_resumable_run
 from .support_orgs import seed_support_orgs
-from .benchmarks import seed_benchmark_newsrooms
+from .utils import normalize_url, registrableish_domain
 
-app = typer.Typer(no_args_is_help=True, help="NSMPA: national journalism post-publication policy and precedent audit")
+app = typer.Typer(no_args_is_help=True, add_completion=False,
+                  help=f"NSMPA {__version__}: national journalism post-publication policy & precedent research")
 console = Console()
 
+ConfigOpt = typer.Option(None, "--config", help="Config file (default: ./config.yml if present)")
+QuietOpt = typer.Option(False, "--quiet", "-q", help="Minimal output for unattended runs")
+VerboseOpt = typer.Option(False, "--verbose", "-v", help="Show queries, URLs, scoring decisions, retries and errors")
+MaxSearchesOpt = typer.Option(None, "--max-searches", min=0, help="Max live search credits this invocation may spend")
+RefreshOpt = typer.Option(False, "--refresh-search", help="Bypass the search cache (spends credits again)")
+FreshOpt = typer.Option(False, "--fresh", help="Re-process items already completed in this run id")
 
-def _db(config: Path | None) -> tuple[Database, object]:
+
+def _db(config: Path | None):
     settings = load_settings(config)
-    return Database(settings.database_path), settings
+    db = Database(settings.database_path)
+    if db.last_backup:
+        console.print(f"[dim]Schema migrated; pre-migration backup written to {db.last_backup}[/dim]")
+    return db, settings
 
+
+def _cmdline() -> str:
+    return "nsmpa " + " ".join(shlex.quote(a) for a in sys.argv[1:])
+
+
+def _print_stop(result: dict, resume_cmd: str) -> None:
+    status = result.get("status")
+    if status in {"interrupted", "budget_exhausted", "failed"}:
+        console.print(Panel(
+            f"Run [bold]{result.get('run_id', '')}[/bold] stopped: [yellow]{status}[/yellow]"
+            + (f" — {result.get('stop_reason')}" if result.get("stop_reason") else "")
+            + f"\nCompleted work is saved. Remaining items: {result.get('remaining', '?')}"
+            + f"\nResume with:  [bold]{resume_cmd}[/bold]   (or: nsmpa resume)",
+            title="Checkpoint saved", border_style="yellow"))
+
+
+# ============================================================================ setup
 
 @app.command("init")
-def init(config: Path | None = typer.Option(None, "--config", exists=True)) -> None:
+def init(config: Path | None = ConfigOpt) -> None:
+    """Create or migrate the database (non-destructive; backs up before migrating)."""
     db, settings = _db(config)
+    console.print(f"Database ready: {settings.database_path} (schema v{db.schema_version()})")
     db.close()
-    console.print(f"Initialized database: {settings.database_path}")
 
 
 @app.command("import-ipeds")
 def import_ipeds_cmd(
     path: Path = typer.Argument(..., exists=True, readable=True, help="IPEDS HD directory CSV or ZIP"),
     source_year: int | None = typer.Option(None, "--source-year"),
-    config: Path | None = typer.Option(None, "--config", exists=True),
+    config: Path | None = ConfigOpt,
 ) -> None:
+    """Import/refresh the IPEDS institution universe (upsert; never deletes)."""
     db, settings = _db(config)
     try:
-        stats = import_ipeds(db, settings, path, source_year)
-        console.print_json(json.dumps(stats))
+        console.print_json(json.dumps(import_ipeds(db, settings, path, source_year)))
     finally:
         db.close()
 
 
+@app.command("import-peer-attributes")
+def import_peer_attributes_cmd(
+    path: Path = typer.Argument(..., exists=True, readable=True, help="CSV with unitid,key,value"),
+    source: str = typer.Option(..., "--source", help="Provenance label, e.g. acejmc_2026 or cma_members_2026"),
+    config: Path | None = ConfigOpt,
+) -> None:
+    """Import institution attributes for peer groups (journalism school, association membership...)."""
+    db, _ = _db(config)
+    n = skipped = 0
+    try:
+        with open(path, encoding="utf-8-sig", newline="") as f, db.transaction():
+            for row in csv.DictReader(f):
+                unitid = (row.get("unitid") or row.get("UNITID") or "").strip()
+                key = (row.get("key") or "").strip()
+                if not unitid or not key or not db.conn.execute("SELECT 1 FROM institutions WHERE unitid=?", (unitid,)).fetchone():
+                    skipped += 1
+                    continue
+                db.conn.execute(
+                    "INSERT INTO institution_attributes(unitid,key,value,source) VALUES(?,?,?,?) "
+                    "ON CONFLICT(unitid,key,source) DO UPDATE SET value=excluded.value",
+                    (unitid, key, (row.get("value") or "1").strip(), source))
+                n += 1
+        console.print_json(json.dumps({"imported": n, "skipped": skipped}))
+    finally:
+        db.close()
+
+
+# ============================================================================ student discovery
+
 @app.command("discover")
 def discover_cmd(
     limit: int | None = typer.Option(None, "--limit", min=1),
-    run_id: str | None = typer.Option(None, "--run-id"),
-    quiet: bool = typer.Option(False, "--quiet", help="Suppress live progress output"),
-    verbose: bool = typer.Option(False, "--verbose", help="Show detailed errors and decisions"),
-    config: Path | None = typer.Option(None, "--config", exists=True),
+    state: list[str] = typer.Option([], "--state", help="Restrict to state(s), e.g. --state WA"),
+    unitid: list[str] = typer.Option([], "--unitid", help="Restrict to specific IPEDS UNITIDs"),
+    run_id: str | None = typer.Option(None, "--run-id", help="Resume this run id"),
+    max_searches: int | None = MaxSearchesOpt,
+    refresh_search: bool = RefreshOpt,
+    fresh: bool = FreshOpt,
+    quiet: bool = QuietOpt,
+    verbose: bool = VerboseOpt,
+    config: Path | None = ConfigOpt,
 ) -> None:
+    """Find each institution's primary student newspaper (adaptive search ladder + site inspection)."""
     db, settings = _db(config)
     try:
-        stats = asyncio.run(discover_all(db, settings, limit, run_id=run_id, quiet=quiet, verbose=verbose))
+        stats = asyncio.run(discover_all(db, settings, limit, run_id=run_id, quiet=quiet, verbose=verbose,
+                                         max_searches=max_searches, refresh_search=refresh_search, fresh=fresh,
+                                         states=state or None, unitids=unitid or None, command=_cmdline()))
         console.print_json(json.dumps(stats))
+        _print_stop(stats, f"nsmpa discover --run-id {stats['run_id']}" + (f" --max-searches {max_searches}" if max_searches is not None else ""))
     finally:
         db.close()
 
@@ -69,11 +144,13 @@ def discover_cmd(
 @app.command("promote")
 def promote_cmd(
     threshold: float | None = typer.Option(None, "--threshold", min=0, max=1),
-    config: Path | None = typer.Option(None, "--config", exists=True),
+    config: Path | None = ConfigOpt,
 ) -> None:
+    """Promote best verified candidates to publications (keeps human/manual verifications)."""
     db, settings = _db(config)
     try:
-        stats = promote_candidates(db, threshold if threshold is not None else settings.publication_confidence_threshold)
+        stats = promote_candidates(db, threshold if threshold is not None else settings.publication_confidence_threshold,
+                                   settings.publication_ambiguity_margin)
         console.print_json(json.dumps(stats))
     finally:
         db.close()
@@ -85,22 +162,26 @@ def add_publication(
     url: str = typer.Option(..., "--url"),
     name: str | None = typer.Option(None, "--name"),
     primary: bool = typer.Option(True, "--primary/--not-primary"),
-    config: Path | None = typer.Option(None, "--config", exists=True),
+    config: Path | None = ConfigOpt,
 ) -> None:
+    """Manually record a verified publication (overrides automatic promotion)."""
     db, _ = _db(config)
     try:
         clean = normalize_url(url)
         if not clean:
             raise typer.BadParameter("Invalid HTTP(S) URL")
-        inst = db.execute("SELECT name FROM institutions WHERE unitid=?", (unitid,)).fetchone()
+        inst = db.execute("SELECT name, website FROM institutions WHERE unitid=?", (unitid,)).fetchone()
         if not inst:
             raise typer.BadParameter(f"Unknown UNITID {unitid}")
+        if primary:
+            db.execute("UPDATE publications SET is_primary=0 WHERE unitid=?", (unitid,))
         db.execute(
             """
-            INSERT INTO publications(unitid,name,homepage_url,domain,confidence,verification_status,is_primary)
-            VALUES(?,?,?,?,1.0,'manual',?)
+            INSERT INTO publications(unitid,name,homepage_url,domain,confidence,verification_status,is_primary,discovery_method,verified_at)
+            VALUES(?,?,?,?,1.0,'manual',?,'manual',CURRENT_TIMESTAMP)
             ON CONFLICT(unitid,domain) DO UPDATE SET name=excluded.name,homepage_url=excluded.homepage_url,
-              confidence=1.0,verification_status='manual',is_primary=excluded.is_primary,updated_at=CURRENT_TIMESTAMP
+              confidence=1.0,verification_status='manual',is_primary=excluded.is_primary,discovery_method='manual',
+              verified_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
             """,
             (unitid, name or inst["name"], clean, registrableish_domain(clean), int(primary)),
         )
@@ -110,12 +191,15 @@ def add_publication(
         db.close()
 
 
+# ============================================================================ legacy deep crawl
+
 @app.command("crawl")
 def crawl_cmd(
     publication_limit: int | None = typer.Option(None, "--limit", min=1),
     run_id: str | None = typer.Option(None, "--run-id", help="Reuse this ID to resume an interrupted run"),
-    config: Path | None = typer.Option(None, "--config", exists=True),
+    config: Path | None = ConfigOpt,
 ) -> None:
+    """Deep-crawl promoted student publication sites (v0.1 A-F/U pipeline)."""
     db, settings = _db(config)
     rid = create_run(db, settings, "crawl", run_id)
     console.print(f"Run ID: {rid}")
@@ -123,6 +207,9 @@ def crawl_cmd(
         stats = asyncio.run(crawl_all(db, settings, rid, publication_limit))
         complete_run(db, rid, "crawled")
         console.print_json(json.dumps(stats))
+    except KeyboardInterrupt:
+        complete_run(db, rid, "interrupted")
+        console.print(f"[yellow]Interrupted. Resume with: nsmpa crawl --run-id {rid}[/yellow]")
     except Exception:
         complete_run(db, rid, "failed")
         raise
@@ -131,50 +218,39 @@ def crawl_cmd(
 
 
 @app.command("classify")
-def classify_cmd(
-    run_id: str = typer.Option(..., "--run-id"),
-    config: Path | None = typer.Option(None, "--config", exists=True),
-) -> None:
+def classify_cmd(run_id: str = typer.Option(..., "--run-id"), config: Path | None = ConfigOpt) -> None:
+    """Classify a deep-crawl run (v0.1 A-F/U classes)."""
     db, _ = _db(config)
     try:
-        stats = classify_all(db, run_id)
-        console.print_json(json.dumps(stats))
+        console.print_json(json.dumps(classify_all(db, run_id)))
     finally:
         db.close()
 
 
 @app.command("export")
-def export_cmd(
-    run_id: str = typer.Option(..., "--run-id"),
-    out_dir: Path | None = typer.Option(None, "--out-dir"),
-    config: Path | None = typer.Option(None, "--config", exists=True),
-) -> None:
+def export_cmd(run_id: str = typer.Option(..., "--run-id"), out_dir: Path | None = typer.Option(None, "--out-dir"),
+               config: Path | None = ConfigOpt) -> None:
+    """Export a deep-crawl run."""
     db, settings = _db(config)
     try:
-        stats = export_run(db, run_id, out_dir or settings.output_dir)
-        console.print_json(json.dumps(stats))
-        console.print(f"Exported to {(out_dir or settings.output_dir) / run_id}")
+        console.print_json(json.dumps(export_run(db, run_id, out_dir or settings.output_dir)))
     finally:
         db.close()
 
 
 @app.command("pipeline")
-def pipeline_cmd(
-    publication_limit: int | None = typer.Option(None, "--limit", min=1),
-    run_id: str | None = typer.Option(None, "--run-id"),
-    config: Path | None = typer.Option(None, "--config", exists=True),
-) -> None:
-    """Promote candidates, crawl, classify, and export. Run import/discover first."""
+def pipeline_cmd(publication_limit: int | None = typer.Option(None, "--limit", min=1),
+                 run_id: str | None = typer.Option(None, "--run-id"), config: Path | None = ConfigOpt) -> None:
+    """Promote, deep-crawl, classify and export (v0.1 student pipeline)."""
     db, settings = _db(config)
     rid = create_run(db, settings, "pipeline", run_id)
-    console.print(f"Run ID: {rid}")
     try:
-        promoted = promote_candidates(db, settings.publication_confidence_threshold)
+        promoted = promote_candidates(db, settings.publication_confidence_threshold, settings.publication_ambiguity_margin)
         crawled = asyncio.run(crawl_all(db, settings, rid, publication_limit))
         classes = classify_all(db, rid)
         exported = export_run(db, rid, settings.output_dir)
         complete_run(db, rid, "completed")
-        console.print_json(json.dumps({"promoted": promoted, "crawled": crawled, "classes": classes, "exported": exported}))
+        console.print_json(json.dumps({"run_id": rid, "promoted": promoted, "crawled": crawled, "classes": classes, "exported": exported}))
     except Exception:
         complete_run(db, rid, "failed")
         raise
@@ -182,11 +258,11 @@ def pipeline_cmd(
         db.close()
 
 
+# ============================================================================ research universe
+
 @app.command("seed-support-orgs")
-def seed_support_orgs_cmd(
-    config: Path | None = typer.Option(None, "--config", exists=True),
-) -> None:
-    """Seed national journalism ethics, legal, training, research and membership organizations."""
+def seed_support_orgs_cmd(config: Path | None = ConfigOpt) -> None:
+    """Seed journalism ethics, legal, training, research and membership organizations."""
     db, _ = _db(config)
     try:
         console.print_json(json.dumps(seed_support_orgs(db)))
@@ -195,10 +271,8 @@ def seed_support_orgs_cmd(
 
 
 @app.command("seed-benchmark-newsrooms")
-def seed_benchmark_newsrooms_cmd(
-    config: Path | None = typer.Option(None, "--config", exists=True),
-) -> None:
-    """Seed a deliberately labeled professional-newsroom benchmark panel."""
+def seed_benchmark_newsrooms_cmd(config: Path | None = ConfigOpt) -> None:
+    """Seed the labeled professional-newsroom benchmark panel."""
     db, _ = _db(config)
     try:
         console.print_json(json.dumps(seed_benchmark_newsrooms(db)))
@@ -207,10 +281,8 @@ def seed_benchmark_newsrooms_cmd(
 
 
 @app.command("sync-student-entities")
-def sync_student_entities_cmd(
-    config: Path | None = typer.Option(None, "--config", exists=True),
-) -> None:
-    """Mirror promoted student publications into the cross-journalism research universe."""
+def sync_student_entities_cmd(config: Path | None = ConfigOpt) -> None:
+    """Mirror promoted primary student publications into the research universe."""
     db, _ = _db(config)
     try:
         console.print_json(json.dumps(sync_student_entities(db)))
@@ -221,98 +293,371 @@ def sync_student_entities_cmd(
 @app.command("import-entities")
 def import_entities_cmd(
     path: Path = typer.Argument(..., exists=True, readable=True),
-    cohort: str = typer.Option(..., "--cohort", help="professional_newsroom, press_association, journalism_school, etc."),
-    source: str = typer.Option("csv", "--source"),
-    config: Path | None = typer.Option(None, "--config", exists=True),
+    cohort: str = typer.Option(..., "--cohort", help=", ".join(sorted(COHORTS))),
+    source: str = typer.Option(..., "--source", help="Provenance label, e.g. inn_directory_2026"),
+    membership_label: str | None = typer.Option(None, "--membership", help="Association membership label, e.g. 'INN member'"),
+    config: Path | None = ConfigOpt,
 ) -> None:
-    """Import a generic newsroom/support directory CSV. Required columns: name,url."""
+    """Import a directory/membership CSV (name,url[,state,...]); duplicates merge by domain, keeping provenance."""
     db, _ = _db(config)
     try:
-        console.print_json(json.dumps(import_entities_csv(db, path, cohort, source)))
+        console.print_json(json.dumps(import_entities_csv(db, path, cohort, source, membership_label)))
     finally:
         db.close()
 
 
-@app.command("research")
-def research_cmd(
-    cohort: str | None = typer.Option(None, "--cohort"),
-    limit: int | None = typer.Option(None, "--limit", min=1),
-    run_id: str | None = typer.Option(None, "--run-id"),
-    quiet: bool = typer.Option(False, "--quiet"),
-    verbose: bool = typer.Option(False, "--verbose"),
-    config: Path | None = typer.Option(None, "--config", exists=True),
-) -> None:
-    """Run Serper-assisted policy, precedent, adverse-evidence and guidance research."""
-    db, settings = _db(config)
-    rid = create_research_run(db, settings, "full_research", run_id)
-    console.print(f"Research Run ID: {rid}")
+@app.command("merge-duplicates")
+def merge_duplicates_cmd(cohort: str | None = typer.Option(None, "--cohort"), config: Path | None = ConfigOpt) -> None:
+    """Merge active entities sharing a domain within a cohort (provenance preserved)."""
+    db, _ = _db(config)
     try:
-        stats = asyncio.run(research_all(db, settings, rid, cohort=cohort, limit=limit, quiet=quiet, verbose=verbose))
-        exported = export_research(db, rid, settings.output_dir)
-        complete_research_run(db, rid, "completed")
-        console.print_json(json.dumps({"research": stats, "exported": exported}))
-        console.print(f"Exported to {settings.output_dir / ('research_' + rid)}")
-    except Exception:
-        complete_research_run(db, rid, "failed")
-        raise
-    finally:
-        db.close()
-
-
-@app.command("research-export")
-def research_export_cmd(
-    run_id: str = typer.Option(..., "--run-id"),
-    out_dir: Path | None = typer.Option(None, "--out-dir"),
-    config: Path | None = typer.Option(None, "--config", exists=True),
-) -> None:
-    db, settings = _db(config)
-    try:
-        stats = export_research(db, run_id, out_dir or settings.output_dir)
-        console.print_json(json.dumps(stats))
+        console.print_json(json.dumps(merge_duplicate_entities(db, cohort)))
     finally:
         db.close()
 
 
 @app.command("research-setup")
-def research_setup_cmd(
-    config: Path | None = typer.Option(None, "--config", exists=True),
-) -> None:
-    """Seed support organizations and sync already-promoted student media into research_entities."""
+def research_setup_cmd(config: Path | None = ConfigOpt) -> None:
+    """Seed support orgs + benchmark newsrooms and sync promoted student publications."""
     db, _ = _db(config)
     try:
-        result = {"support_orgs": seed_support_orgs(db), "benchmark_newsrooms": seed_benchmark_newsrooms(db), "student_entities": sync_student_entities(db)}
+        result = {"support_orgs": seed_support_orgs(db), "benchmark_newsrooms": seed_benchmark_newsrooms(db),
+                  "student_entities": sync_student_entities(db)}
         console.print_json(json.dumps(result))
     finally:
         db.close()
 
 
-@app.command("status")
-def status_cmd(config: Path | None = typer.Option(None, "--config", exists=True)) -> None:
+# ============================================================================ research
+
+@app.command("research")
+def research_cmd(
+    cohort: str | None = typer.Option(None, "--cohort", help=", ".join(sorted(COHORTS))),
+    limit: int | None = typer.Option(None, "--limit", min=1),
+    entity_id: list[int] = typer.Option([], "--entity-id", help="Research specific entity ids"),
+    depth: str | None = typer.Option(None, "--depth", help="quick | standard | deep (default from config)"),
+    concurrency: int | None = typer.Option(None, "--concurrency", min=1, max=32),
+    run_id: str | None = typer.Option(None, "--run-id", help="Resume this run id"),
+    max_searches: int | None = MaxSearchesOpt,
+    refresh_search: bool = RefreshOpt,
+    fresh: bool = FreshOpt,
+    no_export: bool = typer.Option(False, "--no-export"),
+    quiet: bool = QuietOpt,
+    verbose: bool = VerboseOpt,
+    config: Path | None = ConfigOpt,
+) -> None:
+    """Policy, precedent, adverse-evidence and guidance research (resumable; Ctrl+C checkpoints)."""
+    if cohort and cohort not in COHORTS:
+        raise typer.BadParameter(f"cohort must be one of {sorted(COHORTS)}")
     db, settings = _db(config)
+    if depth:
+        if depth not in {"quick", "standard", "deep"}:
+            raise typer.BadParameter("depth must be quick|standard|deep")
+        settings.research_depth = depth  # type: ignore[assignment]
+    if concurrency:
+        settings.research_concurrency = concurrency
     try:
-        metrics = {
-            "included institutions": db.execute("SELECT COUNT(*) n FROM institutions WHERE included=1").fetchone()["n"],
-            "publication candidates": db.execute("SELECT COUNT(*) n FROM publication_candidates").fetchone()["n"],
-            "promoted publications": db.execute("SELECT COUNT(*) n FROM publications").fetchone()["n"],
-            "crawl runs": db.execute("SELECT COUNT(*) n FROM crawl_runs").fetchone()["n"],
-            "pages": db.execute("SELECT COUNT(*) n FROM pages").fetchone()["n"],
-            "evidence excerpts": db.execute("SELECT COUNT(*) n FROM evidence").fetchone()["n"],
-            "classifications": db.execute("SELECT COUNT(*) n FROM classifications").fetchone()["n"],
-            "research entities": db.execute("SELECT COUNT(*) n FROM research_entities WHERE active=1").fetchone()["n"],
-            "research runs": db.execute("SELECT COUNT(*) n FROM research_runs").fetchone()["n"],
-            "search queries": db.execute("SELECT COUNT(*) n FROM search_queries").fetchone()["n"],
-            "research evidence": db.execute("SELECT COUNT(*) n FROM research_evidence").fetchone()["n"],
-            "entity stances": db.execute("SELECT COUNT(*) n FROM entity_stances").fetchone()["n"],
-        }
-        table = Table(title=f"NSMPA status | {settings.database_path}")
-        table.add_column("Metric")
-        table.add_column("Count", justify="right")
-        for k, v in metrics.items():
-            table.add_row(k, str(v))
-        console.print(table)
+        rid, resumed = start_research(db, settings, cohort=cohort, limit=limit, run_id=run_id,
+                                      max_searches=max_searches, command=_cmdline())
+        if not quiet:
+            console.print(f"{'Resuming' if resumed else 'Starting'} research run [bold]{rid}[/bold] (depth={settings.research_depth})")
+        stats = asyncio.run(research_all(db, settings, rid, cohort=cohort, limit=limit, quiet=quiet, verbose=verbose,
+                                         max_searches=max_searches, refresh_search=refresh_search, fresh=fresh,
+                                         entity_ids=entity_id or None))
+        stats["run_id"] = rid
+        if not no_export:
+            stats["exported"] = export_research(db, rid, settings.output_dir)
+            stats["export_dir"] = str(settings.output_dir / f"research_{rid}")
+        console.print_json(json.dumps(stats, default=str))
+        _print_stop(stats, f"nsmpa research --run-id {rid}" + (f" --cohort {cohort}" if cohort else "")
+                    + (f" --limit {limit}" if limit else "") + (f" --max-searches {max_searches}" if max_searches is not None else ""))
     finally:
         db.close()
 
 
-if __name__ == "__main__":
-    app()
+@app.command("resume")
+def resume_cmd(
+    max_searches: int | None = MaxSearchesOpt,
+    quiet: bool = QuietOpt,
+    verbose: bool = VerboseOpt,
+    config: Path | None = ConfigOpt,
+) -> None:
+    """Resume the most recent interrupted / budget-stopped run with its original parameters."""
+    db, settings = _db(config)
+    try:
+        run = latest_resumable_run(db)
+        if not run:
+            console.print("No interrupted or budget-stopped runs to resume.")
+            return
+        params = json.loads(run["params_json"] or "{}")
+        console.print(f"Resuming [bold]{run['id']}[/bold] ({run['mode']}, last status {run['status']}: {run['status_reason'] or '-'})")
+        if run["mode"] == "publication_discovery":
+            stats = asyncio.run(discover_all(db, settings, params.get("limit"), run_id=run["id"], quiet=quiet, verbose=verbose,
+                                             max_searches=max_searches, states=params.get("states"), unitids=params.get("unitids")))
+            stats_cmd = f"nsmpa discover --run-id {run['id']}"
+        else:
+            if params.get("depth"):
+                settings.research_depth = params["depth"]
+            start_research(db, settings, cohort=params.get("cohort"), limit=params.get("limit"), run_id=run["id"],
+                           max_searches=max_searches, command=_cmdline())
+            stats = asyncio.run(research_all(db, settings, run["id"], cohort=params.get("cohort"), limit=params.get("limit"),
+                                             quiet=quiet, verbose=verbose, max_searches=max_searches))
+            stats["exported"] = export_research(db, run["id"], settings.output_dir)
+            stats_cmd = f"nsmpa research --run-id {run['id']}"
+        stats["run_id"] = run["id"]
+        console.print_json(json.dumps(stats, default=str))
+        _print_stop(stats, stats_cmd)
+    finally:
+        db.close()
+
+
+@app.command("research-export")
+def research_export_cmd(run_id: str = typer.Option(..., "--run-id"), out_dir: Path | None = typer.Option(None, "--out-dir"),
+                        config: Path | None = ConfigOpt) -> None:
+    """Export one research run (CSV, JSONL, manifest, summary)."""
+    db, settings = _db(config)
+    try:
+        console.print_json(json.dumps(export_research(db, run_id, out_dir or settings.output_dir)))
+        console.print(f"Exported to {(out_dir or settings.output_dir) / ('research_' + run_id)}")
+    finally:
+        db.close()
+
+
+# ============================================================================ review / validation / reporting
+
+@app.command("review")
+def review_cmd(
+    decide: int | None = typer.Option(None, "--decide", help="Review item id to record a decision for"),
+    decision: str | None = typer.Option(None, "--decision", help="accept | reject | correct | skip"),
+    stance: str | None = typer.Option(None, "--stance", help="Corrected stance when --decision correct"),
+    note: str = typer.Option("", "--note"),
+    reviewer: str = typer.Option(os.getenv("USER", ""), "--reviewer"),
+    cohort: str | None = typer.Option(None, "--cohort"),
+    run_id: str | None = typer.Option(None, "--run-id"),
+    limit: int = typer.Option(15, "--limit"),
+    export: Path | None = typer.Option(None, "--export", help="Write the open queue to this CSV"),
+    config: Path | None = ConfigOpt,
+) -> None:
+    """Show the prioritized human-review queue, or record a decision."""
+    from .review import open_items, record_decision
+    db, _ = _db(config)
+    try:
+        if decide is not None:
+            if not decision:
+                raise typer.BadParameter("--decision is required with --decide")
+            record_decision(db, decide, decision, reviewer=reviewer, note=note, corrected_stance=stance)
+            console.print(f"Recorded {decision} for review item {decide}")
+            return
+        items = open_items(db, run_id, cohort, limit if not export else 1_000_000)
+        if export:
+            with open(export, "w", newline="", encoding="utf-8") as f:
+                w = csv.writer(f)
+                cols = list(items[0].keys()) if items else ["id"]
+                w.writerow(cols)
+                for r in items:
+                    w.writerow([r[c] for c in cols])
+            console.print(f"Wrote {len(items)} open review items to {export}")
+            return
+        t = Table(title="Human review queue (highest priority first)")
+        for c in ("id", "priority", "cohort", "entity", "stance", "conf", "reasons"):
+            t.add_column(c)
+        for r in items:
+            t.add_row(str(r["id"]), f"{r['priority']:.0f}", r["cohort"] or "", (r["entity_name"] or f"{r['item_type']} {r['item_id']}")[:40],
+                      r["stance"] or "-", f"{r['confidence']:.2f}" if r["confidence"] is not None else "-",
+                      ", ".join(json.loads(r["reasons_json"] or "[]"))[:70])
+        console.print(t)
+        console.print("Record a decision: nsmpa review --decide ID --decision accept|reject|correct|skip [--stance S] [--note TEXT]")
+    finally:
+        db.close()
+
+
+@app.command("verify-evidence")
+def verify_evidence_cmd(evidence_id: int = typer.Argument(...), status: str = typer.Option(..., "--status",
+                        help="verified | rejected | disputed | unverified"), note: str = typer.Option("", "--note"),
+                        config: Path | None = ConfigOpt) -> None:
+    """Record human source verification for one evidence excerpt."""
+    from .review import verify_evidence
+    db, _ = _db(config)
+    try:
+        verify_evidence(db, evidence_id, status, note)
+        console.print(f"Evidence {evidence_id}: {status}")
+    finally:
+        db.close()
+
+
+@app.command("validate")
+def validate_cmd(run_id: str | None = typer.Option(None, "--run-id"), config: Path | None = ConfigOpt) -> None:
+    """Show per-cohort quality metrics and whether national percentages are permitted."""
+    from .validate import all_cohorts, cohort_metrics
+    db, settings = _db(config)
+    try:
+        for c in all_cohorts(db):
+            m = cohort_metrics(db, settings, c, run_id)
+            t = Table(title=f"{m.label} — denominator {m.denominator:,} — "
+                            + ("[green]VALIDATED[/green]" if m.valid_for_percentages else "[yellow]PRELIMINARY[/yellow]"))
+            t.add_column("Gate")
+            t.add_column("Value", justify="right")
+            t.add_column("Threshold", justify="right")
+            t.add_column("Result")
+            for g in m.gates:
+                t.add_row(g.name, "–" if g.value is None else f"{g.value:.3f}", f"{g.comparator} {g.threshold}",
+                          "[green]pass[/green]" if g.passed else "[red]FAIL[/red]")
+            console.print(t)
+    finally:
+        db.close()
+
+
+@app.command("report")
+def report_cmd(run_id: str | None = typer.Option(None, "--run-id", help="Restrict to one run (default: latest stance per entity)"),
+               out_dir: Path | None = typer.Option(None, "--out-dir"), config: Path | None = ConfigOpt) -> None:
+    """Build the national report (Markdown + JSON + CSV tables), gated by validation metrics."""
+    from .report import build_report
+    db, settings = _db(config)
+    try:
+        res = build_report(db, settings, out_dir or settings.output_dir, run_id)
+        console.print_json(json.dumps(res))
+        console.print(f"Report: {res['out_dir']}/report.md")
+    finally:
+        db.close()
+
+
+# ============================================================================ operations
+
+@app.command("status")
+def status_cmd(config: Path | None = ConfigOpt) -> None:
+    """Universe, discovery, research and review status at a glance."""
+    db, settings = _db(config)
+    try:
+        q = db.scalar
+        t = Table(title=f"NSMPA {__version__} status | {settings.database_path} | schema v{db.schema_version()}")
+        t.add_column("Area")
+        t.add_column("Metric")
+        t.add_column("Value", justify="right")
+        rows = [
+            ("Student", "included institutions (IPEDS)", q("SELECT COUNT(*) FROM institutions WHERE included=1")),
+            ("Student", "core stratum (Carnegie 15-23)", q("SELECT COUNT(*) FROM v_institution_peer WHERE included=1 AND core_stratum=1")),
+            ("Student", "institutions with discovery done", q("SELECT COUNT(DISTINCT item_key) FROM run_items WHERE item_type='institution' AND status='done'")),
+            ("Student", "publication candidates", q("SELECT COUNT(*) FROM publication_candidates")),
+            ("Student", "primary publications", q("SELECT COUNT(*) FROM publications WHERE is_primary=1")),
+            ("Student", "ambiguous identifications", q("SELECT COUNT(*) FROM publications WHERE ambiguous=1 AND is_primary=1")),
+        ]
+        for r in db.execute("SELECT cohort, COUNT(*) n FROM research_entities WHERE active=1 AND merged_into IS NULL GROUP BY cohort"):
+            rows.append(("Universe", f"{r['cohort']} entities", r["n"]))
+        rows += [
+            ("Research", "v0.3 runs", q("SELECT COUNT(*) FROM research_runs WHERE engine_version!='0.2'")),
+            ("Research", "legacy v0.2 runs (kept, excluded from reports)", q("SELECT COUNT(*) FROM research_runs WHERE engine_version='0.2'")),
+            ("Research", "entities with a v0.3 stance", q("SELECT COUNT(DISTINCT entity_id) FROM entity_stances WHERE stance_version='0.3'")),
+            ("Research", "unique substantive excerpts", q("SELECT COUNT(DISTINCT near_dup_key) FROM evidence_items WHERE statement_type!='mention'")),
+            ("Search", "live queries (all time)", q("SELECT COUNT(*) FROM search_queries WHERE was_cached=0 AND status='completed'")),
+            ("Search", "cache hits (all time)", q("SELECT COUNT(*) FROM search_queries WHERE was_cached=1")),
+            ("Search", "estimated credits (all time)", q("SELECT SUM(credits_estimated) FROM search_queries")),
+            ("Search", "cached distinct queries", q("SELECT COUNT(*) FROM search_cache")),
+            ("Review", "open review items", q("SELECT COUNT(*) FROM review_queue WHERE status='open'")),
+            ("Review", "reviewed items", q("SELECT COUNT(*) FROM review_queue WHERE status!='open'")),
+            ("Ops", "errors logged", q("SELECT COUNT(*) FROM errors")),
+        ]
+        for a, m, v in rows:
+            t.add_row(a, m, f"{v:,}" if isinstance(v, int) else str(v))
+        console.print(t)
+        run = latest_resumable_run(db)
+        if run:
+            c = item_counts(db, run["id"])
+            console.print(f"[yellow]Resumable run {run['id']} ({run['mode']}, {run['status']}): {c}. Run `nsmpa resume`.[/yellow]")
+    finally:
+        db.close()
+
+
+@app.command("runs")
+def runs_cmd(limit: int = typer.Option(15, "--limit"), config: Path | None = ConfigOpt) -> None:
+    """List recent discovery/research runs."""
+    db, _ = _db(config)
+    try:
+        t = Table(title="Runs")
+        for c in ("id", "mode", "engine", "status", "items done", "live", "cached", "credits", "started", "reason"):
+            t.add_column(c)
+        for r in db.execute("SELECT * FROM research_runs ORDER BY started_at DESC LIMIT ?", (limit,)):
+            done = db.scalar("SELECT COUNT(*) FROM run_items WHERE run_id=? AND status='done'", (r["id"],))
+            total = db.scalar("SELECT COUNT(*) FROM run_items WHERE run_id=?", (r["id"],))
+            t.add_row(r["id"], r["mode"], r["engine_version"], r["status"], f"{done}/{total}", str(r["searches_live"]),
+                      str(r["searches_cached"]), str(r["credits_estimated"]), r["started_at"], (r["status_reason"] or "")[:40])
+        console.print(t)
+    finally:
+        db.close()
+
+
+@app.command("query-stats")
+def query_stats_cmd(run_id: str | None = typer.Option(None, "--run-id"), config: Path | None = ConfigOpt) -> None:
+    """Search usage, cache efficiency and which query purposes actually produce evidence."""
+    db, _ = _db(config)
+    try:
+        where, params = ("WHERE run_id=?", [run_id]) if run_id else ("", [])
+        t = Table(title="Search ledger by purpose" + (f" (run {run_id})" if run_id else " (all runs)"))
+        for c in ("purpose", "queries", "live", "cached", "failed", "credits", "produced evidence", "useful rate"):
+            t.add_column(c, justify="right" if c != "purpose" else "left")
+        for r in db.execute(f"""SELECT purpose, COUNT(*) n, SUM(was_cached=0 AND status='completed') live, SUM(was_cached) cached,
+                               SUM(status!='completed') failed, SUM(credits_estimated) credits, SUM(produced_evidence) useful
+                               FROM search_queries {where} GROUP BY purpose ORDER BY n DESC""", params):
+            t.add_row(r["purpose"], str(r["n"]), str(r["live"]), str(r["cached"]), str(r["failed"]), str(r["credits"] or 0),
+                      str(r["useful"] or 0), f"{(r['useful'] or 0) / r['n']:.0%}")
+        console.print(t)
+    finally:
+        db.close()
+
+
+@app.command("errors")
+def errors_cmd(run_id: str | None = typer.Option(None, "--run-id"), limit: int = typer.Option(25, "--limit"),
+               config: Path | None = ConfigOpt) -> None:
+    """Summarize logged errors, failed run items and inaccessible pages."""
+    db, _ = _db(config)
+    try:
+        rp = [run_id] if run_id else []
+        t = Table(title="Errors by stage/type")
+        for c in ("stage", "type", "count"):
+            t.add_column(c)
+        for r in db.execute(f"SELECT stage, error_type, COUNT(*) n FROM errors {'WHERE research_run_id=?' if run_id else ''} "
+                            "GROUP BY 1,2 ORDER BY n DESC LIMIT ?", rp + [limit]):
+            t.add_row(r["stage"], r["error_type"] or "", str(r["n"]))
+        console.print(t)
+        t2 = Table(title="Page access classes (research)")
+        for c in ("access class", "count"):
+            t2.add_column(c)
+        for r in db.execute(f"SELECT COALESCE(access_class,status) ac, COUNT(*) n FROM research_pages {'WHERE run_id=?' if run_id else ''} "
+                            "GROUP BY 1 ORDER BY n DESC", rp):
+            t2.add_row(r["ac"], str(r["n"]))
+        console.print(t2)
+        t3 = Table(title="Failed run items (most recent)")
+        for c in ("run", "type", "key", "error"):
+            t3.add_column(c)
+        for r in db.execute(f"SELECT * FROM run_items WHERE status='failed' {'AND run_id=?' if run_id else ''} "
+                            "ORDER BY completed_at DESC LIMIT ?", rp + [limit]):
+            t3.add_row(r["run_id"], r["item_type"], r["item_key"], (r["error"] or "")[:80])
+        console.print(t3)
+    finally:
+        db.close()
+
+
+@app.command("doctor")
+def doctor_cmd(network: bool = typer.Option(True, "--network/--no-network", help="Check DNS/HTTPS reachability"),
+               check_serper: bool = typer.Option(False, "--check-serper", help="Spend 1 credit to verify the Serper key"),
+               config: Path | None = ConfigOpt) -> None:
+    """Validate dependencies, config, schema, writability, search key and network."""
+    from .doctor import run_doctor
+    ok = run_doctor(console, config, network=network, check_serper=check_serper)
+    raise typer.Exit(code=0 if ok else 1)
+
+
+@app.command("version")
+def version_cmd() -> None:
+    console.print(f"nsmpa {__version__}")
+
+
+def main() -> None:  # pragma: no cover
+    try:
+        app()
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Interrupted. Completed work is saved; run `nsmpa resume` to continue.[/yellow]")
+        sys.exit(130)
+
+
+if __name__ == "__main__":  # pragma: no cover
+    main()
