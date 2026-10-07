@@ -1,33 +1,64 @@
+# NSMPA v0.3 configuration. Every value here is recorded in each run's config_json for reproducibility.
 database_path: output/nsmpa.sqlite3
 output_dir: output
-user_agent: "NSMPA/0.2 (National Journalism Policy Audit; contact=research@example.org)"
+user_agent: "NSMPA/0.3 (National Journalism Policy Audit research; contact=research@example.org)"
+
+# --- crawler politeness & safety ------------------------------------------------------
 respect_robots_txt: true
 request_timeout_seconds: 20
 connect_timeout_seconds: 10
 max_retries: 3
+retry_backoff_seconds: 1.0
+max_redirects: 8
 max_response_bytes: 10000000
 per_host_delay_seconds: 1.5
 max_concurrency: 16
 max_per_host_concurrency: 2
+host_failure_threshold: 6
+allowed_ports: [80, 443, 8080, 8443]
+allow_pdf: true
+save_html_snapshots: true
+snapshot_dir: output/snapshots
+research_snapshot_dir: output/research_snapshots
+
+# --- legacy deep crawl (nsmpa crawl) -----------------------------------------------------
 crawl_max_pages_per_publication: 250
 crawl_max_depth: 4
 sitemap_max_urls: 3000
 policy_candidate_limit: 80
-search_provider: auto
-search_results_per_query: 8
+
+# --- search (Serper) ----------------------------------------------------------------------
+search_provider: auto            # auto = Serper if SERPER_API_KEY is set, else Brave, else none
+search_results_per_query: 8      # <=10 costs 1 Serper credit; >10 costs 2
+search_cache_days: 3650          # identical queries are reused, never re-billed
+search_credit_budget_per_run: 50000
+search_max_retries: 2
+search_retry_backoff_seconds: 2.0
+
+# --- student publication discovery ------------------------------------------------------
+discovery_max_searches_per_institution: 5   # ladder length; stops early at high confidence
+discovery_concurrency: 4
+discovery_verify_top_candidates: 3
+discovery_site_pages: 14
 publication_confidence_threshold: 0.60
 publication_early_stop_threshold: 0.84
-search_cache_days: 3650
-search_credit_budget_per_run: 50000
-discovery_max_searches_per_institution: 4
-research_max_searches_per_entity: 18
+publication_ambiguity_margin: 0.08
+
+# --- research engine ------------------------------------------------------------------------
+research_depth: standard          # quick (tier 1) | standard (+tier 2 on signal) | deep (+tier 3)
+research_concurrency: 3
+research_max_searches_per_entity: 18          # quick/standard cap
+research_deep_max_searches_per_entity: 50     # --depth deep cap (tier 3 adds ~40 queries)
 research_max_targets_per_entity: 30
 research_fetch_top_targets: 18
+research_third_party_fetch_limit: 4
+research_first_party_link_pages: 6
+research_max_evidence_per_page: 60
 research_candidate_threshold: 0.28
-save_html_snapshots: true
-snapshot_dir: output/snapshots
-research_snapshot_dir: output/research_snapshots
-allow_pdf: true
+no_guidance_min_first_party_pages: 2
+no_guidance_max_inaccessible_ratio: 0.5
+
+# --- IPEDS universe ----------------------------------------------------------------------
 allowed_states: []
 institution_filters:
   include_four_year: true
@@ -36,15 +67,40 @@ institution_filters:
   include_public: true
   include_private_nonprofit: true
   include_private_for_profit: false
+
+# --- fact-pattern similarity weights (auditable; see docs/classification_rubric.md) -------
 case_profile:
   name: "post-publication relief case"
   student_context_weight: 8
   criminal_allegation_weight: 10
   dismissed_charges_weight: 15
+  acquittal_exoneration_weight: 12
   vacated_conviction_weight: 15
   sealed_or_expunged_weight: 12
   long_time_passed_weight: 8
+  private_individual_weight: 6
   search_prominence_weight: 10
+  reputational_harm_weight: 8
+  name_search_suppression_weight: 10
   deindex_relief_weight: 20
   anonymization_weight: 12
   update_context_weight: 6
+  high_similarity_threshold: 45
+
+# --- validation gates: reports withhold cohort percentages until all pass ------------------
+validation:
+  min_discovery_coverage: 0.80
+  min_crawl_success: 0.75
+  max_undetermined_rate: 0.25
+  min_source_verification: 0.10
+  min_human_review_of_findings: 0.20
+  min_mean_stance_confidence: 0.65
+  max_duplicate_evidence_rate: 0.35
+  min_entities_for_percentages: 30
+
+# --- peer groups (student media). Filters are ANDed; unitids always included. -----------
+# Omit this block to use the built-in defaults (washington, eastern_washington, ewu_comparables_proxy).
+# peer_groups:
+#   ewu_official_peers:
+#     label: "EWU official peer list"
+#     unitids: ["235097", "..."]

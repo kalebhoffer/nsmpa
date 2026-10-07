@@ -524,3 +524,37 @@ async def test_no_search_provider_never_yields_no_guidance(tmp_path, db):
     assert s["searches_live"] == 0
     # Determinate first-party policy found via homepage links is still classified.
     assert st["Strict Times"] in {"UPDATE_ONLY", "STRICT_ARCHIVE"}
+
+
+async def test_editorial_statement_counts_toward_stance(tmp_path, db):
+    """Policy stated in an editor's column on the entity's own site is first-party policy evidence."""
+    WEB["https://column.example/"] = (200, PAGE.format(title="Column Courier", body="<p>News.</p>"))
+    WEB["https://column.example/2024/05/from-the-editor-our-archive"] = (200, PAGE.format(
+        title="From the editor: why we keep our archive", body="<p>We do not remove stories from our archive, even when asked.</p>"))
+    routes = dict(SEARCH_ROUTES)
+    routes["site:column.example (unpublish"] = [("https://column.example/2024/05/from-the-editor-our-archive", "From the editor", "We do not remove stories")]
+    p = tmp_path / "c.csv"
+    p.write_text("name,url\nColumn Courier,https://column.example/\n", encoding="utf-8")
+    import_entities_csv(db, p, "professional_newsroom", "t")
+    settings = make_settings(tmp_path)
+    rid, _ = await run_research(db, settings, FakeSearch(routes))
+    assert stances(db, rid)["Column Courier"] == "STRICT_ARCHIVE"
+    assert db.scalar("SELECT e.evidence_class FROM evidence_items e JOIN research_entities re ON re.id=e.entity_id "
+                     "WHERE re.name='Column Courier' AND e.excerpt LIKE 'We do not remove stories%'") == "editorial_statement"
+
+
+def test_deep_depth_gets_larger_query_cap(tmp_path):
+    s = make_settings(tmp_path, research_depth="deep")
+    from nsmpa.research import TIER1, TIER2, TIER3
+    assert s.research_deep_max_searches_per_entity >= len(TIER1) + len(TIER2) + len(TIER3)
+    assert make_settings(tmp_path).discovery_max_searches_per_institution == 5
+
+
+async def test_excluded_runs_do_not_count(tmp_path, db):
+    settings = make_settings(tmp_path)
+    seed_newsrooms(tmp_path, db)
+    rid, _ = await run_research(db, settings, FakeSearch(SEARCH_ROUTES))
+    assert cohort_metrics(db, settings, "professional_newsroom").researched == 4
+    db.execute("UPDATE research_runs SET status='excluded' WHERE id=?", (rid,))
+    db.conn.commit()
+    assert cohort_metrics(db, settings, "professional_newsroom").researched == 0

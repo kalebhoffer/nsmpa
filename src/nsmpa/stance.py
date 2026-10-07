@@ -23,7 +23,8 @@ from .db import Database
 from .fetch import INACCESSIBLE_CLASSES
 
 STANCE_VERSION = "0.3"
-POLICY_CLASSES = ("written_policy", "professional_guidance")
+# Editor's columns/notes on the entity's own site state policy too (authority 0.8 vs 1.0 for policy pages).
+POLICY_CLASSES = ("written_policy", "professional_guidance", "editorial_statement")
 DETERMINATE = {"SUPPORTS_RELIEF", "SUPPORTS_CHANGED_CIRCUMSTANCES", "CASE_BY_CASE", "UPDATE_ONLY", "STRICT_ARCHIVE", "MIXED"}
 
 

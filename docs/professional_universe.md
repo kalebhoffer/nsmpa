@@ -13,25 +13,27 @@ There is no single public registry that cleanly equals "all U.S. journalism." NS
 
 `data/professional_universe_sources.csv` records the initial source registry.
 
-## Required provenance
+## Importing
 
-Every imported newsroom should retain:
+```bash
+nsmpa import-entities inn.csv --cohort professional_newsroom --source inn_directory_2026 --membership "INN member"
+nsmpa import-entities lion.csv --cohort professional_newsroom --source lion_members_2026 --membership "LION member"
+nsmpa import-entities wnpa.csv --cohort professional_newsroom --source wnpa_members_2026 --membership "WNPA member"
+nsmpa merge-duplicates --cohort professional_newsroom
+```
 
-- source directory/name
-- source date/version if known
-- publication name
-- homepage URL/domain
-- state/market if available
-- membership/category metadata
-- verification status
+CSV columns: `name` and `url` (or `homepage_url`/`website`) required; optional `state`, `parent_name`, `source_key`; all other columns are kept as metadata. Use a dated `--source` label per directory version.
+
+## Provenance and de-duplication
+
+- Each import row is recorded in `entity_sources` (`source`, `source_key`, `source_url`, `membership_label`, raw row JSON).
+- A row whose domain already belongs to an active entity in the same cohort is **not** created as a new entity; it is added to that entity's `entity_sources` (reported as `merged_as_additional_source`). One newsroom in INN, LION and a state association is one analytical entity with three memberships.
+- `merge-duplicates` collapses pre-existing same-domain entities: the lowest id survives, others become `active=0, merged_into=<id>`, and their provenance moves to the survivor. Nothing is deleted.
+- Domain identity is a heuristic; newsrooms sharing a corporate domain or using several domains need manual review.
 
 ## Reporting rule
 
-Until the union has a defensible denominator, report it as a "professional newsroom panel" or "directory-derived professional newsroom dataset," not as a census of all U.S. journalism.
-
-## De-duplication
-
-Prefer organization identity over URL identity. One newsroom can appear in INN, LION and a state association. Retain all memberships as metadata while collapsing the analytical entity to one newsroom.
+The professional cohort denominator is the count of active, de-duplicated entities, and `nsmpa report` prints its source breakdown. Describe it as a "directory-derived professional newsroom panel," not a census of U.S. journalism, unless the sources are demonstrably exhaustive.
 
 ## Broadcast caution
 

@@ -67,3 +67,30 @@ Audit date: 2026-10-07. Baseline: v0.2.0 (git commit "Baseline"). DB backup:
 - No scraping of membership directories behind logins; professional-universe imports remain CSV.
 - Journalism-school presence needs an external list (e.g. IPEDS Completions CIP 09 or ACEJMC);
   supported via `import-peer-attributes`, not inferred.
+
+## Status (2026-10-07)
+
+| Stage | Status |
+|---|---|
+| 1. Foundation (migrations, fetcher, snapshots) | done |
+| 2. Search + runs (broker, checkpoints, Ctrl+C, dashboard) | done |
+| 3. Evidence v2 (sentences, statements, similarity, stance v2) | done |
+| 4. Discovery v2 + research planner v2 | done |
+| 5. Review, validation, reporting, operations commands | done |
+| 6. Professional universe provenance + dedupe | done |
+| 7. Docs + smoke tests | done — zero-credit live smoke tests run (research on 3 support orgs; discovery on 4 WA institutions). The research smoke test exposed the null-provider `NO_RELEVANT_GUIDANCE` bug, now fixed with a regression test. |
+
+## Live Serper smoke test
+
+Not run: the user chose to skip spending credits in this session. Zero-credit live tests were run instead
+(real web, search disabled):
+
+- Research, 3 support orgs (ACP, CMA, SPLC): 14 pages fetched, 0 errors; after the null-provider fix all three
+  correctly return `UNDETERMINED` ("no targeted searches were run") instead of a false `NO_RELEVANT_GUIDANCE`.
+- Discovery, 4 Eastern WA institutions (site inspection only): 0 candidates. EWU does not link *The Easterner*
+  from its hub pages within the page budget; Gonzaga's WAF returns 403 to non-browser clients (recorded as
+  `blocked`, circuit breaker engaged). Conclusion: discovery requires Serper; site inspection is a fallback.
+- Real SIGINT during a 12-entity run: in-flight entities finished, 7 done / 5 pending, run `interrupted`,
+  resume command printed; `nsmpa resume` continues it.
+
+Recommended first live test (≤ 25 credits): see README "Quickstart".

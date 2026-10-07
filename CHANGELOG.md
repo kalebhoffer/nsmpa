@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.3.0 — 2026-10-07
+
+Hardening and methodology release. Existing data preserved; schema migrated additively (v2 → v3) with automatic backup.
+
+### Bugs fixed
+- **Redirect loop on most WordPress sites.** Identity normalization stripped trailing slashes and was applied to redirect targets (`/a` → 301 `/a/` → `/a` …). Fetching now uses `prepare_request_url` (path preserved); `normalize_url` is used only for de-duplication. Loop detection added.
+- **Keyword false positives.** v0.2 scored "Please do not remove this page" as adverse, newsletter "archive" links as strict-archive, and a bibliography entry containing "Privacy" as supportive. Replaced by a sentence-level statement classifier (object + action + modality) with boilerplate stripping.
+- **Third-party contamination.** Unrelated pages returned by name-only queries were attributed to the entity. Stances now use only first-party policy/guidance; third-party text must name the entity (or follow an anaphor that does) and is stored as documented practice or secondary report.
+- **Evidence inflation.** One sentence matching five tags was five rows. Evidence is now one row per unique sentence per entity per run, tags in a join table, near-duplicates collapsed.
+- **Null-provider `NO_RELEVANT_GUIDANCE`.** Without an API key, no-op searches counted as completed searches, producing negative findings. Searches are skipped without a real provider and coverage requires real core searches; regression test added.
+- **403/bot blocks recorded as `failed` with no error.** Responses are now classified (`blocked`, `rate_limited`, `robots_disallowed`, `server_error`, `timeout`, …) and inaccessible classes count against coverage.
+- **Migration atomicity.** `executescript` committed implicitly; migrations now run statement-by-statement inside one transaction each and roll back on failure.
+- `Database.execute` turned named (dict) parameters into a tuple of keys.
+- Fetcher deadlock risk (pacing waited on the robots lock while robots.txt was being fetched); fractional `Crawl-delay` was ignored.
+
+### Added
+- Versioned migration framework (`schema_migrations`), auto-backup before migrating, legacy v0.2 runs labeled `engine_version='0.2'` and excluded from reports.
+- Hardened fetcher: DNS + connected-peer SSRF checks (rebinding), IPv4-mapped/6to4/Teredo unwrapping, numeric-host rejection, port allowlist, credential-URL rejection, no proxy env, content-type gate before buffering, streaming size cap, retries with jittered backoff for transport errors/429/5xx, Retry-After, RFC 9309 robots semantics (5xx = disallow), Crawl-delay, per-host circuit breaker, `fetch_safe`.
+- Search broker: retries, auth-error stop, Serper credit tiers (1 credit ≤10 results, 2 above; provider-reported credits used when present), `--max-searches` (per invocation) plus cumulative run budget, `--refresh-search`, concurrent identical-query coalescing, `produced_evidence` and latency in the ledger, key redaction.
+- Run lifecycle: `run_items` checkpoints, resume by run id, `nsmpa resume`, graceful Ctrl+C (first = finish and checkpoint, second = cancel), budget stops recorded as `budget_exhausted`.
+- Dashboard v2 (Serper, Results, Fetching, Timing panels, ETA, last checkpoint, recent discoveries); non-TTY heartbeat; `--quiet` / `--verbose`.
+- Main-content extraction (nav/header/footer/aside/cookie removal, encoding detection, lxml), content-addressed immutable snapshots of raw bytes and normalized text.
+- Evidence engine: statement types and directions, evidence classes (written policy, editorial statement, documented practice, professional guidance, secondary report), authority/relevance/similarity scores, classifier cues stored per excerpt.
+- Transparent similarity model with per-factor matches and configurable weights (four new factors).
+- Stance v2 with strongest supportive/adverse excerpts, coverage record, policy-vs-practice contradiction flags, technical summary.
+- Research planner v2: tiered adaptive queries (tier 1 always; tier 2 on signal / guidance orgs / deep; tier 3 deep), free first-party homepage policy-link discovery, bounded entity concurrency.
+- Discovery v2: specified query ladder with early stop, free site inspection between ladder steps, candidate homepage verification (student identity vs institutional PR), ambiguity detection, cleaned publication names, relationship and discovery method, human/manual verifications never overwritten.
+- Human review queue with documented priority scoring; `review`, `verify-evidence`.
+- Validation gates and `validate`; national `report` (Markdown/JSON/CSV) with peer groups (WA, Eastern WA, EWU comparables proxy, control, region, size, R1/R2, core stratum, imported attributes) and precedent tables.
+- Professional universe provenance (`entity_sources`), domain-level merge on import, `merge-duplicates`, `import-peer-attributes`.
+- Commands: `doctor`, `status` (expanded), `runs`, `query-stats`, `errors`, `resume`, `validate`, `report`, `review`, `verify-evidence`, `version`; `.env` loading; `./config.yml` auto-detected.
+- SQL views: `v_institution_peer`, `v_evidence_unique`, `v_cohort_stance_counts`, `v_query_usefulness`.
+- Test suite expanded from 18 to 139 tests (fetcher/SSRF, statements, pipeline, budgets, resume, Ctrl+C, migrations, exports, report gating); no live credits used.
+
 ## 0.2.0
 
 - Expanded from student-only policy audit to three separate journalism research cohorts.

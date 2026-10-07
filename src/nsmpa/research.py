@@ -680,7 +680,8 @@ async def research_all(db: Database, settings: Settings, run_id: str, cohort: st
     queue: asyncio.Queue = asyncio.Queue()
     for r in todo:
         queue.put_nowait(r)
-    per_entity = settings.research_max_searches_per_entity
+    per_entity = (max(settings.research_max_searches_per_entity, settings.research_deep_max_searches_per_entity)
+                  if settings.research_depth == "deep" else settings.research_max_searches_per_entity)
     with dash:
         dash.update(completed=len(rows) - len(todo), skipped_done=len(rows) - len(todo), budget_limit=max_searches)
         stop.on_stop(dash.notice)

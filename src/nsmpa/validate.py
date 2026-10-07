@@ -29,7 +29,9 @@ def latest_stances_sql(run_id: str | None) -> tuple[str, list]:
     if run_id:
         return ("SELECT s.* FROM entity_stances s WHERE s.run_id=? AND s.stance_version='0.3'", [run_id])
     return ("""SELECT s.* FROM entity_stances s
-               JOIN (SELECT entity_id, MAX(id) mid FROM entity_stances WHERE stance_version='0.3' GROUP BY entity_id) m
+               JOIN (SELECT entity_id, MAX(id) mid FROM entity_stances
+                     WHERE stance_version='0.3' AND run_id NOT IN (SELECT id FROM research_runs WHERE status='excluded')
+                     GROUP BY entity_id) m
                  ON m.mid=s.id""", [])
 
 
@@ -80,7 +82,7 @@ def student_discovery_metrics(db: Database) -> dict:
     core = db.scalar("SELECT COUNT(*) FROM v_institution_peer WHERE included=1 AND core_stratum=1", default=None)
     attempted = db.scalar(
         "SELECT COUNT(DISTINCT item_key) FROM run_items ri JOIN research_runs rr ON rr.id=ri.run_id "
-        "WHERE ri.item_type='institution' AND ri.status='done'")
+        "WHERE ri.item_type='institution' AND ri.status='done' AND rr.status!='excluded'")
     identified = db.scalar(
         "SELECT COUNT(DISTINCT p.unitid) FROM publications p JOIN institutions i ON i.unitid=p.unitid "
         "WHERE i.included=1 AND p.is_primary=1 AND p.verification_status NOT LIKE 'human_rej%'")
@@ -131,7 +133,8 @@ def cohort_metrics(db: Database, settings: Settings, cohort: str, run_id: str | 
     undetermined = counts.get("UNDETERMINED", 0)
     reviewed = sum(1 for r in rows if r["stance"] in DETERMINATE and (r["review_status"] or "unreviewed") != "unreviewed")
     mean_conf = (sum(r["confidence"] for r in rows if r["stance"] in DETERMINATE) / determinate) if determinate else None
-    run_filter = "AND e.run_id=?" if run_id else ""
+    excluded = "(SELECT id FROM research_runs WHERE status='excluded')"
+    run_filter = "AND e.run_id=?" if run_id else f"AND e.run_id NOT IN {excluded}"
     rp = [run_id] if run_id else []
     ev_total = db.scalar(f"SELECT COUNT(*) FROM evidence_items e WHERE e.cohort=? {run_filter}", [cohort] + rp)
     ev_dup = db.scalar(f"SELECT COUNT(*) FROM evidence_items e WHERE e.cohort=? AND e.duplicate_of IS NOT NULL {run_filter}", [cohort] + rp)
@@ -140,7 +143,8 @@ def cohort_metrics(db: Database, settings: Settings, cohort: str, run_id: str | 
                        f"AND e.verification_status='verified' {run_filter}", [cohort] + rp)
     pg = db.execute(
         f"SELECT COUNT(*) n, SUM(p.access_class='ok') ok FROM research_pages p JOIN research_entities re ON re.id=p.entity_id "
-        f"WHERE re.cohort=? AND p.first_party=1 {'AND p.run_id=?' if run_id else ''}", [cohort] + rp).fetchone()
+        f"WHERE re.cohort=? AND p.first_party=1 {'AND p.run_id=?' if run_id else f'AND p.run_id NOT IN {excluded}'}",
+        [cohort] + rp).fetchone()
     crawl_success = _ratio(pg["ok"] or 0, pg["n"] or 0)
     m = CohortMetrics(cohort, COHORT_LABELS.get(cohort, cohort), denominator, note, researched, determinate, counts)
     m.metrics = {
