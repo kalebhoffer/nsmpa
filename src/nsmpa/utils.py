@@ -1,0 +1,133 @@
+from __future__ import annotations
+
+import hashlib
+import ipaddress
+import re
+import socket
+from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
+
+TRACKING_PARAMS = {
+    "fbclid", "gclid", "mc_cid", "mc_eid", "ref", "source", "utm_campaign", "utm_content",
+    "utm_medium", "utm_source", "utm_term",
+}
+
+BLOCKED_HOST_SUFFIXES = (
+    "facebook.com", "instagram.com", "linkedin.com", "tiktok.com", "x.com", "twitter.com",
+    "youtube.com", "youtu.be", "wikipedia.org", "reddit.com", "amazon.com",
+)
+
+
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
+
+
+def ensure_scheme(url: str | None) -> str | None:
+    if not url:
+        return None
+    url = url.strip()
+    if not url:
+        return None
+    if not re.match(r"^https?://", url, flags=re.I):
+        url = "https://" + url
+    return url
+
+
+def normalize_url(url: str, base: str | None = None) -> str | None:
+    """Normalize an HTTP(S) URL while safely rejecting malformed links."""
+    try:
+        if not isinstance(url, str):
+            return None
+        url = url.strip()
+        if not url or len(url) > 8192:
+            return None
+        if base:
+            url = urljoin(base, url)
+        parts = urlsplit(url.strip())
+        scheme = parts.scheme.lower()
+        if scheme not in {"http", "https"}:
+            return None
+        host_value = parts.hostname
+        if not host_value:
+            return None
+        host = host_value.lower().rstrip(".")
+        port = parts.port
+        netloc = host
+        if ":" in host and not host.startswith("["):
+            netloc = f"[{host}]"
+        if port and not ((scheme == "http" and port == 80) or (scheme == "https" and port == 443)):
+            netloc = f"{netloc}:{port}"
+        path = re.sub(r"/{2,}", "/", parts.path or "/")
+        if path != "/" and path.endswith("/"):
+            path = path[:-1]
+        query_pairs = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
+                       if k.lower() not in TRACKING_PARAMS]
+        query = urlencode(query_pairs, doseq=True)
+        return urlunsplit((scheme, netloc, path, query, ""))
+    except (ValueError, UnicodeError):
+        return None
+
+
+def registrableish_domain(url: str) -> str:
+    host = (urlsplit(url).hostname or "").lower()
+    return host[4:] if host.startswith("www.") else host
+
+
+def is_blocked_social_or_aggregator(url: str) -> bool:
+    host = registrableish_domain(url)
+    return any(host == d or host.endswith("." + d) for d in BLOCKED_HOST_SUFFIXES)
+
+
+def same_site(a: str, b: str) -> bool:
+    ah = registrableish_domain(a)
+    bh = registrableish_domain(b)
+    return ah == bh or ah.endswith("." + bh) or bh.endswith("." + ah)
+
+
+def slugify(text: str, max_len: int = 80) -> str:
+    value = re.sub(r"[^a-zA-Z0-9._-]+", "-", text).strip("-").lower()
+    return value[:max_len] or "item"
+
+
+def safe_snapshot_path(root: Path, publication_id: int, url: str, suffix: str = ".html") -> Path:
+    h = sha256_text(url)[:20]
+    return root / str(publication_id) / f"{h}{suffix}"
+
+
+def host_is_public(host: str) -> bool:
+    """Reject loopback/private/link-local/reserved destinations to limit SSRF risk."""
+    host = host.lower().rstrip(".")
+    if host in {"localhost", "localhost.localdomain"} or host.endswith(".local"):
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+        return ip.is_global
+    except ValueError:
+        return True
+
+
+def resolved_host_is_public(host: str) -> bool:
+    if not host_is_public(host):
+        return False
+    try:
+        infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+    except socket.gaierror:
+        return False
+    addresses = {info[4][0] for info in infos}
+    if not addresses:
+        return False
+    for addr in addresses:
+        try:
+            if not ipaddress.ip_address(addr).is_global:
+                return False
+        except ValueError:
+            return False
+    return True
+
+
+def compact_ws(text: str) -> str:
+    return re.sub(r"\s+", " ", text or "").strip()

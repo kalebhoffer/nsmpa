@@ -1,0 +1,29 @@
+database_path: output/nsmpa.sqlite3
+output_dir: output
+user_agent: "NSMPA/0.1 (National Student Media Policy Audit; contact=kaleb.hoffer@gmail.com)"
+respect_robots_txt: true
+request_timeout_seconds: 20
+connect_timeout_seconds: 10
+max_retries: 3
+max_response_bytes: 10000000
+per_host_delay_seconds: 1.5
+max_concurrency: 16
+max_per_host_concurrency: 2
+crawl_max_pages_per_publication: 250
+crawl_max_depth: 4
+sitemap_max_urls: 3000
+policy_candidate_limit: 80
+search_provider: auto
+search_results_per_query: 8
+publication_confidence_threshold: 0.60
+save_html_snapshots: true
+snapshot_dir: output/snapshots
+allow_pdf: true
+allowed_states: []
+institution_filters:
+  include_four_year: true
+  include_two_year: false
+  include_less_than_two_year: false
+  include_public: true
+  include_private_nonprofit: true
+  include_private_for_profit: false

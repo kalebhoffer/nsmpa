@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+output/
+*.sqlite
+*.sqlite3
+.pytest_cache/
+.ruff_cache/
+HD*.zip

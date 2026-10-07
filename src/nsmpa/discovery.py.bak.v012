@@ -1,0 +1,185 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import re
+from urllib.parse import urlsplit
+
+from bs4 import BeautifulSoup
+
+from .config import Settings
+from .db import Database
+from .fetch import HardenedFetcher
+from .models import SearchResult
+from .search import SearchProvider, get_search_provider
+from .utils import is_blocked_social_or_aggregator, normalize_url, registrableish_domain, same_site
+
+NEWS_TERMS = re.compile(r"\b(student (?:newspaper|news|media|press)|newspaper|newsroom|campus news|independent student)\b", re.I)
+BAD_TERMS = re.compile(r"\b(athletics|admissions|alumni|bookstore|jobs|directory|library catalog)\b", re.I)
+
+
+def _name_tokens(name: str) -> list[str]:
+    stop = {"university", "college", "the", "of", "at", "and", "campus", "system"}
+    tokens = [t.lower() for t in re.findall(r"[A-Za-z0-9]+", name) if len(t) >= 3 and t.lower() not in stop]
+    return tokens[:8]
+
+
+def score_candidate(inst_name: str, inst_website: str | None, result: SearchResult) -> tuple[float, list[str]]:
+    url = normalize_url(result.url)
+    if not url or is_blocked_social_or_aggregator(url):
+        return 0.0, ["blocked_or_invalid_domain"]
+    hay = f"{result.title} {result.snippet} {url}".lower()
+    reasons: list[str] = []
+    score = 0.0
+    if NEWS_TERMS.search(hay):
+        score += 0.38
+        reasons.append("student_news_terms")
+    tokens = _name_tokens(inst_name)
+    matched = sum(1 for t in tokens if t in hay)
+    if tokens and matched:
+        frac = matched / len(tokens)
+        score += min(0.30, 0.10 + 0.30 * frac)
+        reasons.append(f"institution_name_tokens:{matched}/{len(tokens)}")
+    if inst_website and same_site(inst_website, url):
+        score += 0.18
+        reasons.append("same_site_as_institution")
+    path = urlsplit(url).path.lower()
+    if any(hint in path for hint in ("news", "newspaper", "student-media", "studentmedia", "press")):
+        score += 0.12
+        reasons.append("news_like_url")
+    if BAD_TERMS.search(hay):
+        score -= 0.25
+        reasons.append("bad_context_terms")
+    if result.rank:
+        score += max(0.0, 0.08 - (result.rank - 1) * 0.01)
+        reasons.append(f"search_rank:{result.rank}")
+    return max(0.0, min(score, 1.0)), reasons
+
+
+async def institution_site_candidates(fetcher: HardenedFetcher, website: str, inst_name: str) -> list[SearchResult]:
+    """Probe the institution site for student-media links without broad crawling."""
+    try:
+        r = await fetcher.fetch(website)
+    except Exception:
+        return []
+    if r.status_code >= 400 or "html" not in r.content_type:
+        return []
+    soup = BeautifulSoup(r.content.decode("utf-8", errors="replace"), "html.parser")
+    out: list[SearchResult] = []
+    for a in soup.find_all("a", href=True):
+        text = " ".join(a.stripped_strings)
+        href = normalize_url(str(a.get("href")), r.final_url)
+        if not href or is_blocked_social_or_aggregator(href):
+            continue
+        if NEWS_TERMS.search(text) or re.search(r"student.?media|newspaper|campus.?news", href, re.I):
+            out.append(SearchResult(url=href, title=text, snippet=f"Link from {inst_name} homepage", rank=0, provider="institution_site", query=website))
+    # Keep domain-diverse candidates first.
+    unique: dict[str, SearchResult] = {}
+    for item in out:
+        unique.setdefault(registrableish_domain(item.url), item)
+    return list(unique.values())[:20]
+
+
+async def discover_institution(
+    db: Database,
+    settings: Settings,
+    fetcher: HardenedFetcher,
+    provider: SearchProvider,
+    row,
+) -> int:
+    unitid, name, website = row["unitid"], row["name"], row["website"]
+    results: list[SearchResult] = []
+    if website:
+        results.extend(await institution_site_candidates(fetcher, website, name))
+    queries = [
+        f'"{name}" student newspaper',
+        f'"{name}" student media newspaper',
+        f'"{name}" newspaper editorial policy',
+    ]
+    for query in queries:
+        try:
+            results.extend(await provider.search(query, settings.search_results_per_query))
+        except Exception as exc:
+            db.execute(
+                "INSERT INTO errors(unitid,stage,error_type,message,retryable) VALUES(?,?,?,?,1)",
+                (unitid, "discovery_search", type(exc).__name__, str(exc)),
+            )
+            db.conn.commit()
+
+    inserted = 0
+    best_by_url: dict[str, tuple[SearchResult, float, list[str]]] = {}
+    for result in results:
+        url = normalize_url(result.url)
+        if not url:
+            continue
+        result.url = url
+        score, reasons = score_candidate(name, website, result)
+        if score <= 0:
+            continue
+        prev = best_by_url.get(url)
+        if prev is None or score > prev[1]:
+            best_by_url[url] = (result, score, reasons)
+
+    with db.transaction():
+        for url, (result, score, reasons) in best_by_url.items():
+            db.conn.execute(
+                """
+                INSERT INTO publication_candidates(unitid,url,domain,title,snippet,source,query,score,score_reasons_json)
+                VALUES(?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(unitid,url) DO UPDATE SET
+                  title=excluded.title,snippet=excluded.snippet,source=excluded.source,query=excluded.query,
+                  score=MAX(publication_candidates.score, excluded.score),score_reasons_json=excluded.score_reasons_json,
+                  updated_at=CURRENT_TIMESTAMP
+                """,
+                (unitid, url, registrableish_domain(url), result.title, result.snippet,
+                 result.provider, result.query, score, json.dumps(reasons)),
+            )
+            inserted += 1
+    return inserted
+
+
+async def discover_all(db: Database, settings: Settings, limit: int | None = None) -> dict[str, int]:
+    provider = get_search_provider(settings.search_provider, settings.user_agent)
+    sql = "SELECT unitid,name,website FROM institutions WHERE included=1 ORDER BY unitid"
+    params: tuple = ()
+    if limit:
+        sql += " LIMIT ?"
+        params = (limit,)
+    rows = db.execute(sql, params).fetchall()
+    candidates = 0
+    async with HardenedFetcher(settings) as fetcher:
+        # Conservative batching avoids hammering search APIs and institution sites.
+        for row in rows:
+            candidates += await discover_institution(db, settings, fetcher, provider, row)
+    return {"institutions": len(rows), "candidates": candidates, "provider": provider.name}
+
+
+def promote_candidates(db: Database, threshold: float) -> dict[str, int]:
+    rows = db.execute(
+        """
+        SELECT c.*, i.name AS institution_name
+        FROM publication_candidates c JOIN institutions i ON i.unitid=c.unitid
+        WHERE c.score>=? AND c.status!='rejected'
+        ORDER BY c.unitid,c.score DESC,c.id
+        """, (threshold,)
+    ).fetchall()
+    promoted = 0
+    seen_unitids: set[str] = set()
+    with db.transaction():
+        for row in rows:
+            if row["unitid"] in seen_unitids:
+                continue
+            seen_unitids.add(row["unitid"])
+            db.conn.execute(
+                """
+                INSERT INTO publications(unitid,name,homepage_url,domain,confidence,verification_status,is_primary)
+                VALUES(?,?,?,?,?,'auto',1)
+                ON CONFLICT(unitid,domain) DO UPDATE SET
+                  homepage_url=excluded.homepage_url,confidence=MAX(publications.confidence,excluded.confidence),
+                  updated_at=CURRENT_TIMESTAMP
+                """,
+                (row["unitid"], row["title"] or row["institution_name"], row["url"], row["domain"], row["score"]),
+            )
+            db.conn.execute("UPDATE publication_candidates SET status='promoted' WHERE id=?", (row["id"],))
+            promoted += 1
+    return {"promoted": promoted}

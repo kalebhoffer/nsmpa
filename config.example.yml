@@ -1,0 +1,50 @@
+database_path: output/nsmpa.sqlite3
+output_dir: output
+user_agent: "NSMPA/0.2 (National Journalism Policy Audit; contact=research@example.org)"
+respect_robots_txt: true
+request_timeout_seconds: 20
+connect_timeout_seconds: 10
+max_retries: 3
+max_response_bytes: 10000000
+per_host_delay_seconds: 1.5
+max_concurrency: 16
+max_per_host_concurrency: 2
+crawl_max_pages_per_publication: 250
+crawl_max_depth: 4
+sitemap_max_urls: 3000
+policy_candidate_limit: 80
+search_provider: auto
+search_results_per_query: 8
+publication_confidence_threshold: 0.60
+publication_early_stop_threshold: 0.84
+search_cache_days: 3650
+search_credit_budget_per_run: 50000
+discovery_max_searches_per_institution: 4
+research_max_searches_per_entity: 18
+research_max_targets_per_entity: 30
+research_fetch_top_targets: 18
+research_candidate_threshold: 0.28
+save_html_snapshots: true
+snapshot_dir: output/snapshots
+research_snapshot_dir: output/research_snapshots
+allow_pdf: true
+allowed_states: []
+institution_filters:
+  include_four_year: true
+  include_two_year: false
+  include_less_than_two_year: false
+  include_public: true
+  include_private_nonprofit: true
+  include_private_for_profit: false
+case_profile:
+  name: "post-publication relief case"
+  student_context_weight: 8
+  criminal_allegation_weight: 10
+  dismissed_charges_weight: 15
+  vacated_conviction_weight: 15
+  sealed_or_expunged_weight: 12
+  long_time_passed_weight: 8
+  search_prominence_weight: 10
+  deindex_relief_weight: 20
+  anonymization_weight: 12
+  update_context_weight: 6
