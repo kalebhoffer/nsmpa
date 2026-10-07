@@ -111,7 +111,7 @@ class Settings(BaseModel):
     publication_early_stop_threshold: float = Field(0.84, ge=0, le=1)
     search_cache_days: int = Field(3650, ge=0, le=36500)
     search_credit_budget_per_run: int = Field(50_000, ge=1, le=5_000_000)
-    discovery_max_searches_per_institution: int = Field(4, ge=1, le=12)
+    discovery_max_searches_per_institution: int = Field(5, ge=1, le=12)
     research_max_searches_per_entity: int = Field(18, ge=1, le=100)
     research_max_targets_per_entity: int = Field(30, ge=1, le=250)
     research_fetch_top_targets: int = Field(18, ge=1, le=100)
@@ -136,6 +136,7 @@ class Settings(BaseModel):
     publication_ambiguity_margin: float = Field(0.08, ge=0, le=1)
     # --- v0.3 research -------------------------------------------------------------------
     research_depth: Literal["quick", "standard", "deep"] = "standard"
+    research_deep_max_searches_per_entity: int = Field(50, ge=1, le=200)
     research_concurrency: int = Field(3, ge=1, le=32)
     research_first_party_link_pages: int = Field(6, ge=0, le=40)
     research_max_evidence_per_page: int = Field(60, ge=5, le=500)

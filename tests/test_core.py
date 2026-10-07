@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import json
 from pathlib import Path
 
 from nsmpa.classify import classify_publication
@@ -161,7 +160,7 @@ def test_url_security_helpers():
     assert host_is_public("example.com") is True
     assert normalize_url("HTTPS://Example.COM/a/?utm_source=x&b=2#frag") == "https://example.com/a?b=2"
 
-from nsmpa.crawl import crawl_publication, create_run
+from nsmpa.crawl import crawl_publication
 from nsmpa.models import FetchResult
 
 
