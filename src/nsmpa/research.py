@@ -609,13 +609,16 @@ class EntityResearcher:
         if not entity_site(entity):
             return {"stance": "UNDETERMINED", "reason": "no homepage/domain"}
         depth = self.settings.research_depth
-        used, signal = await self._search_tier(entity, plan_queries(self.settings, entity, 1), budget_per_entity)
+        searching = self.broker.provider.name != "none"
+        used, signal = 0, False
+        if searching:
+            used, signal = await self._search_tier(entity, plan_queries(self.settings, entity, 1), budget_per_entity)
         await self._homepage_links(entity)
-        escalate = depth == "deep" or signal or entity["cohort"] in GUIDANCE_COHORTS
+        escalate = searching and (depth == "deep" or signal or entity["cohort"] in GUIDANCE_COHORTS)
         if depth != "quick" and escalate and not self.stop.force:
             u2, _ = await self._search_tier(entity, plan_queries(self.settings, entity, 2), budget_per_entity - used)
             used += u2
-        if depth == "deep" and not self.stop.force:
+        if searching and depth == "deep" and not self.stop.force:
             u3, _ = await self._search_tier(entity, plan_queries(self.settings, entity, 3), budget_per_entity - used)
             used += u3
         await self._fetch_targets(entity)
@@ -736,6 +739,7 @@ async def research_all(db: Database, settings: Settings, run_id: str, cohort: st
         except asyncio.CancelledError:
             stop_reason = stop_reason or "force-cancelled by user"
         finally:
+            dash.update(phase="stopped" if stop.stop_requested else "complete", current="-", active=0)
             uninstall()
             if own_fetcher:
                 await fetcher.close()

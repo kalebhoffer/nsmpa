@@ -52,8 +52,8 @@ BAD_TERMS = re.compile(
 # candidate vocabulary because student newspapers are often linked from student-life hubs.
 NAV_TERMS = re.compile(
     r"(?:student[-_/ ]?(?:media|newspaper|news|press|publication|publications|life|activities|"
-    r"organizations?|clubs)|campus[-_/ ]?(?:media|newspaper|life)|journalism|"
-    r"newspaper|publications?)",
+    r"organizations?|clubs|involvement|engagement)|campus[-_/ ]?(?:media|newspaper|life)|journalism|"
+    r"newspaper|publications?|clubs?[-_ &]+(?:and[-_ ])?org|get[-_ ]involved|involvement|registered[-_ ]student)",
     re.I,
 )
 GENERIC_NEWS_PATH = re.compile(r"/(?:news|newsroom|pressroom|press|media-relations)(?:/|$)", re.I)
@@ -234,6 +234,13 @@ async def institution_site_candidates(fetcher: HardenedFetcher, website: str, in
 
     queue: deque[tuple[str, int, str]] = deque([(root, 0, "institution_homepage")])
     queued: set[str] = {root}
+    # Cheap probes of conventional student-media locations (404s are recorded, not errors).
+    origin = f"{urlsplit(root).scheme}://{urlsplit(root).netloc}"
+    for path in ("/student-media", "/studentmedia", "/student-media/", "/student-life/student-media"):
+        probe = prepare_request_url(origin + path)
+        if probe and probe not in queued:
+            queued.add(probe)
+            queue.append((probe, 1, "institution_path_probe"))
     visited: set[str] = set()
     out: list[SearchResult] = []
 
@@ -248,9 +255,10 @@ async def institution_site_candidates(fetcher: HardenedFetcher, website: str, in
 
     while queue and len(visited) < max_pages:
         page_url, depth, source = queue.popleft()
-        if page_url in visited:
+        ident = normalize_url(page_url) or page_url  # /a and /a/ are one page for budgeting purposes
+        if ident in visited:
             continue
-        visited.add(page_url)
+        visited.add(ident)
         r = await fetcher.fetch_safe(page_url)
         if r.access_class != "ok" or "html" not in (r.content_type or "html"):
             continue
@@ -617,6 +625,7 @@ async def discover_all(
         except asyncio.CancelledError:
             stop_reason = stop_reason or "force-cancelled by user"
         finally:
+            dash.update(phase="stopped" if stop.stop_requested else "complete", current="-")
             uninstall()
             if own_fetcher:
                 await fetcher.close()
