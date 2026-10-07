@@ -139,8 +139,8 @@ class Database:
             self.conn.rollback()
             raise
 
-    def execute(self, sql: str, params: Iterable[Any] = ()) -> sqlite3.Cursor:
-        return self.conn.execute(sql, tuple(params))
+    def execute(self, sql: str, params: Iterable[Any] | dict[str, Any] = ()) -> sqlite3.Cursor:
+        return self.conn.execute(sql, params if isinstance(params, dict) else tuple(params))
 
     def executemany(self, sql: str, rows: Iterable[Iterable[Any]]) -> None:
         with self.transaction():

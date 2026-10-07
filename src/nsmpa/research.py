@@ -1,128 +1,286 @@
+"""Cross-cohort policy, precedent and guidance research engine (v0.3).
+
+Per entity:
+  1. Tier-1 searches (always): relief policy, editorial/standards policy, adverse archive language.
+  2. First-party link discovery from the entity homepage (free: no search credits).
+  3. Adaptive escalation to tier 2 (changed-circumstance precedents, right-to-be-forgotten /
+     search-engine harm, removal-request handling, third-party coverage of the entity) when
+     tier 1 shows signal, for guidance organizations, or at ``research_depth: deep``.
+     Tier 3 (deep only) issues the individual exact-phrase queries.
+  4. Fetch top first-party targets and a few third-party targets that name the entity.
+  5. Extract sentence-level evidence, score similarity, classify stance, enqueue review.
+Every entity is a checkpointed ``run_items`` row; Ctrl+C finishes in-flight entities.
+"""
 from __future__ import annotations
 
+import asyncio
 import csv
 import json
 import re
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .classify import CASE_BY_CASE, CHANGED, NEGATIVE_RELIEF, POSITIVE_RELIEF, STRICT_ARCHIVE, UPDATE_ONLY, _support_value
 from .config import Settings
 from .db import Database
-from .extract import analyze_page
+from .evidence import STATEMENT_RELEVANCE, extract_evidence
+from .extract import extract_main_text
 from .fetch import HardenedFetcher
 from .progress import RunDashboard
-from .search import SearchBroker, SearchBudgetExceeded, get_search_provider
-from .utils import (
-    is_blocked_social_or_aggregator,
-    normalize_url,
-    registrableish_domain,
-    safe_snapshot_path,
-    sha256_bytes,
-    sha256_text,
-    same_site,
-)
+from .review import enqueue_entity_review
+from .runs import (StopController, create_or_resume_run, done_keys, finish_run, mark_item, register_items)
+from .search import SearchAuthError, SearchBroker, SearchBudgetExceeded, get_search_provider
+from .similarity import score_similarity
+from .snapshots import store_raw, store_text
+from .stance import classify_entity, store_stance
+from .utils import (is_blocked_social_or_aggregator, normalize_url, prepare_request_url, registrableish_domain,
+                    same_site)
 
 COHORTS = {"student_media", "professional_newsroom", "support_org", "press_association", "journalism_school", "other"}
+GUIDANCE_COHORTS = {"support_org", "press_association", "journalism_school"}
 
-POLICY_TERMS_RE = re.compile(
-    r"\b(unpublish|de[- ]?index|anonymi[sz]|take[- ]?down|content removal|editorial policy|ethics|"
-    r"corrections? policy|archive policy|historical record|right to be forgotten|changed circumstances|"
-    r"charges? dismissed|charges? dropped|expung|vacat|acquitt|sealed record|reputational harm)\b",
-    re.I,
-)
-STRICT_TERMS_RE = re.compile(r"\b(do not remove|will not remove|never remove|never unpublish|archive integrity|permanent archive|historical record)\b", re.I)
-CASE_TERMS_RE = re.compile(r"\b(case[- ]by[- ]case|editorial discretion|individual circumstances)\b", re.I)
-CRIMINAL_TERMS_RE = re.compile(r"\b(arrest|criminal|charge|charged|conviction|plea|prosecution|defendant|suspect)\b", re.I)
-VACATED_RE = re.compile(r"\b(vacat(?:e|ed|ur)|set aside|overturned conviction|withdrawn plea)\b", re.I)
-TIME_RE = re.compile(r"\b(?:after|over|more than)\s+(\d{1,2})\s+years?\b", re.I)
+POLICY_PAGE_RE = re.compile(
+    r"(?:polic(?:y|ies)|ethic|standards|guidelines|code[-_ ]of|corrections?|unpublish|takedown|take-down|removal|"
+    r"remove|de-?index|anonymi|archive[-_ ]polic|editorial[-_ ]polic|handbook|bylaws|faq|principles|"
+    r"right[-_ ]to[-_ ]be[-_ ]forgotten|fresh[-_ ]start|privacy)", re.I)
+ABOUT_PAGE_RE = re.compile(r"(?:^|/)(?:about|about-us|who-we-are|masthead|staff|contact|mission|our-team)(?:/|$|\.)", re.I)
+ARTICLE_PATH_RE = re.compile(r"/(?:19|20)\d{2}/\d{1,2}/|/\d{4}-\d{2}-\d{2}|/article_|/story/|/news/[^/]{25,}", re.I)
+SIGNAL_RE = re.compile(r"\b(?:unpublish|de-?index|anonymi[sz]|take ?down|removal|remove (?:an? |the )?(?:article|story|name)|"
+                       r"editorial polic|ethics|corrections polic|archive polic|historical record|case[- ]by[- ]case|"
+                       r"right to be forgotten|expung|charges (?:were )?dismissed)\b", re.I)
+KNOWN_JOURNALISM_DOMAINS = {
+    "poynter.org", "splc.org", "rcfp.org", "niemanlab.org", "niemanreports.org", "cjr.org", "spj.org",
+    "journalists.org", "americanpressinstitute.org", "rjionline.org", "studentpress.org", "collegemedia.org",
+    "inn.org", "lionpublishers.com", "ap.org", "apnews.com", "nytimes.com", "washingtonpost.com", "trustingnews.org",
+    "mediaengagement.org", "freedom.press", "freepress.net", "pressgazette.co.uk",
+}
 
 
 @dataclass(frozen=True)
 class QuerySpec:
+    tier: int
     purpose: str
     topic: str
     template: str
-    min_score: float = 0.28
+    third_party: bool = False
 
 
-BASE_QUERY_SPECS = [
-    QuerySpec("policy", "relief", 'site:{domain} (unpublish OR deindex OR "de-index" OR takedown OR "content removal")'),
-    QuerySpec("policy", "editorial_policy", 'site:{domain} ("editorial policy" OR "editorial policies" OR ethics OR standards OR "corrections policy")'),
-    QuerySpec("policy", "changed_circumstances", 'site:{domain} ("charges dismissed" OR "charges dropped" OR expunged OR vacated OR acquitted OR "changed circumstances")'),
-    QuerySpec("adverse", "archive_restriction", 'site:{domain} ("do not remove" OR "will not remove" OR "never unpublish" OR "historical record" OR "archive integrity")'),
-    QuerySpec("precedent", "criminal_outcome", 'site:{domain} ("charges dismissed" OR "charges dropped" OR expunged OR vacated OR acquitted) (article OR story OR archive OR update)'),
-    QuerySpec("precedent", "removal_request", '"{name}" ("unpublish request" OR "remove article" OR "remove story" OR deindex OR anonymize)'),
-    QuerySpec("precedent", "search_prominence", 'site:{domain} (Google OR "search engine" OR "search results") (deindex OR archive OR remove OR anonymize)'),
-    QuerySpec("adverse", "rejection", '"{name}" ("will not remove" OR "do not remove" OR "declined to remove" OR "refused to remove")'),
+TIER1 = [
+    QuerySpec(1, "policy", "relief",
+              'site:{site} (unpublish OR unpublishing OR deindex OR "de-index" OR takedown OR "remove an article" OR anonymize OR "removal request")'),
+    QuerySpec(1, "policy", "editorial_policy",
+              'site:{site} ("editorial policy" OR "ethics policy" OR "corrections policy" OR "archive policy" OR "code of ethics" OR standards)'),
+    QuerySpec(1, "adverse", "archive_restriction",
+              'site:{site} ("never unpublish" OR "do not remove" OR "will not remove" OR "historical record" OR "archive integrity" OR "requests to remove")'),
 ]
-
-SUPPORT_EXTRA_SPECS = [
-    QuerySpec("guidance", "ethics_guidance", 'site:{domain} (unpublishing OR deindexing OR archives OR "right to be forgotten") journalism ethics'),
-    QuerySpec("guidance", "criminal_records", 'site:{domain} (arrest OR "criminal record" OR expunged OR dismissed) (privacy OR harm OR archive OR journalism)'),
-    QuerySpec("guidance", "minimize_harm", 'site:{domain} ("minimize harm" OR "long-term implications" OR permanence) journalism'),
+TIER2 = [
+    QuerySpec(2, "precedent", "changed_outcome",
+              'site:{site} ("charges dismissed" OR "charges dropped" OR "case dismissed" OR expunged OR sealed OR acquitted OR exonerated OR vacated) '
+              '("editor\'s note" OR update OR removed OR anonymized OR unpublished)'),
+    QuerySpec(2, "policy", "digital_permanence",
+              'site:{site} ("right to be forgotten" OR "digital permanence" OR "search engines" OR "reputational harm" OR "case by case") '
+              '(remove OR unpublish OR archive OR name)'),
+    QuerySpec(2, "adverse", "request_handling",
+              'site:{site} ("requests to remove" OR "removal requests" OR "decline removal" OR embarrassment OR reputation) (remove OR unpublish OR delete)'),
+    QuerySpec(2, "precedent", "third_party_practice",
+              '"{name}" (unpublished OR "removed the article" OR "removed the story" OR anonymized OR deindexed OR "declined to remove" OR "refused to remove")',
+              third_party=True),
 ]
+GUIDANCE_SPECS = [
+    QuerySpec(2, "guidance", "unpublishing_guidance",
+              'site:{site} (unpublishing OR deindexing OR "right to be forgotten" OR "unpublish requests") journalism'),
+    QuerySpec(2, "guidance", "criminal_records_guidance",
+              'site:{site} (arrest OR mugshot OR "criminal record" OR expunged OR "charges dismissed") (archive OR unpublish OR update OR name)'),
+    QuerySpec(2, "guidance", "minimize_harm_guidance",
+              'site:{site} ("minimize harm" OR "digital permanence" OR "long-term" OR "search engine") (archive OR unpublish OR remove)'),
+]
+TIER3_TERMS = [
+    ("policy", "unpublish"), ("policy", "unpublishing"), ("policy", "deindex"), ("policy", '"de-index"'),
+    ("policy", "takedown"), ("policy", "removal"), ("policy", "anonymize"), ("policy", '"archive policy"'),
+    ("policy", '"editorial policy"'), ("policy", '"corrections policy"'), ("policy", '"right to be forgotten"'),
+    ("policy", '"case by case" removal'), ("policy", '"reputational harm"'), ("policy", '"digital permanence"'),
+    ("policy", '"search engines"'),
+    ("adverse", '"never unpublish"'), ("adverse", '"do not remove"'), ("adverse", '"historical record"'),
+    ("adverse", '"archive integrity"'), ("adverse", '"requests to remove"'), ("adverse", '"decline removal"'),
+    ("adverse", "embarrassment removal"), ("adverse", "reputation removal"),
+    ("precedent", '"charges dismissed"'), ("precedent", '"charges dropped"'), ("precedent", '"case dismissed"'),
+    ("precedent", '"conviction vacated"'), ("precedent", '"record expunged"'), ("precedent", '"record sealed"'),
+    ("precedent", "acquitted"), ("precedent", "exonerated"), ("precedent", '"plea withdrawn"'),
+    ("precedent", '"arrest record"'), ("precedent", '"changed circumstances"'), ("precedent", "rehabilitation"),
+    ("precedent", '"request to remove"'), ("precedent", '"request to unpublish"'), ("precedent", '"request to deindex"'),
+    ("precedent", '"name removed"'), ("precedent", '"name anonymized"'),
+]
+TIER3 = [QuerySpec(3, p, re.sub(r"\W+", "_", t.strip('"')).strip("_"), f"site:{{site}} {t}") for p, t in TIER3_TERMS]
 
 
-def create_research_run(db: Database, settings: Settings, mode: str = "full", run_id: str | None = None) -> str:
-    rid = run_id or uuid.uuid4().hex
+# --------------------------------------------------------------------------- entity helpers
+
+def entity_site(entity) -> str:
+    """Host (+ path prefix for publications hosted under a university path) for site: queries."""
+    url = entity["homepage_url"] or ""
+    try:
+        p = urlsplit(url)
+    except ValueError:
+        return entity["domain"] or ""
+    host = (p.hostname or entity["domain"] or "").lower()
+    host = host[4:] if host.startswith("www.") else host
+    path = (p.path or "/").rstrip("/")
+    if path and path != "/" and not re.search(r"\.(?:html?|php|aspx?|cshtml)$", path, re.I):
+        return f"{host}{path}"
+    return host
+
+
+def is_first_party(entity, url: str) -> bool:
+    home = entity["homepage_url"]
+    if not home:
+        return bool(entity["domain"]) and registrableish_domain(url).endswith(entity["domain"])
+    if not same_site(home, url):
+        return False
+    try:
+        hp = (urlsplit(home).path or "/").rstrip("/")
+        up = urlsplit(url).path or "/"
+    except ValueError:
+        return False
+    if hp and hp != "/" and not re.search(r"\.(?:html?|php|aspx?|cshtml)$", hp, re.I):
+        # Path-scoped publication (e.g. university.edu/student-media): only pages under that path.
+        return up.startswith(hp)
+    return True
+
+
+def entity_terms(entity) -> list[str]:
+    name = (entity["name"] or "").strip()
+    terms = [name]
+    if name.lower().startswith("the "):
+        terms.append(name[4:])
+    if entity["domain"]:
+        terms.append(entity["domain"])
+    return [t for t in terms if len(t) >= 4]
+
+
+def page_kind(url: str, title: str, is_pdf: bool, is_listing: bool) -> str:
+    try:
+        path = urlsplit(url).path or "/"
+    except ValueError:
+        path = "/"
+    if path in {"", "/"}:
+        return "homepage"
+    if is_listing:
+        return "listing"
+    hay = f"{path} {title}"
+    if POLICY_PAGE_RE.search(hay):
+        return "policy"
+    if ABOUT_PAGE_RE.search(path):
+        return "about"
+    if is_pdf:
+        return "pdf"
+    if ARTICLE_PATH_RE.search(path):
+        return "article"
+    return "other"
+
+
+def evidence_class_for(cohort: str, first_party: bool, about_entity: bool, kind: str, statement_type: str) -> str:
+    practice = statement_type.startswith("practice_")
+    if first_party:
+        if cohort in GUIDANCE_COHORTS:
+            # Guidance orgs describing what *other* newsrooms did are precedent reports, not their own practice.
+            return "secondary_report" if practice else "professional_guidance"
+        if practice:
+            return "documented_practice"
+        return "written_policy" if kind in {"policy", "about"} else "editorial_statement"
+    if about_entity:
+        return "documented_practice" if practice else "secondary_report"
+    return "secondary_report"
+
+
+def authority_for(evidence_class: str, kind: str, url: str) -> float:
+    if evidence_class == "written_policy":
+        return 1.0 if kind == "policy" else 0.9
+    if evidence_class == "professional_guidance":
+        return 1.0 if kind == "policy" else 0.9
+    if evidence_class == "editorial_statement":
+        return 0.8
+    if evidence_class == "documented_practice":
+        return 0.85
+    dom = registrableish_domain(url)
+    if any(dom == d or dom.endswith("." + d) for d in KNOWN_JOURNALISM_DOMAINS):
+        return 0.6
+    if dom.endswith(".edu") or dom.endswith(".gov"):
+        return 0.5
+    return 0.35
+
+
+# --------------------------------------------------------------------------- universe management
+
+def _record_source(db: Database, entity_id: int, source: str, source_key: str, url: str | None, raw: dict,
+                   membership_label: str | None = None) -> None:
     db.execute(
-        "INSERT OR IGNORE INTO research_runs(id,mode,config_json,status) VALUES(?,?,?,'running')",
-        (rid, mode, settings.model_dump_json()),
+        "INSERT INTO entity_sources(entity_id,source,source_key,source_url,membership_label,raw_json) VALUES(?,?,?,?,?,?) "
+        "ON CONFLICT(entity_id,source,source_key) DO UPDATE SET source_url=excluded.source_url,raw_json=excluded.raw_json,"
+        "membership_label=COALESCE(excluded.membership_label,entity_sources.membership_label),imported_at=CURRENT_TIMESTAMP",
+        (entity_id, source, source_key, url, membership_label, json.dumps(raw, sort_keys=True, ensure_ascii=False, default=str)),
     )
-    db.conn.commit()
-    return rid
-
-
-def complete_research_run(db: Database, run_id: str, status: str = "completed") -> None:
-    db.execute("UPDATE research_runs SET completed_at=CURRENT_TIMESTAMP,status=? WHERE id=?", (status, run_id))
-    db.conn.commit()
 
 
 def sync_student_entities(db: Database) -> dict[str, int]:
     rows = db.execute(
         """
-        SELECT p.id AS publication_id,p.name AS publication,p.homepage_url,p.domain,p.confidence,
-               i.unitid,i.name AS institution,i.state
-        FROM publications p JOIN institutions i ON i.unitid=p.unitid
+        SELECT p.id AS publication_id,p.name AS publication,p.homepage_url,p.domain,p.confidence,p.verification_status,
+               p.relationship,p.discovery_method,p.ambiguous,i.unitid,i.name AS institution,i.state
+        FROM publications p JOIN institutions i ON i.unitid=p.unitid WHERE p.is_primary=1
         """
     ).fetchall()
     n = 0
     with db.transaction():
         for r in rows:
             key = f"student_publication:{r['publication_id']}"
+            meta = {"unitid": r["unitid"], "publication_id": r["publication_id"], "confidence": r["confidence"],
+                    "relationship": r["relationship"], "discovery_method": r["discovery_method"], "ambiguous": r["ambiguous"]}
             db.conn.execute(
                 """
-                INSERT INTO research_entities(cohort,source_key,name,homepage_url,domain,state,parent_name,source,verification_status,metadata_json)
-                VALUES('student_media',?,?,?,?,?,?, 'publications_table','synced',?)
+                INSERT INTO research_entities(cohort,source_key,name,homepage_url,domain,state,parent_name,source,verification_status,metadata_json,entity_type)
+                VALUES('student_media',?,?,?,?,?,?,'publications_table',?,?,'student_publication')
                 ON CONFLICT(cohort,source_key) DO UPDATE SET name=excluded.name,homepage_url=excluded.homepage_url,
                   domain=excluded.domain,state=excluded.state,parent_name=excluded.parent_name,metadata_json=excluded.metadata_json,
-                  updated_at=CURRENT_TIMESTAMP
+                  verification_status=excluded.verification_status,updated_at=CURRENT_TIMESTAMP
                 """,
                 (key, r["publication"], r["homepage_url"], r["domain"], r["state"], r["institution"],
-                 db.json({"unitid": r["unitid"], "publication_id": r["publication_id"], "confidence": r["confidence"]})),
+                 r["verification_status"] or "auto", db.json(meta)),
             )
+            eid = db.conn.execute("SELECT id FROM research_entities WHERE cohort='student_media' AND source_key=?", (key,)).fetchone()[0]
+            _record_source(db, eid, "publications_table", key, r["homepage_url"], meta)
             n += 1
     return {"synced": n}
 
 
-def import_entities_csv(db: Database, path: str | Path, cohort: str, source: str = "csv") -> dict[str, int]:
+def import_entities_csv(db: Database, path: str | Path, cohort: str, source: str = "csv",
+                        membership_label: str | None = None) -> dict[str, int]:
+    """Import a directory/membership list. Rows whose domain already exists in the cohort are
+    merged into the existing entity as an additional provenance source (no duplicate entity)."""
     if cohort not in COHORTS:
         raise ValueError(f"Unknown cohort {cohort!r}; choose from {sorted(COHORTS)}")
-    inserted = updated = skipped = 0
+    inserted = merged = updated = skipped = 0
     with open(path, "r", encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
-        for idx, row in enumerate(reader, start=2):
-            name = (row.get("name") or row.get("publication") or "").strip()
-            url = normalize_url((row.get("url") or row.get("homepage_url") or "").strip())
+        for row in reader:
+            row = {(k or "").strip(): (v or "").strip() for k, v in row.items()}
+            name = row.get("name") or row.get("publication") or ""
+            raw_url = row.get("url") or row.get("homepage_url") or row.get("website") or ""
+            url = prepare_request_url(raw_url if raw_url.startswith("http") else f"https://{raw_url}") if raw_url else None
             if not name or not url:
                 skipped += 1
                 continue
-            source_key = (row.get("source_key") or f"{source}:{registrableish_domain(url)}:{name.lower()}").strip()
-            existing = db.execute("SELECT id FROM research_entities WHERE cohort=? AND source_key=?", (cohort, source_key)).fetchone()
-            metadata = {k: v for k, v in row.items() if k not in {"name", "publication", "url", "homepage_url", "source_key", "state", "parent_name"} and v}
+            domain = registrableish_domain(url)
+            source_key = row.get("source_key") or f"{source}:{domain}:{name.lower()}"
+            metadata = {k: v for k, v in row.items() if k not in {"name", "publication", "url", "homepage_url", "website",
+                                                                  "source_key", "state", "parent_name"} and v}
+            by_key = db.execute("SELECT id FROM research_entities WHERE cohort=? AND source_key=?", (cohort, source_key)).fetchone()
+            by_domain = None if by_key else db.execute(
+                "SELECT id FROM research_entities WHERE cohort=? AND domain=? AND merged_into IS NULL ORDER BY id LIMIT 1",
+                (cohort, domain)).fetchone()
+            if by_domain:
+                _record_source(db, int(by_domain["id"]), source, source_key, url, row, membership_label)
+                merged += 1
+                continue
             db.execute(
                 """
                 INSERT INTO research_entities(cohort,source_key,name,homepage_url,domain,state,parent_name,source,verification_status,metadata_json)
@@ -131,332 +289,477 @@ def import_entities_csv(db: Database, path: str | Path, cohort: str, source: str
                   domain=excluded.domain,state=excluded.state,parent_name=excluded.parent_name,metadata_json=excluded.metadata_json,
                   updated_at=CURRENT_TIMESTAMP
                 """,
-                (cohort, source_key, name, url, registrableish_domain(url), row.get("state"), row.get("parent_name"), source, db.json(metadata)),
+                (cohort, source_key, name, url, domain, row.get("state") or None, row.get("parent_name") or None, source, db.json(metadata)),
             )
-            if existing: updated += 1
-            else: inserted += 1
-    db.conn.commit()
-    return {"inserted": inserted, "updated": updated, "skipped": skipped}
-
-
-def _score_target(entity, result, topic: str) -> tuple[float, list[str]]:
-    url = normalize_url(result.url)
-    if not url or is_blocked_social_or_aggregator(url):
-        return 0.0, ["blocked_or_invalid"]
-    hay = f"{result.title} {result.snippet} {url}"
-    score = 0.0
-    reasons: list[str] = []
-    if entity["homepage_url"] and same_site(entity["homepage_url"], url):
-        score += 0.36
-        reasons.append("first_party_domain")
-    else:
-        score += 0.06
-        reasons.append("third_party_result")
-    if POLICY_TERMS_RE.search(hay):
-        score += 0.30
-        reasons.append("policy_terms")
-    if STRICT_TERMS_RE.search(hay):
-        score += 0.22
-        reasons.append("restrictive_terms")
-    if CASE_TERMS_RE.search(hay):
-        score += 0.18
-        reasons.append("case_by_case_terms")
-    if topic in {"criminal_outcome", "changed_circumstances", "criminal_records"} and (CRIMINAL_TERMS_RE.search(hay) or re.search(r"dismiss|expung|vacat|acquitt|seal", hay, re.I)):
-        score += 0.24
-        reasons.append("criminal_outcome_terms")
-    if result.rank:
-        score += max(0.0, 0.10 - (result.rank - 1) * 0.012)
-        reasons.append(f"rank:{result.rank}")
-    if re.search(r"/tag/|/category/|/search/|\?s=", url, re.I):
-        score -= 0.08
-        reasons.append("listing_page_penalty")
-    return max(0.0, min(score, 1.0)), reasons
-
-
-def similarity_score(settings: Settings, excerpt: str, cohort: str) -> float:
-    p = settings.case_profile
-    score = 0.0
-    possible = 0.0
-    def add(weight: float, cond: bool):
-        nonlocal score, possible
-        possible += weight
-        if cond: score += weight
-    add(p.student_context_weight, cohort == "student_media" or bool(re.search(r"\b(student|campus|university|college)\b", excerpt, re.I)))
-    add(p.criminal_allegation_weight, bool(CRIMINAL_TERMS_RE.search(excerpt)))
-    add(p.dismissed_charges_weight, bool(re.search(r"\b(charges? (?:were |was )?(?:dismissed|dropped)|case (?:was )?dismissed)\b", excerpt, re.I)))
-    add(p.vacated_conviction_weight, bool(VACATED_RE.search(excerpt)))
-    add(p.sealed_or_expunged_weight, bool(re.search(r"\b(expung|seal(?:ed|ing)? record)\b", excerpt, re.I)))
-    add(p.long_time_passed_weight, bool(TIME_RE.search(excerpt)))
-    add(p.search_prominence_weight, bool(re.search(r"\b(search engine|google|search results?|search prominence)\b", excerpt, re.I)))
-    add(p.deindex_relief_weight, bool(re.search(r"\bde[- ]?index", excerpt, re.I)))
-    add(p.anonymization_weight, bool(re.search(r"\banonymi[sz]", excerpt, re.I)))
-    add(p.update_context_weight, bool(UPDATE_ONLY.search(excerpt)))
-    return round(100.0 * score / possible, 2) if possible else 0.0
-
-
-def _store_target(db: Database, run_id: str, entity, qid: int, spec: QuerySpec, result, threshold: float) -> tuple[bool, float]:
-    url = normalize_url(result.url)
-    if not url:
-        return False, 0.0
-    score, reasons = _score_target(entity, result, spec.topic)
-    if score < max(threshold, spec.min_score):
-        return False, score
-    db.execute(
-        """
-        INSERT INTO research_targets(run_id,entity_id,query_id,purpose,topic,url,domain,title,snippet,score,score_reasons_json)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(run_id,entity_id,purpose,url) DO UPDATE SET score=MAX(research_targets.score,excluded.score),
-          title=excluded.title,snippet=excluded.snippet,query_id=excluded.query_id,score_reasons_json=excluded.score_reasons_json,
-          updated_at=CURRENT_TIMESTAMP
-        """,
-        (run_id, entity["id"], qid, spec.purpose, spec.topic, url, registrableish_domain(url), result.title, result.snippet, score, json.dumps(reasons)),
-    )
-    return True, score
-
-
-def _stance_from_evidence(db: Database, run_id: str, entity_id: int) -> dict:
-    ev = db.execute("SELECT * FROM research_evidence WHERE run_id=? AND entity_id=?", (run_id, entity_id)).fetchall()
-    pages = db.execute("SELECT * FROM research_pages WHERE run_id=? AND entity_id=?", (run_id, entity_id)).fetchall()
-    queries = db.execute("SELECT COUNT(*) n FROM search_queries WHERE run_id=? AND entity_id=? AND status='completed'", (run_id, entity_id)).fetchone()["n"]
-    pos = neg = changed = case = update = strict = 0
-    for e in ev:
-        text, tag = e["excerpt"], e["tag"]
-        support = _support_value(text, tag)
-        if support is not None:
-            db.execute("UPDATE research_evidence SET supports_relief=? WHERE id=?", (support, e["id"]))
-            pos += int(support == 1)
-            neg += int(support == 0)
-        changed += int(bool(CHANGED.search(text)))
-        case += int(bool(CASE_BY_CASE.search(text)))
-        update += int(bool(UPDATE_ONLY.search(text)))
-        strict += int(bool(STRICT_ARCHIVE.search(text) or NEGATIVE_RELIEF.search(text)))
-    fetched = sum(1 for p in pages if p["status"] == "fetched")
-    failed = sum(1 for p in pages if p["status"] != "fetched")
-    if pos and neg:
-        stance, conf, rationale = "MIXED", 0.72, f"Both supportive ({pos}) and adverse ({neg}) evidence located"
-    elif any(POSITIVE_RELIEF.search(e["excerpt"]) for e in ev):
-        stance, conf, rationale = "SUPPORTS_RELIEF", min(0.98, 0.74 + pos * .03), "Affirmative unpublishing/deindexing/anonymization/removal relief located"
-    elif changed:
-        stance, conf, rationale = "SUPPORTS_CHANGED_CIRCUMSTANCES", min(0.95, .70 + changed * .03), "Guidance recognizes changed outcomes or circumstances"
-    elif case:
-        stance, conf, rationale = "CASE_BY_CASE", min(0.92, .68 + case * .03), "Case-by-case or discretionary review language located"
-    elif strict or neg:
-        stance, conf, rationale = "STRICT_ARCHIVE", min(0.96, .72 + max(strict, neg) * .03), "Restrictive archive/removal language located"
-    elif update:
-        stance, conf, rationale = "UPDATE_ONLY", min(0.90, .66 + update * .03), "Update/correction language found without affirmative removal relief"
-    elif queries >= 4 and fetched >= 3 and failed <= fetched:
-        stance, conf, rationale = "NO_RELEVANT_GUIDANCE", 0.67, "Broad targeted search completed without qualifying post-publication guidance"
-    else:
-        stance, conf, rationale = "UNDETERMINED", 0.60, "Insufficient fetched evidence for a defensible stance classification"
-    max_sim = max([float(e["similarity_score"] or 0) for e in ev] or [0.0])
-    review = stance not in {"NO_RELEVANT_GUIDANCE"} or conf < .80 or stance == "MIXED"
-    db.execute(
-        """
-        INSERT INTO entity_stances(run_id,entity_id,stance,confidence,rationale,evidence_count,supportive_count,adverse_count,max_similarity_score,requires_human_review)
-        VALUES(?,?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(run_id,entity_id) DO UPDATE SET stance=excluded.stance,confidence=excluded.confidence,rationale=excluded.rationale,
-          evidence_count=excluded.evidence_count,supportive_count=excluded.supportive_count,adverse_count=excluded.adverse_count,
-          max_similarity_score=excluded.max_similarity_score,requires_human_review=excluded.requires_human_review,created_at=CURRENT_TIMESTAMP
-        """,
-        (run_id, entity_id, stance, conf, rationale, len(ev), pos, neg, max_sim, int(review)),
-    )
-    db.conn.commit()
-    return {"stance": stance, "confidence": conf, "evidence": len(ev), "max_similarity": max_sim}
-
-
-async def _fetch_targets(db: Database, settings: Settings, fetcher: HardenedFetcher, run_id: str, entity, dashboard: RunDashboard | None = None) -> dict[str, int]:
-    rows = db.execute(
-        """
-        SELECT * FROM research_targets WHERE run_id=? AND entity_id=? AND status='candidate'
-        ORDER BY score DESC,id LIMIT ?
-        """,
-        (run_id, entity["id"], settings.research_fetch_top_targets),
-    ).fetchall()
-    fetched = failed = skipped = 0
-    for target in rows:
-        url = target["url"]
-        if dashboard: dashboard.update(phase=f"fetching {target['topic']}")
-        try:
-            r = await fetcher.fetch(url)
-            if not r.robots_allowed:
-                status = "skipped_robots"
-                analysis = None
-                skipped += 1
-                if dashboard: dashboard.increment(robots_blocked=1, skipped=1)
-            elif r.status_code >= 400:
-                status = "failed"
-                analysis = None
-                failed += 1
-                if dashboard: dashboard.increment(errors=1)
+            eid = db.execute("SELECT id FROM research_entities WHERE cohort=? AND source_key=?", (cohort, source_key)).fetchone()["id"]
+            _record_source(db, int(eid), source, source_key, url, row, membership_label)
+            if by_key:
+                updated += 1
             else:
-                analysis = analyze_page(r.final_url, r.content, r.content_type, r.headers)
-                status = "fetched"
-                fetched += 1
-                if dashboard: dashboard.increment(pages_fetched=1)
-            snapshot_path = None
-            if analysis and settings.save_html_snapshots and r.content:
-                suffix = ".pdf" if r.content_type == "application/pdf" else ".html"
-                sp = safe_snapshot_path(settings.research_snapshot_dir / run_id, int(entity["id"]), r.final_url, suffix)
-                sp.parent.mkdir(parents=True, exist_ok=True)
-                sp.write_bytes(r.content)
-                snapshot_path = str(sp)
-            cur = db.execute(
-                """
-                INSERT INTO research_pages(run_id,entity_id,target_id,requested_url,final_url,http_status,status,content_type,title,text_length,
-                  content_sha256,meta_robots,x_robots_tag,noindex,policy_score,evidence_tags_json,headers_json,snapshot_path,error)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(run_id,entity_id,requested_url) DO UPDATE SET final_url=excluded.final_url,http_status=excluded.http_status,
-                  status=excluded.status,content_type=excluded.content_type,title=excluded.title,text_length=excluded.text_length,
-                  content_sha256=excluded.content_sha256,meta_robots=excluded.meta_robots,x_robots_tag=excluded.x_robots_tag,
-                  noindex=excluded.noindex,policy_score=excluded.policy_score,evidence_tags_json=excluded.evidence_tags_json,
-                  headers_json=excluded.headers_json,snapshot_path=excluded.snapshot_path,error=excluded.error,fetched_at=CURRENT_TIMESTAMP
-                """,
-                (run_id, entity["id"], target["id"], url, r.final_url, r.status_code, status, r.content_type,
-                 analysis.title if analysis else None, len(analysis.text) if analysis else 0, sha256_bytes(r.content) if r.content else None,
-                 analysis.meta_robots if analysis else None, analysis.x_robots_tag if analysis else None, int(analysis.noindex) if analysis else 0,
-                 analysis.policy_score if analysis else 0, json.dumps(analysis.evidence_tags if analysis else []), json.dumps(r.headers), snapshot_path, r.error),
-            )
-            page_id = int(cur.lastrowid) if cur.lastrowid else int(db.execute("SELECT id FROM research_pages WHERE run_id=? AND entity_id=? AND requested_url=?", (run_id, entity["id"], url)).fetchone()["id"])
-            if analysis:
-                first_party = bool(entity["homepage_url"] and same_site(entity["homepage_url"], r.final_url))
-                evidence_type = "first_party_guidance" if first_party else "secondary_reporting"
-                for tag, excerpt in analysis.excerpts:
-                    support = _support_value(excerpt, tag)
-                    sim = similarity_score(settings, excerpt, entity["cohort"])
-                    db.execute(
-                        """
-                        INSERT OR IGNORE INTO research_evidence(run_id,entity_id,page_id,topic,tag,excerpt,source_url,evidence_type,supports_relief,confidence,similarity_score,excerpt_sha256)
-                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
-                        """,
-                        (run_id, entity["id"], page_id, target["topic"], tag, excerpt, r.final_url, evidence_type, support, .92 if first_party else .68, sim, sha256_text(excerpt)),
-                    )
-                if dashboard and analysis.excerpts:
-                    dashboard.add_recent(f"✓ {entity['name']}: {target['topic']} evidence ({len(analysis.excerpts)} excerpts)")
-            db.execute("UPDATE research_targets SET status=? WHERE id=?", (status, target["id"]))
-            db.conn.commit()
-        except Exception as exc:
-            failed += 1
-            db.execute(
-                "INSERT INTO research_pages(run_id,entity_id,target_id,requested_url,status,error) VALUES(?,?,?,?, 'failed',?) ON CONFLICT(run_id,entity_id,requested_url) DO UPDATE SET status='failed',error=excluded.error,fetched_at=CURRENT_TIMESTAMP",
-                (run_id, entity["id"], target["id"], url, f"{type(exc).__name__}: {exc}"),
-            )
-            db.execute("UPDATE research_targets SET status='failed' WHERE id=?", (target["id"],))
-            db.conn.commit()
-            if dashboard: dashboard.increment(errors=1)
-    return {"fetched": fetched, "failed": failed, "skipped": skipped}
+                inserted += 1
+    db.conn.commit()
+    return {"inserted": inserted, "updated": updated, "merged_as_additional_source": merged, "skipped": skipped}
 
 
-async def research_entity(db: Database, settings: Settings, broker: SearchBroker, fetcher: HardenedFetcher, run_id: str, entity, dashboard: RunDashboard | None = None) -> dict:
-    domain = entity["domain"] or (registrableish_domain(entity["homepage_url"]) if entity["homepage_url"] else "")
-    if not domain:
-        return {"entity_id": entity["id"], "queries": 0, "targets": 0, "stance": "UNDETERMINED"}
-    specs = list(BASE_QUERY_SPECS)
-    if entity["cohort"] in {"support_org", "press_association", "journalism_school"}:
-        specs += SUPPORT_EXTRA_SPECS
-    specs = specs[: settings.research_max_searches_per_entity]
-    targets = queries = 0
-    for spec in specs:
-        query = spec.template.format(domain=domain, name=entity["name"])
-        if dashboard: dashboard.update(phase=f"searching {spec.purpose}/{spec.topic}")
-        try:
-            results, qid, cached = await broker.search(query, purpose=f"research:{spec.purpose}:{spec.topic}", entity_id=int(entity["id"]))
-            queries += 1
-            if dashboard:
-                if cached: dashboard.increment(searches_cached=1)
-                else: dashboard.increment(searches_live=1, credits_estimated=0 if broker.provider.name == "none" else 1)
-            for result in results:
-                ok, score = _store_target(db, run_id, entity, qid, spec, result, settings.research_candidate_threshold)
-                if ok: targets += 1
-            db.conn.commit()
-        except SearchBudgetExceeded:
-            raise
-        except Exception as exc:
-            if dashboard: dashboard.increment(errors=1); dashboard.log(f"search error {entity['name']}: {exc}")
-    fetch_stats = await _fetch_targets(db, settings, fetcher, run_id, entity, dashboard)
-    stance = _stance_from_evidence(db, run_id, int(entity["id"]))
-    return {"entity_id": entity["id"], "queries": queries, "targets": targets, **fetch_stats, **stance}
-
-
-async def research_all(db: Database, settings: Settings, run_id: str, cohort: str | None = None, limit: int | None = None, quiet: bool = False, verbose: bool = False) -> dict:
-    provider = get_search_provider(settings.search_provider, settings.user_agent)
-    broker = SearchBroker(db, settings, run_id, provider)
-    sql = "SELECT * FROM research_entities WHERE active=1"
+def merge_duplicate_entities(db: Database, cohort: str | None = None) -> dict[str, int]:
+    """Merge active entities sharing a domain within a cohort; provenance moves to the survivor."""
+    sql = ("SELECT cohort, domain, MIN(id) keep, GROUP_CONCAT(id) ids, COUNT(*) n FROM research_entities "
+           "WHERE active=1 AND merged_into IS NULL AND domain IS NOT NULL AND domain!=''")
     params: list = []
     if cohort:
         sql += " AND cohort=?"
         params.append(cohort)
-    sql += " ORDER BY cohort,name"
+    sql += " GROUP BY cohort, domain HAVING COUNT(*)>1"
+    merged = 0
+    with db.transaction():
+        for r in db.execute(sql, params).fetchall():
+            keep = int(r["keep"])
+            for other in (int(x) for x in str(r["ids"]).split(",") if int(x) != keep):
+                db.conn.execute("UPDATE OR IGNORE entity_sources SET entity_id=? WHERE entity_id=?", (keep, other))
+                db.conn.execute("UPDATE research_entities SET active=0, merged_into=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (keep, other))
+                merged += 1
+    return {"merged": merged}
+
+
+# --------------------------------------------------------------------------- legacy shims
+
+def create_research_run(db: Database, settings: Settings, mode: str = "full", run_id: str | None = None) -> str:
+    rid, _ = create_or_resume_run(db, settings, mode, run_id)
+    return rid
+
+
+def complete_research_run(db: Database, run_id: str, status: str = "completed") -> None:
+    finish_run(db, run_id, status)
+
+
+def similarity_score(settings: Settings, excerpt: str, cohort: str) -> float:
+    return score_similarity(settings.case_profile, excerpt, cohort=cohort).score
+
+
+# --------------------------------------------------------------------------- per-entity research
+
+def plan_queries(settings: Settings, entity, tier: int) -> list[QuerySpec]:
+    if tier == 1:
+        return list(TIER1)
+    if tier == 2:
+        specs = list(TIER2)
+        if entity["cohort"] in GUIDANCE_COHORTS:
+            specs = [s for s in specs if not s.third_party] + GUIDANCE_SPECS
+        return specs
+    return list(TIER3)
+
+
+def render_query(spec: QuerySpec, entity) -> str:
+    name = re.sub(r'["“”]', "", entity["name"] or "").strip()
+    return spec.template.format(site=entity_site(entity), name=name)
+
+
+def score_target(entity, url: str, title: str, snippet: str, rank: int, spec: QuerySpec | None) -> tuple[float, list[str]]:
+    reasons: list[str] = []
+    if is_blocked_social_or_aggregator(url):
+        return 0.0, ["blocked_domain"]
+    hay = f"{title} {snippet} {url}"
+    fp = is_first_party(entity, url)
+    score = 0.0
+    if fp:
+        score += 0.4
+        reasons.append("first_party")
+    else:
+        mentions = any(t.lower() in hay.lower() for t in entity_terms(entity))
+        if not mentions:
+            return 0.0, ["third_party_not_about_entity"]
+        score += 0.15
+        reasons.append("third_party_mentions_entity")
+    if SIGNAL_RE.search(hay):
+        score += 0.3
+        reasons.append("policy_signal")
+    kind = page_kind(url, title, url.lower().endswith(".pdf"), False)
+    if kind == "policy":
+        score += 0.2
+        reasons.append("policy_page")
+    if spec and spec.purpose == "precedent":
+        score += 0.05
+    if rank:
+        score += max(0.0, 0.08 - (rank - 1) * 0.01)
+        reasons.append(f"rank:{rank}")
+    if re.search(r"/(?:tag|tags|category|author|search|page/\d+)(?:/|$)|[?&](?:s|q)=", url, re.I):
+        score -= 0.25
+        reasons.append("listing_page_penalty")
+    return round(max(0.0, min(score, 1.0)), 3), reasons
+
+
+class EntityResearcher:
+    def __init__(self, db: Database, settings: Settings, broker: SearchBroker, fetcher: HardenedFetcher, run_id: str,
+                 dash: RunDashboard, stop: StopController):
+        self.db, self.settings, self.broker, self.fetcher = db, settings, broker, fetcher
+        self.run_id, self.dash, self.stop = run_id, dash, stop
+        self.snapshot_root = settings.research_snapshot_dir
+
+    # ---------------------------------------------------------------- targets
+    def _store_target(self, entity, url: str, title: str, snippet: str, rank: int, spec: QuerySpec | None,
+                      query_id: int | None, purpose: str, topic: str) -> bool:
+        req = prepare_request_url(url)
+        key = normalize_url(url)
+        if not req or not key:
+            return False
+        score, reasons = score_target(entity, req, title, snippet, rank, spec)
+        if score < self.settings.research_candidate_threshold:
+            self.dash.log(f"  reject target {score:.2f} {req} {reasons}")
+            return False
+        self.db.execute(
+            """
+            INSERT INTO research_targets(run_id,entity_id,query_id,purpose,topic,url,domain,title,snippet,score,score_reasons_json)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(run_id,entity_id,purpose,url) DO UPDATE SET score=MAX(research_targets.score,excluded.score),
+              title=excluded.title,snippet=excluded.snippet,score_reasons_json=excluded.score_reasons_json,updated_at=CURRENT_TIMESTAMP
+            """,
+            (self.run_id, entity["id"], query_id, purpose, topic, req, registrableish_domain(req), title[:500], snippet[:2000],
+             score, json.dumps(reasons)),
+        )
+        return True
+
+    async def _search_tier(self, entity, specs: list[QuerySpec], budget_left: int) -> tuple[int, bool]:
+        used = 0
+        signal = False
+        for spec in specs:
+            if used >= budget_left or self.stop.force:
+                break
+            query = render_query(spec, entity)
+            purpose = f"research:t{spec.tier}:{spec.purpose}:{spec.topic}"
+            self.dash.update(phase=f"search t{spec.tier} {spec.purpose}/{spec.topic}")
+            self.dash.log(f"  query [{purpose}] {query}")
+            results, qid, cached = await self.broker.search(query, purpose=purpose, entity_id=int(entity["id"]))
+            used += 1
+            self._sync_search_counters()
+            for r in results:
+                if self._store_target(entity, r.url, r.title, r.snippet, r.rank, spec, qid or None, spec.purpose, spec.topic):
+                    if is_first_party(entity, r.url) and SIGNAL_RE.search(f"{r.title} {r.snippet} {r.url}"):
+                        signal = True
+            self.db.conn.commit()
+        return used, signal
+
+    def _sync_search_counters(self) -> None:
+        b = self.broker
+        self.dash.update(searches_live=b.live_calls, searches_cached=b.cached_calls, searches_failed=b.failed_calls,
+                         credits_estimated=b.credits_used)
+
+    def _sync_fetch_counters(self) -> None:
+        st = self.fetcher.stats
+        self.dash.update(robots_blocked=st.robots_blocked, access_blocked=st.access_blocked,
+                         malformed_skipped=st.malformed_skipped, retries=st.retries)
+
+    async def _homepage_links(self, entity) -> None:
+        """Free first-party discovery: homepage plus policy/about links found on it."""
+        home = prepare_request_url(entity["homepage_url"] or "")
+        if not home:
+            return
+        self.dash.update(phase="homepage + policy links")
+        self._store_target_direct(entity, home, "homepage", 0.9)
+        r = await self.fetcher.fetch_safe(home)
+        await self._record_page(entity, r, target_id=None, query_id=None, topic="homepage", forced_kind="homepage")
+        if r.access_class != "ok":
+            return
+        page = extract_main_text(r.content, r.content_type, r.final_url, r.headers)
+        picked = 0
+        for text, href in page.links:
+            if picked >= self.settings.research_first_party_link_pages:
+                break
+            if not is_first_party(entity, href) or href == r.final_url:
+                continue
+            if POLICY_PAGE_RE.search(f"{text} {urlsplit(href).path}") or ABOUT_PAGE_RE.search(urlsplit(href).path):
+                if self._store_target_direct(entity, href, "first_party_link", 0.85 if POLICY_PAGE_RE.search(text + href) else 0.6):
+                    picked += 1
+
+    def _store_target_direct(self, entity, url: str, topic: str, score: float) -> bool:
+        req = prepare_request_url(url)
+        if not req:
+            return False
+        cur = self.db.execute(
+            "INSERT OR IGNORE INTO research_targets(run_id,entity_id,purpose,topic,url,domain,score,score_reasons_json,status) "
+            "VALUES(?,?,?,?,?,?,?,?,?)",
+            (self.run_id, entity["id"], "first_party_discovery", topic, req, registrableish_domain(req), score,
+             json.dumps(["first_party", topic]), "fetched" if topic == "homepage" else "candidate"))
+        return cur.rowcount > 0
+
+    async def _fetch_targets(self, entity) -> None:
+        rows = self.db.execute(
+            "SELECT * FROM research_targets WHERE run_id=? AND entity_id=? AND status='candidate' ORDER BY score DESC, id",
+            (self.run_id, entity["id"])).fetchall()
+        seen: set[str] = set(r["requested_url"] for r in self.db.execute(
+            "SELECT requested_url FROM research_pages WHERE run_id=? AND entity_id=?", (self.run_id, entity["id"])))
+        fp_budget = self.settings.research_fetch_top_targets
+        tp_budget = self.settings.research_third_party_fetch_limit
+        for t in rows:
+            if self.stop.force:
+                break
+            first = is_first_party(entity, t["url"])
+            if t["url"] in seen:
+                self.db.execute("UPDATE research_targets SET status='duplicate' WHERE id=?", (t["id"],))
+                continue
+            if first and fp_budget <= 0 or (not first and tp_budget <= 0):
+                self.db.execute("UPDATE research_targets SET status='not_fetched_budget' WHERE id=?", (t["id"],))
+                continue
+            seen.add(t["url"])
+            if first:
+                fp_budget -= 1
+            else:
+                tp_budget -= 1
+            self.dash.update(phase=f"fetch {t['topic']}")
+            self.dash.log(f"  fetch [{t['score']:.2f}] {t['url']}")
+            r = await self.fetcher.fetch_safe(t["url"])
+            status = await self._record_page(entity, r, target_id=t["id"], query_id=t["query_id"], topic=t["topic"])
+            self.db.execute("UPDATE research_targets SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (status, t["id"]))
+            self.db.conn.commit()
+            self._sync_fetch_counters()
+
+    async def _record_page(self, entity, r, *, target_id: int | None, query_id: int | None, topic: str,
+                           forced_kind: str | None = None) -> str:
+        first = is_first_party(entity, r.final_url or r.requested_url)
+        ok = r.access_class == "ok" and bool(r.content)
+        page = extract_main_text(r.content, r.content_type, r.final_url, r.headers) if ok else None
+        kind = forced_kind or (page_kind(r.final_url, page.title, page.is_pdf, page.is_listing) if page else "unknown")
+        raw_sha = text_sha = snap_path = None
+        if page and self.settings.save_html_snapshots:
+            raw_sha, snap_path = store_raw(self.db, self.snapshot_root, r.content, r.content_type, r.final_url)
+            if page.main_text:
+                text_sha = store_text(self.db, self.snapshot_root, page.main_text, r.final_url)
+        if not ok:
+            self.dash.increment(errors=1 if r.access_class not in {"robots_disallowed", "not_found", "gone"} else 0)
+            self.dash.log(f"  ! {r.access_class} {r.requested_url} {r.error or ''}")
+        else:
+            self.dash.increment(pages_fetched=1)
+        self.db.execute(
+            """
+            INSERT INTO research_pages(run_id,entity_id,target_id,requested_url,final_url,http_status,status,content_type,title,
+              text_length,content_sha256,meta_robots,x_robots_tag,noindex,policy_score,evidence_tags_json,headers_json,snapshot_path,
+              error,canonical_url,access_class,page_kind,text_sha256,redirect_chain_json,query_id,first_party)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(run_id,entity_id,requested_url) DO UPDATE SET final_url=excluded.final_url,http_status=excluded.http_status,
+              status=excluded.status,content_type=excluded.content_type,title=excluded.title,text_length=excluded.text_length,
+              content_sha256=excluded.content_sha256,meta_robots=excluded.meta_robots,x_robots_tag=excluded.x_robots_tag,
+              noindex=excluded.noindex,headers_json=excluded.headers_json,snapshot_path=excluded.snapshot_path,error=excluded.error,
+              canonical_url=excluded.canonical_url,access_class=excluded.access_class,page_kind=excluded.page_kind,
+              text_sha256=excluded.text_sha256,redirect_chain_json=excluded.redirect_chain_json,first_party=excluded.first_party,
+              fetched_at=CURRENT_TIMESTAMP
+            """,
+            (self.run_id, entity["id"], target_id, r.requested_url, r.final_url, r.status_code or None,
+             "fetched" if ok else "failed", r.content_type, page.title if page else None,
+             len(page.main_text) if page else 0, raw_sha, page.meta_robots if page else None, r.headers.get("x-robots-tag"),
+             int(page.noindex) if page else 0, 0.0, "[]",
+             json.dumps({k: v for k, v in r.headers.items() if k in {"content-type", "x-robots-tag", "last-modified", "server", "link"}}),
+             snap_path, r.error, page.canonical_url if page else None, r.access_class, kind, text_sha,
+             json.dumps(r.redirect_chain), query_id, int(first)),
+        )
+        page_id = self.db.execute("SELECT id FROM research_pages WHERE run_id=? AND entity_id=? AND requested_url=?",
+                                  (self.run_id, entity["id"], r.requested_url)).fetchone()["id"]
+        if page and page.main_text:
+            n_useful = self._store_evidence(entity, page, int(page_id), query_id, topic, first, kind, raw_sha, text_sha)
+            if n_useful:
+                self.broker.mark_useful(query_id)
+        return "fetched" if ok else r.access_class
+
+    def _store_evidence(self, entity, page, page_id: int, query_id: int | None, topic: str, first: bool, kind: str,
+                        raw_sha: str | None, text_sha: str | None) -> int:
+        items = extract_evidence(page.main_text, entity_terms=entity_terms(entity),
+                                 max_items=self.settings.research_max_evidence_per_page,
+                                 require_entity_mention=not first)
+        profile = self.settings.case_profile
+        useful = 0
+        fetched_at = self.db.scalar("SELECT fetched_at FROM research_pages WHERE id=?", (page_id,), None)
+        for it in items:
+            st = it.statement
+            low = it.context.lower()
+            about = first or any(t.lower() in low for t in entity_terms(entity))
+            ev_class = evidence_class_for(entity["cohort"], first, about and not first, kind, st.statement_type)
+            if ev_class == "secondary_report" and entity["cohort"] in GUIDANCE_COHORTS and first:
+                about = False  # a guidance org describing another newsroom's decision
+            authority = authority_for(ev_class, kind, page.url)
+            sim = score_similarity(profile, it.excerpt, it.context, cohort=entity["cohort"] if first else None)
+            dup = self.db.execute(
+                "SELECT id FROM evidence_items WHERE run_id=? AND entity_id=? AND near_dup_key=? AND duplicate_of IS NULL "
+                "AND excerpt_sha256!=? ORDER BY id LIMIT 1",
+                (self.run_id, entity["id"], it.near_dup_key, it.excerpt_sha256)).fetchone()
+            cur = self.db.execute(
+                """
+                INSERT OR IGNORE INTO evidence_items(run_id,entity_id,page_id,query_id,cohort,source_url,source_title,source_domain,
+                  fetched_at,page_sha256,text_sha256,excerpt,context,excerpt_sha256,near_dup_key,duplicate_of,first_party,about_entity,
+                  evidence_class,statement_type,direction,topic,authority_score,relevance_score,similarity_score,similarity_factors_json,
+                  extraction_confidence,rationale)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (self.run_id, entity["id"], page_id, query_id, entity["cohort"], page.url, page.title[:500],
+                 registrableish_domain(page.url), fetched_at, raw_sha, text_sha, it.excerpt, it.context, it.excerpt_sha256,
+                 it.near_dup_key, dup["id"] if dup else None, int(first), int(about), ev_class, st.statement_type, st.direction,
+                 topic, authority, STATEMENT_RELEVANCE[st.statement_type], sim.score, json.dumps(sim.factors),
+                 st.confidence, "; ".join(st.cues)[:500]),
+            )
+            if cur.rowcount and cur.lastrowid:
+                self.db.conn.executemany("INSERT OR IGNORE INTO evidence_item_tags(evidence_id,tag) VALUES(?,?)",
+                                         [(cur.lastrowid, t) for t in st.tags])
+                if not dup:
+                    self.dash.increment(evidence_unique=1)
+                    if sim.score >= profile.high_similarity_threshold:
+                        self.dash.increment(high_similarity=1)
+                if st.statement_type != "mention":
+                    useful += 1
+        return useful
+
+    async def research(self, entity, budget_per_entity: int) -> dict:
+        eid = int(entity["id"])
+        if not entity_site(entity):
+            return {"stance": "UNDETERMINED", "reason": "no homepage/domain"}
+        depth = self.settings.research_depth
+        used, signal = await self._search_tier(entity, plan_queries(self.settings, entity, 1), budget_per_entity)
+        await self._homepage_links(entity)
+        escalate = depth == "deep" or signal or entity["cohort"] in GUIDANCE_COHORTS
+        if depth != "quick" and escalate and not self.stop.force:
+            u2, _ = await self._search_tier(entity, plan_queries(self.settings, entity, 2), budget_per_entity - used)
+            used += u2
+        if depth == "deep" and not self.stop.force:
+            u3, _ = await self._search_tier(entity, plan_queries(self.settings, entity, 3), budget_per_entity - used)
+            used += u3
+        await self._fetch_targets(entity)
+        self.dash.update(phase="classifying")
+        result = classify_entity(self.db, self.settings, self.run_id, entity)
+        store_stance(self.db, self.run_id, eid, result)
+        enqueue_entity_review(self.db, self.run_id, entity, result)
+        self.db.conn.commit()
+        return {"stance": result.stance, "confidence": result.confidence, "queries": used, "escalated": escalate,
+                "max_similarity": result.max_similarity, "supportive": result.supportive, "adverse": result.adverse}
+
+
+STANCE_BADGE = {
+    "SUPPORTS_RELIEF": "✓ Relief policy", "SUPPORTS_CHANGED_CIRCUMSTANCES": "✓ Changed-circumstance policy",
+    "CASE_BY_CASE": "✓ Case-by-case review", "UPDATE_ONLY": "· Update-only policy", "STRICT_ARCHIVE": "! Strict archive policy",
+    "MIXED": "? Mixed signals",
+}
+
+
+def select_entities(db: Database, cohort: str | None, limit: int | None, entity_ids: list[int] | None = None) -> list:
+    sql = "SELECT * FROM research_entities WHERE active=1 AND merged_into IS NULL"
+    params: list = []
+    if cohort:
+        sql += " AND cohort=?"
+        params.append(cohort)
+    if entity_ids:
+        sql += f" AND id IN ({','.join('?' * len(entity_ids))})"
+        params += entity_ids
+    sql += " ORDER BY cohort, id"
     if limit:
         sql += " LIMIT ?"
         params.append(limit)
-    rows = db.execute(sql, tuple(params)).fetchall()
-    counts: dict[str, int] = {"entities": len(rows), "completed": 0, "targets": 0, "fetched": 0, "errors": 0}
-    with RunDashboard("NSMPA v0.2 Research Engine", len(rows), quiet=quiet, verbose=verbose) as dash:
-        async with HardenedFetcher(settings) as fetcher:
-            for idx, entity in enumerate(rows, start=1):
-                dash.update(current=f"{entity['name']} [{entity['cohort']}]", phase="planning searches")
+    return db.execute(sql, params).fetchall()
+
+
+async def research_all(db: Database, settings: Settings, run_id: str, cohort: str | None = None, limit: int | None = None,
+                       quiet: bool = False, verbose: bool = False, *, max_searches: int | None = None,
+                       refresh_search: bool = False, fresh: bool = False, entity_ids: list[int] | None = None,
+                       provider=None, fetcher: HardenedFetcher | None = None, stop: StopController | None = None,
+                       dashboard: RunDashboard | None = None) -> dict:
+    provider = provider or get_search_provider(settings.search_provider, settings.user_agent)
+    broker = SearchBroker(db, settings, run_id, provider, max_searches=max_searches, refresh=refresh_search)
+    rows = select_entities(db, cohort, limit, entity_ids)
+    keys = [str(r["id"]) for r in rows]
+    register_items(db, run_id, "entity", keys)
+    if fresh:
+        db.execute("UPDATE run_items SET status='pending' WHERE run_id=? AND item_type='entity'", (run_id,))
+        db.conn.commit()
+    completed = done_keys(db, run_id, "entity")
+    todo = [r for r in rows if str(r["id"]) not in completed]
+    stop = stop or StopController()
+    universe = {"student_media": "Student Journalism", "professional_newsroom": "Professional Newsrooms",
+                "support_org": "Support / Standards Organizations"}.get(cohort or "", cohort or "All cohorts")
+    dash = dashboard or RunDashboard("NSMPA National Research", len(rows), quiet=quiet, verbose=verbose, universe=universe)
+    counts = {"entities": len(rows), "already_done": len(rows) - len(todo), "completed": 0, "failed": 0}
+    stop_reason = ""
+    own_fetcher = fetcher is None
+    fetcher = fetcher or HardenedFetcher(settings, on_event=dash.log)
+    queue: asyncio.Queue = asyncio.Queue()
+    for r in todo:
+        queue.put_nowait(r)
+    per_entity = settings.research_max_searches_per_entity
+    with dash:
+        dash.update(completed=len(rows) - len(todo), skipped_done=len(rows) - len(todo), budget_limit=max_searches)
+        stop.on_stop(dash.notice)
+        uninstall = stop.install()
+        researcher = EntityResearcher(db, settings, broker, fetcher, run_id, dash, stop)
+        active: dict[int, str] = {}
+
+        async def worker(wid: int) -> None:
+            nonlocal stop_reason
+            while not stop.stop_requested and not queue.empty():
+                entity = queue.get_nowait()
+                key = str(entity["id"])
+                active[wid] = entity["name"]
+                dash.update(current=f"{entity['name']}", publication=entity["parent_name"] or "", active=len(active))
+                mark_item(db, run_id, "entity", key, "running")
                 try:
-                    result = await research_entity(db, settings, broker, fetcher, run_id, entity, dash)
-                    counts["targets"] += int(result.get("targets", 0))
-                    counts["fetched"] += int(result.get("fetched", 0))
-                    if result.get("stance") not in {"UNDETERMINED", "NO_RELEVANT_GUIDANCE"}:
-                        dash.add_recent(f"★ {entity['name']} → {result.get('stance')} | similarity {result.get('max_similarity', 0):.1f}")
+                    res = await researcher.research(entity, per_entity)
+                    mark_item(db, run_id, "entity", key, "done", result=res)
+                    counts["completed"] += 1
+                    dash.stance(res["stance"])
+                    if res["stance"] not in {"UNDETERMINED", "NO_RELEVANT_GUIDANCE"}:
+                        dash.increment(policies_found=1)
+                        dash.add_recent(f"{STANCE_BADGE.get(res['stance'], res['stance'])}  {entity['name']}")
                 except SearchBudgetExceeded as exc:
-                    db.execute("UPDATE research_runs SET notes=? WHERE id=?", (str(exc), run_id)); db.conn.commit()
-                    dash.add_recent(f"Search budget reached: {exc}")
-                    break
-                except Exception as exc:
-                    counts["errors"] += 1
+                    mark_item(db, run_id, "entity", key, "pending", error=str(exc))
+                    stop_reason = f"budget_exhausted: {exc}"
+                    stop.stop_requested = True
+                    dash.notice(f"Search budget reached ({exc}). Finishing in-flight entities and checkpointing.")
+                except SearchAuthError as exc:
+                    mark_item(db, run_id, "entity", key, "pending", error=str(exc))
+                    stop_reason = f"search_auth_error: {exc}"
+                    stop.stop_requested = True
+                    dash.notice(f"Search provider rejected the API key/account: {exc}")
+                except asyncio.CancelledError:
+                    mark_item(db, run_id, "entity", key, "pending", error="cancelled")
+                    raise
+                except Exception as exc:  # one broken site never terminates the run
+                    counts["failed"] += 1
+                    mark_item(db, run_id, "entity", key, "failed", error=f"{type(exc).__name__}: {exc}"[:500])
+                    db.execute("INSERT INTO errors(research_run_id,entity_id,stage,url,error_type,message,retryable) VALUES(?,?,?,?,?,?,1)",
+                               (run_id, entity["id"], "research_entity", entity["homepage_url"], type(exc).__name__, str(exc)[:1000]))
+                    db.conn.commit()
                     dash.increment(errors=1)
                     dash.log(f"entity failure {entity['name']}: {type(exc).__name__}: {exc}")
-                counts["completed"] += 1
-                db.execute("UPDATE research_runs SET entities_completed=? WHERE id=?", (counts["completed"], run_id)); db.conn.commit()
-                high = db.execute("SELECT COUNT(*) n FROM entity_stances WHERE run_id=? AND stance IN ('SUPPORTS_RELIEF','SUPPORTS_CHANGED_CIRCUMSTANCES','CASE_BY_CASE')", (run_id,)).fetchone()["n"]
-                target_count = db.execute("SELECT COUNT(*) n FROM research_targets WHERE run_id=?", (run_id,)).fetchone()["n"]
-                dash.update(completed=idx, candidates=target_count, high_confidence=high)
-    return {**counts, "provider": provider.name, "searches_live": broker.live_calls, "searches_cached": broker.cached_calls, "credits_estimated": broker.credits_used}
+                finally:
+                    active.pop(wid, None)
+                    dash.increment(completed=1)
+                    dash.update(active=len(active))
+                    dash.checkpoint()
+
+        tasks = [asyncio.create_task(worker(i)) for i in range(min(settings.research_concurrency, max(1, len(todo))))]
+        for t in tasks:
+            stop.track(t)
+        try:
+            await asyncio.gather(*tasks, return_exceptions=False)
+        except asyncio.CancelledError:
+            stop_reason = stop_reason or "force-cancelled by user"
+        finally:
+            uninstall()
+            if own_fetcher:
+                await fetcher.close()
+            await broker.aclose()
+    remaining = len(rows) - len(done_keys(db, run_id, "entity"))
+    if stop_reason.startswith("budget"):
+        status = "budget_exhausted"
+    elif stop_reason.startswith("search_auth"):
+        status = "failed"
+    elif stop.stop_requested and remaining:
+        status, stop_reason = "interrupted", stop_reason or stop.reason
+    else:
+        status = "completed"
+    finish_run(db, run_id, status, stop_reason or None)
+    return {**counts, "remaining": remaining, "status": status, "stop_reason": stop_reason, "provider": provider.name,
+            "searches_live": broker.live_calls, "searches_cached": broker.cached_calls, "searches_failed": broker.failed_calls,
+            "credits_estimated": broker.credits_used, "run_credits_total": broker.run_credits_total,
+            "pages_fetched": fetcher.stats.fetched_ok, "robots_blocked": fetcher.stats.robots_blocked}
 
 
-def export_research(db: Database, run_id: str, out_dir: str | Path) -> dict[str, int]:
-    out = Path(out_dir) / f"research_{run_id}"
-    out.mkdir(parents=True, exist_ok=True)
-    def write_csv(name: str, sql: str, params: tuple = ()) -> int:
-        cur = db.execute(sql, params); rows = cur.fetchall(); headers = [d[0] for d in cur.description or []]
-        with open(out / name, "w", encoding="utf-8", newline="") as f:
-            w = csv.writer(f); w.writerow(headers); [w.writerow([r[h] for h in headers]) for r in rows]
-        return len(rows)
-    counts = {}
-    counts["entities"] = write_csv("entities.csv", "SELECT * FROM research_entities ORDER BY cohort,name")
-    counts["search_queries"] = write_csv("search_queries.csv", "SELECT * FROM search_queries WHERE run_id=? ORDER BY id", (run_id,))
-    counts["targets"] = write_csv("research_targets.csv", "SELECT * FROM research_targets WHERE run_id=? ORDER BY entity_id,score DESC", (run_id,))
-    counts["evidence"] = write_csv("research_evidence.csv", """
-        SELECT e.cohort,e.name,e.parent_name,s.stance,s.confidence AS stance_confidence,
-               r.topic,r.tag,r.supports_relief,r.confidence AS evidence_confidence,r.similarity_score,r.excerpt,r.source_url
-        FROM research_evidence r JOIN research_entities e ON e.id=r.entity_id
-        LEFT JOIN entity_stances s ON s.entity_id=e.id AND s.run_id=r.run_id
-        WHERE r.run_id=? ORDER BY r.similarity_score DESC,e.cohort,e.name
-    """, (run_id,))
-    counts["stances"] = write_csv("entity_stances.csv", """
-        SELECT e.cohort,e.name,e.parent_name,e.homepage_url,e.source,s.stance,s.confidence,s.rationale,
-               s.evidence_count,s.supportive_count,s.adverse_count,s.max_similarity_score,s.requires_human_review
-        FROM entity_stances s JOIN research_entities e ON e.id=s.entity_id
-        WHERE s.run_id=? ORDER BY e.cohort,s.max_similarity_score DESC,e.name
-    """, (run_id,))
-    counts["review"] = write_csv("human_review_queue.csv", """
-        SELECT e.cohort,e.name,e.homepage_url,s.stance,s.confidence,s.rationale,s.max_similarity_score
-        FROM entity_stances s JOIN research_entities e ON e.id=s.entity_id
-        WHERE s.run_id=? AND s.requires_human_review=1 ORDER BY s.max_similarity_score DESC,e.cohort,e.name
-    """, (run_id,))
-    summary_rows = db.execute("""
-        SELECT e.cohort,s.stance,COUNT(*) n FROM entity_stances s JOIN research_entities e ON e.id=s.entity_id
-        WHERE s.run_id=? GROUP BY e.cohort,s.stance ORDER BY e.cohort,s.stance
-    """, (run_id,)).fetchall()
-    lines = ["# NSMPA v0.2 research summary", "", f"Run ID: `{run_id}`", "", "## Cohort stance counts", ""]
-    current = None
-    for r in summary_rows:
-        if r["cohort"] != current:
-            current = r["cohort"]; lines += [f"### {current}", ""]
-        lines.append(f"- {r['stance']}: {r['n']}")
-    lines += ["", "## Methodological guardrails", "", "Student media, professional newsrooms, and support/advice organizations are separate cohorts and must not share a denominator.", "Search-result snippets are discovery evidence only; substantive external claims require fetched source text and human verification.", "Adverse evidence is searched and retained alongside supportive evidence.", "UNDETERMINED is never converted to NO_RELEVANT_GUIDANCE merely because a source was inaccessible.", "Similarity scores rank review priority; they do not establish legal or ethical authority."]
-    (out / "summary.md").write_text("\n".join(lines), encoding="utf-8")
-    return counts
+def start_research(db: Database, settings: Settings, *, cohort: str | None, limit: int | None, run_id: str | None,
+                   max_searches: int | None, command: str) -> tuple[str, bool]:
+    params = {"cohort": cohort, "limit": limit, "depth": settings.research_depth}
+    return create_or_resume_run(db, settings, "full_research", run_id, params=params, command=command, max_searches=max_searches)
+
+
+from .export import export_research  # noqa: E402,F401  (re-export for backwards compatibility)

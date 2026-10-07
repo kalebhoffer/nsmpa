@@ -163,7 +163,38 @@ class Settings(BaseModel):
 
 
 
+def load_dotenv(path: str | Path = ".env") -> list[str]:
+    """Load KEY=VALUE pairs from a local .env without overriding the real environment.
+
+    Returns the names (never the values) of variables that were set.
+    """
+    p = Path(path)
+    loaded: list[str] = []
+    if not p.is_file():
+        return loaded
+    for raw in p.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip().removeprefix("export ").strip()
+        value = value.strip().strip('"').strip("'")
+        if key and value and key not in os.environ:
+            os.environ[key] = value
+            loaded.append(key)
+    return loaded
+
+
+def resolve_config_path(path: str | Path | None) -> Path | None:
+    if path:
+        return Path(path)
+    default = Path("config.yml")
+    return default if default.is_file() else None
+
+
 def load_settings(path: str | Path | None = None) -> Settings:
+    load_dotenv()
+    path = resolve_config_path(path)
     data: dict = {}
     if path:
         with open(path, "r", encoding="utf-8") as f:

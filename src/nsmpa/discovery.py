@@ -9,13 +9,18 @@ from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup
 
+from .extract import decode_html, extract_main_text
+
 from .config import Settings
 from .db import Database
 from .fetch import HardenedFetcher
 from .models import SearchResult
-from .search import SearchBroker, SearchBudgetExceeded, get_search_provider
-from .utils import is_blocked_social_or_aggregator, normalize_url, registrableish_domain, same_site
 from .progress import RunDashboard
+from .review import enqueue_publication_review
+from .runs import StopController, create_or_resume_run, done_keys, finish_run, mark_item, register_items
+from .search import SearchAuthError, SearchBroker, SearchBudgetExceeded, get_search_provider
+from .utils import (is_blocked_social_or_aggregator, normalize_url, prepare_request_url, registrableish_domain,
+                    same_site)
 
 # Discovery intentionally distinguishes student journalism from institutional PR.
 STRONG_STUDENT_TERMS = re.compile(
@@ -140,14 +145,14 @@ def score_candidate(inst_name: str, inst_website: str | None, result: SearchResu
 
 
 def _html_links(content: bytes, base_url: str) -> tuple[str, list[tuple[str, str]]]:
-    soup = BeautifulSoup(content.decode("utf-8", errors="replace"), "html.parser")
+    soup = BeautifulSoup(decode_html(content), "html.parser")
     title = ""
     if soup.title:
         title = " ".join(soup.title.stripped_strings)
     links: list[tuple[str, str]] = []
     for a in soup.find_all("a", href=True):
         text = " ".join(a.stripped_strings)
-        href = normalize_url(str(a.get("href")), base_url)
+        href = prepare_request_url(str(a.get("href")), base=base_url)
         if not href or is_blocked_social_or_aggregator(href):
             continue
         links.append((text, href))
@@ -161,7 +166,7 @@ def _link_is_direct_candidate(text: str, href: str) -> bool:
 
 def _page_is_student_media_context(url: str, title: str, content: bytes) -> bool:
     # Limit body context to avoid treating one unrelated footer link as page identity.
-    text = BeautifulSoup(content.decode("utf-8", errors="replace"), "html.parser").get_text(" ", strip=True)[:4000]
+    text = BeautifulSoup(decode_html(content), "html.parser").get_text(" ", strip=True)[:4000]
     hay = f"{url} {title} {text}"
     return bool(STRONG_STUDENT_TERMS.search(hay)) and not (
         PR_TERMS.search(f"{title} {url}") and not re.search(r"student", f"{title} {url}", re.I)
@@ -190,11 +195,8 @@ async def _sitemap_navigation_urls(fetcher: HardenedFetcher, website: str, max_u
         if map_url in seen_maps or len(seen_maps) >= 8:
             return
         seen_maps.add(map_url)
-        try:
-            r = await fetcher.fetch(map_url)
-        except Exception:
-            return
-        if r.status_code >= 400 or not r.content:
+        r = await fetcher.fetch_safe(map_url)
+        if r.access_class != "ok" or not r.content:
             return
         for raw in _sitemap_locs(r.content)[:8000]:
             loc = normalize_url(raw)
@@ -219,7 +221,7 @@ async def _sitemap_navigation_urls(fetcher: HardenedFetcher, website: str, max_u
     return candidate_pages[:max_urls]
 
 
-async def institution_site_candidates(fetcher: HardenedFetcher, website: str, inst_name: str) -> list[SearchResult]:
+async def institution_site_candidates(fetcher: HardenedFetcher, website: str, inst_name: str, max_pages: int = 20) -> list[SearchResult]:
     """Bounded institution-site discovery with sitemap and student-life recovery passes.
 
     It inspects the homepage, a small number of likely student-life/media pages, and
@@ -241,20 +243,16 @@ async def institution_site_candidates(fetcher: HardenedFetcher, website: str, in
             if u not in queued:
                 queued.add(u)
                 queue.append((u, 1, "institution_sitemap"))
-    except Exception:
-        pass
+    except Exception as exc:
+        fetcher._event(f"sitemap discovery failed for {root}: {type(exc).__name__}: {exc}")
 
-    max_pages = 20
     while queue and len(visited) < max_pages:
         page_url, depth, source = queue.popleft()
         if page_url in visited:
             continue
         visited.add(page_url)
-        try:
-            r = await fetcher.fetch(page_url)
-        except Exception:
-            continue
-        if r.status_code >= 400 or "html" not in r.content_type:
+        r = await fetcher.fetch_safe(page_url)
+        if r.access_class != "ok" or "html" not in (r.content_type or "html"):
             continue
 
         try:
@@ -314,6 +312,66 @@ async def institution_site_candidates(fetcher: HardenedFetcher, website: str, in
     return list(unique.values())[:50]
 
 
+DISCOVERY_LADDER = [
+    '"{name}" student newspaper',
+    '"{name}" student media',
+    '"{name}" campus newspaper',
+    '"{name}" independent student newspaper',
+    "site:{domain} student newspaper",
+]
+
+VERIFY_STUDENT = re.compile(
+    r"\b(?:student[-\s]run|student newspaper|student media|student journalists?|student[-\s]produced|"
+    r"independent student|editor[-\s]in[-\s]chief|managing editor|news editor|staff (?:box|list|directory)|masthead|"
+    r"campus newspaper|college newspaper|student publication|student voice)\b", re.I)
+VERIFY_PR = re.compile(
+    r"\b(?:office of (?:university |college )?(?:communications?|marketing|public affairs|media relations)|"
+    r"university communications|marketing (?:and|&) communications|media relations|news releases?|press releases?|"
+    r"for (?:the )?media|media contacts?|public affairs office|university relations)\b", re.I)
+SECTION_LINK = re.compile(r"/(?:news|sports|opinion|opinions|arts|culture|features|campus|life|editorial)(?:/|$)", re.I)
+DATE_LINK = re.compile(r"/(?:19|20)\d{2}/\d{1,2}/")
+
+
+async def verify_candidate(fetcher: HardenedFetcher, inst_name: str, inst_website: str | None, url: str) -> dict:
+    """Fetch a candidate (its site root when independently hosted) and look for student-newsroom identity."""
+    target = url
+    try:
+        p = urlsplit(url)
+        if inst_website and not same_site(inst_website, url):
+            target = f"{p.scheme}://{p.netloc}/"
+    except ValueError:
+        return {"verified": False, "delta": 0.0, "reason": "invalid_url"}
+    r = await fetcher.fetch_safe(target)
+    if r.access_class != "ok" or not r.content:
+        return {"verified": False, "delta": 0.0, "reason": f"unreachable:{r.access_class}", "url": target}
+    page = extract_main_text(r.content, r.content_type, r.final_url, r.headers)
+    top = f"{page.title} {page.full_text[:8000]}"
+    tokens = _name_tokens(inst_name)
+    inst_hits = sum(1 for t in tokens if t in top.lower())
+    student = bool(VERIFY_STUDENT.search(top) or STRONG_STUDENT_TERMS.search(top))
+    pr = bool(VERIFY_PR.search(f"{page.title} {page.full_text[:3000]}"))
+    newsy = sum(1 for _, h in page.links if SECTION_LINK.search(h) or DATE_LINK.search(h))
+    delta = 0.0
+    signals = []
+    if student:
+        delta += 0.12
+        signals.append("student_newsroom_identity")
+    if tokens and inst_hits >= max(1, len(tokens) // 2):
+        delta += 0.05
+        signals.append("institution_named")
+    if newsy >= 5:
+        delta += 0.05
+        signals.append(f"news_site_structure:{newsy}")
+    if pr and not student:
+        delta -= 0.45
+        signals.append("institutional_pr_identity")
+    return {"verified": True, "delta": round(delta, 3), "signals": signals, "url": r.final_url, "title": page.title[:200]}
+
+
+def _domain_key(url: str) -> str:
+    return registrableish_domain(url)
+
+
 async def discover_institution(
     db: Database,
     settings: Settings,
@@ -321,107 +379,135 @@ async def discover_institution(
     broker: SearchBroker,
     row,
     dashboard: RunDashboard | None = None,
+    run_id: str | None = None,
 ) -> dict[str, int | float]:
     unitid, name, website = row["unitid"], row["name"], row["website"]
+    early = settings.publication_early_stop_threshold
     results: list[SearchResult] = []
-    if website:
+    scored: dict[str, tuple[SearchResult, float, list[str]]] = {}
+    verification: dict[str, dict] = {}
+    searches = 0
+
+    def phase(msg: str) -> None:
+        if dashboard:
+            dashboard.update(phase=msg)
+
+    def rescore(new: list[SearchResult]) -> None:
+        for res in new:
+            key = normalize_url(res.url)
+            req = prepare_request_url(res.url)
+            if not key or not req:
+                continue
+            res.url = req
+            sc, reasons = score_candidate(name, website, res)
+            if sc < 0.15:
+                if dashboard:
+                    dashboard.log(f"  reject {sc:.2f} {req} {reasons[-2:]}")
+                continue
+            prev = scored.get(key)
+            if prev is None or sc > prev[1]:
+                scored[key] = (res, sc, reasons)
+
+    def effective(key: str) -> float:
+        base = scored[key][1]
+        v = verification.get(_domain_key(scored[key][0].url))
+        return max(0.0, min(1.0, base + (v["delta"] if v else 0.0)))
+
+    async def verify_top() -> float:
+        if settings.discovery_verify_top_candidates <= 0:
+            return max((s for _, s, _ in scored.values()), default=0.0)
+        ranked = sorted(scored, key=lambda k: -scored[k][1])
+        doms: list[str] = []
+        for key in ranked:
+            dom = _domain_key(scored[key][0].url)
+            if dom in doms:
+                continue
+            doms.append(dom)
+            if dom not in verification and scored[key][1] >= 0.35:
+                phase(f"verify {dom}")
+                verification[dom] = await verify_candidate(fetcher, name, website, scored[key][0].url)
+                if dashboard:
+                    dashboard.log(f"  verify {dom}: {verification[dom]}")
+            if len(doms) >= settings.discovery_verify_top_candidates:
+                break
+        return max((effective(k) for k in scored), default=0.0)
+
+    async def run_query(template: str) -> bool:
+        nonlocal searches
+        domain = registrableish_domain(website) if website else ""
+        if "{domain}" in template and not domain:
+            return False
+        query = template.format(name=name.replace('"', ""), domain=domain)
+        phase(f"search: {query[:60]}")
+        found, _qid, cached = await broker.search(query, purpose="publication_discovery", unitid=unitid,
+                                                   count=settings.search_results_per_query)
+        searches += 1
+        if dashboard:
+            dashboard.update(searches_live=broker.live_calls, searches_cached=broker.cached_calls,
+                             searches_failed=broker.failed_calls, credits_estimated=broker.credits_used)
+            dashboard.log(f"  query {'(cached) ' if cached else ''}{query} -> {len(found)} results")
+        results.extend(found)
+        rescore(found)
+        return True
+
+    ladder = DISCOVERY_LADDER[: settings.discovery_max_searches_per_institution]
+    use_search = broker.provider.name != "none"
+    best = 0.0
+    # 1) First ladder query (1 credit) usually finds the paper outright.
+    if use_search and ladder:
+        await run_query(ladder[0])
+        best = await verify_top()
+    # 2) Free: institution website, sitemap and student-life pages (also finds independent domains).
+    if best < early and website and settings.discovery_site_pages > 0:
+        phase("university site + sitemap")
         try:
-            if dashboard:
-                dashboard.update(phase="university site + sitemap")
-            results.extend(await institution_site_candidates(fetcher, website, name))
-        except Exception as exc:
-            db.execute(
-                "INSERT INTO errors(unitid,stage,error_type,message,retryable) VALUES(?,?,?,?,1)",
-                (unitid, "discovery_institution_site", type(exc).__name__, str(exc)),
-            )
-            db.conn.commit()
+            site = await institution_site_candidates(fetcher, website, name, max_pages=settings.discovery_site_pages)
+            results.extend(site)
+            rescore(site)
+            best = await verify_top()
+        except Exception as exc:  # one broken site never terminates the run
+            db.execute("INSERT INTO errors(unitid,stage,error_type,message,retryable,research_run_id) VALUES(?,?,?,?,1,?)",
+                       (unitid, "discovery_institution_site", type(exc).__name__, str(exc)[:1000], run_id))
             if dashboard:
                 dashboard.increment(errors=1)
                 dashboard.log(f"site discovery error {name}: {exc}")
+    # 3) Escalate through the remaining ladder only while confidence stays below the stop threshold.
+    if use_search:
+        for template in ladder[1:]:
+            if best >= early:
+                break
+            if await run_query(template):
+                best = await verify_top()
 
-    def best_score(items: list[SearchResult]) -> float:
-        return max((score_candidate(name, website, item)[0] for item in items), default=0.0)
-
-    queries = [
-        f'"{name}" student newspaper',
-        f'"{name}" student media newspaper',
-        f'"{name}" campus newspaper',
-        f'"{name}" newspaper editorial policy',
-        f'"{name}" independent student newspaper',
-        f'"{name}" student-run news',
-    ][: settings.discovery_max_searches_per_institution]
-
-    searches = 0
-    # Adaptive escalation: do not spend additional credits once a strong candidate is found.
-    if broker.provider.name != "none" and best_score(results) < settings.publication_early_stop_threshold:
-        for query in queries:
-            try:
-                if dashboard:
-                    dashboard.update(phase=f"search: {query[-42:]}")
-                found, _qid, cached = await broker.search(
-                    query,
-                    purpose="publication_discovery",
-                    unitid=unitid,
-                    count=settings.search_results_per_query,
-                )
-                results.extend(found)
-                searches += 1
-                if dashboard:
-                    if cached:
-                        dashboard.increment(searches_cached=1)
-                    else:
-                        dashboard.increment(searches_live=1, credits_estimated=1)
-                if best_score(found) >= settings.publication_early_stop_threshold or best_score(results) >= settings.publication_early_stop_threshold:
-                    break
-            except SearchBudgetExceeded:
-                raise
-            except Exception as exc:
-                db.execute(
-                    "INSERT INTO errors(unitid,stage,error_type,message,retryable) VALUES(?,?,?,?,1)",
-                    (unitid, "discovery_search", type(exc).__name__, str(exc)),
-                )
-                db.conn.commit()
-                if dashboard:
-                    dashboard.increment(errors=1)
-                    dashboard.log(f"search error {name}: {exc}")
-
-    inserted = 0
-    high = 0
+    inserted = high = 0
     top_score = 0.0
-    best_by_url: dict[str, tuple[SearchResult, float, list[str]]] = {}
-    for result in results:
-        url = normalize_url(result.url)
-        if not url:
-            continue
-        result.url = url
-        score, reasons = score_candidate(name, website, result)
-        top_score = max(top_score, score)
-        if score < 0.15:
-            continue
-        prev = best_by_url.get(url)
-        if prev is None or score > prev[1]:
-            best_by_url[url] = (result, score, reasons)
-
     with db.transaction():
-        for url, (result, score, reasons) in best_by_url.items():
+        for key, (res, sc, reasons) in scored.items():
+            v = verification.get(_domain_key(res.url))
+            eff = effective(key)
+            top_score = max(top_score, eff)
             db.conn.execute(
                 """
-                INSERT INTO publication_candidates(unitid,url,domain,title,snippet,source,query,score,score_reasons_json)
-                VALUES(?,?,?,?,?,?,?,?,?)
+                INSERT INTO publication_candidates(unitid,url,domain,title,snippet,source,query,score,score_reasons_json,
+                  discovery_run_id,verification_json,verified_score)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(unitid,url) DO UPDATE SET
                   title=excluded.title,snippet=excluded.snippet,source=excluded.source,query=excluded.query,
-                  score=excluded.score,score_reasons_json=excluded.score_reasons_json,
-                  updated_at=CURRENT_TIMESTAMP
+                  score=excluded.score,score_reasons_json=excluded.score_reasons_json,discovery_run_id=excluded.discovery_run_id,
+                  verification_json=excluded.verification_json,verified_score=excluded.verified_score,updated_at=CURRENT_TIMESTAMP
                 """,
-                (unitid, url, registrableish_domain(url), result.title, result.snippet,
-                 result.provider, result.query, score, json.dumps(reasons)),
+                (unitid, res.url, registrableish_domain(res.url), res.title, res.snippet, res.provider, res.query, sc,
+                 json.dumps(reasons), run_id, json.dumps(v or {}), eff),
             )
             inserted += 1
-            if score >= settings.publication_confidence_threshold:
+            if eff >= settings.publication_confidence_threshold:
                 high += 1
-                if dashboard:
-                    dashboard.add_recent(f"✓ {name}: {result.title or url} [{score:.2f}]")
-    return {"candidates": inserted, "high": high, "searches": searches, "top_score": top_score}
+    if dashboard and top_score >= settings.publication_confidence_threshold:
+        best_key = max(scored, key=effective)
+        dashboard.add_recent(f"✓ {name}: {scored[best_key][0].title[:50] or scored[best_key][0].url} [{top_score:.2f}]")
+    elif dashboard:
+        dashboard.add_recent(f"? {name}: unresolved (best {top_score:.2f})")
+    return {"candidates": inserted, "high": high, "searches": searches, "top_score": round(top_score, 3)}
 
 
 async def discover_all(
@@ -432,91 +518,230 @@ async def discover_all(
     run_id: str | None = None,
     quiet: bool = False,
     verbose: bool = False,
+    max_searches: int | None = None,
+    refresh_search: bool = False,
+    fresh: bool = False,
+    states: list[str] | None = None,
+    unitids: list[str] | None = None,
+    provider=None,
+    fetcher: HardenedFetcher | None = None,
+    stop: StopController | None = None,
+    command: str | None = None,
 ) -> dict[str, int | str]:
-    import uuid
-
-    provider = get_search_provider(settings.search_provider, settings.user_agent)
-    rid = run_id or f"discovery-{uuid.uuid4().hex}"
-    db.execute(
-        "INSERT OR IGNORE INTO research_runs(id,mode,config_json,status) VALUES(?,?,?,'running')",
-        (rid, "publication_discovery", settings.model_dump_json()),
-    )
-    db.conn.commit()
-    broker = SearchBroker(db, settings, rid, provider)
-    sql = "SELECT unitid,name,website FROM institutions WHERE included=1 ORDER BY unitid"
-    params: tuple = ()
+    provider = provider or get_search_provider(settings.search_provider, settings.user_agent)
+    rid, resumed = create_or_resume_run(db, settings, "publication_discovery", run_id,
+                                        params={"limit": limit, "states": states, "unitids": unitids},
+                                        command=command, max_searches=max_searches)
+    broker = SearchBroker(db, settings, rid, provider, max_searches=max_searches, refresh=refresh_search)
+    sql = "SELECT unitid,name,website,state FROM institutions WHERE included=1"
+    params: list = []
+    if states:
+        sql += f" AND state IN ({','.join('?' * len(states))})"
+        params += [s.upper() for s in states]
+    if unitids:
+        sql += f" AND unitid IN ({','.join('?' * len(unitids))})"
+        params += unitids
+    sql += " ORDER BY unitid"
     if limit:
         sql += " LIMIT ?"
-        params = (limit,)
+        params.append(limit)
     rows = db.execute(sql, params).fetchall()
-    candidates = high = processed = 0
-    try:
-        with RunDashboard("NSMPA Publication Discovery", len(rows), quiet=quiet, verbose=verbose) as dash:
-            async with HardenedFetcher(settings) as fetcher:
-                for idx, row in enumerate(rows, start=1):
-                    dash.update(current=row["name"], phase="starting institution")
-                    try:
-                        result = await discover_institution(db, settings, fetcher, broker, row, dash)
-                        candidates += int(result["candidates"])
-                        high += int(result["high"])
-                    except SearchBudgetExceeded as exc:
-                        dash.add_recent(f"Search budget reached: {exc}")
-                        break
-                    processed += 1
-                    dash.update(completed=idx, candidates=candidates, high_confidence=high)
-        db.execute("UPDATE research_runs SET completed_at=CURRENT_TIMESTAMP,status='completed',entities_completed=? WHERE id=?", (processed, rid))
+    register_items(db, rid, "institution", [r["unitid"] for r in rows])
+    if fresh:
+        db.execute("UPDATE run_items SET status='pending' WHERE run_id=? AND item_type='institution'", (rid,))
         db.conn.commit()
-    except Exception:
-        db.execute("UPDATE research_runs SET completed_at=CURRENT_TIMESTAMP,status='failed' WHERE id=?", (rid,)); db.conn.commit()
-        raise
+    done = done_keys(db, rid, "institution")
+    todo = [r for r in rows if r["unitid"] not in done]
+    stop = stop or StopController()
+    stats = {"candidates": 0, "high": 0, "processed": 0, "failed": 0}
+    stop_reason = ""
+    dash = RunDashboard("NSMPA Publication Discovery", len(rows), quiet=quiet, verbose=verbose,
+                        universe="Student Journalism (IPEDS four-year)")
+    own_fetcher = fetcher is None
+    fetcher = fetcher or HardenedFetcher(settings, on_event=dash.log)
+    queue: deque = deque(todo)
+    with dash:
+        dash.update(completed=len(rows) - len(todo), skipped_done=len(rows) - len(todo), budget_limit=max_searches)
+        if resumed:
+            dash.add_recent(f"Resumed run {rid}: {len(rows) - len(todo)} institutions already complete")
+        stop.on_stop(dash.notice)
+        uninstall = stop.install()
 
-    with_candidates = db.execute(
-        """
-        SELECT COUNT(DISTINCT c.unitid) AS n
-        FROM publication_candidates c
-        JOIN institutions i ON i.unitid=c.unitid
-        WHERE i.included=1 AND c.score>=0.40
-        """
-    ).fetchone()["n"]
+        async def worker() -> None:
+            nonlocal stop_reason
+            while queue and not stop.stop_requested:
+                row = queue.popleft()
+                key = row["unitid"]
+                dash.update(current=row["name"], publication="")
+                mark_item(db, rid, "institution", key, "running")
+                try:
+                    res = await discover_institution(db, settings, fetcher, broker, row, dash, rid)
+                    mark_item(db, rid, "institution", key, "done", result=res)
+                    stats["candidates"] += int(res["candidates"])
+                    stats["high"] += int(res["high"])
+                    stats["processed"] += 1
+                    dash.update(candidates=stats["candidates"], high_confidence=stats["high"])
+                except SearchBudgetExceeded as exc:
+                    mark_item(db, rid, "institution", key, "pending", error=str(exc))
+                    stop_reason = f"budget_exhausted: {exc}"
+                    stop.stop_requested = True
+                    dash.notice(f"Search budget reached ({exc}). Checkpointing; rerun the same command to resume.")
+                except SearchAuthError as exc:
+                    mark_item(db, rid, "institution", key, "pending", error=str(exc))
+                    stop_reason = f"search_auth_error: {exc}"
+                    stop.stop_requested = True
+                    dash.notice(f"Search provider rejected the API key/account: {exc}")
+                except asyncio.CancelledError:
+                    mark_item(db, rid, "institution", key, "pending", error="cancelled")
+                    raise
+                except Exception as exc:
+                    stats["failed"] += 1
+                    mark_item(db, rid, "institution", key, "failed", error=f"{type(exc).__name__}: {exc}"[:500])
+                    db.execute("INSERT INTO errors(unitid,stage,error_type,message,retryable,research_run_id) VALUES(?,?,?,?,1,?)",
+                               (key, "discovery", type(exc).__name__, str(exc)[:1000], rid))
+                    db.conn.commit()
+                    dash.increment(errors=1)
+                    dash.log(f"discovery failure {row['name']}: {type(exc).__name__}: {exc}")
+                finally:
+                    st = fetcher.stats
+                    dash.increment(completed=1)
+                    dash.update(pages_fetched=st.fetched_ok, robots_blocked=st.robots_blocked, access_blocked=st.access_blocked,
+                                malformed_skipped=st.malformed_skipped, retries=st.retries)
+                    dash.checkpoint()
+
+        tasks = [asyncio.create_task(worker()) for _ in range(min(settings.discovery_concurrency, max(1, len(todo))))]
+        for t in tasks:
+            stop.track(t)
+        try:
+            await asyncio.gather(*tasks)
+        except asyncio.CancelledError:
+            stop_reason = stop_reason or "force-cancelled by user"
+        finally:
+            uninstall()
+            if own_fetcher:
+                await fetcher.close()
+            await broker.aclose()
+    remaining = len(rows) - len(done_keys(db, rid, "institution"))
+    if stop_reason.startswith("budget"):
+        status = "budget_exhausted"
+    elif stop_reason.startswith("search_auth"):
+        status = "failed"
+    elif stop.stop_requested and remaining:
+        status, stop_reason = "interrupted", stop_reason or stop.reason
+    else:
+        status = "completed"
+    finish_run(db, rid, status, stop_reason or None)
+    with_candidates = db.scalar(
+        "SELECT COUNT(DISTINCT c.unitid) FROM publication_candidates c JOIN institutions i ON i.unitid=c.unitid "
+        "WHERE i.included=1 AND COALESCE(c.verified_score,c.score)>=?", (settings.publication_confidence_threshold,))
     return {
-        "run_id": rid,
-        "institutions": processed,
-        "candidates": candidates,
-        "high_confidence_candidates": high,
-        "institutions_with_plausible_candidates_total": int(with_candidates or 0),
-        "provider": provider.name,
-        "searches_live": broker.live_calls,
-        "searches_cached": broker.cached_calls,
-        "credits_estimated": broker.credits_used,
+        "run_id": rid, "status": status, "stop_reason": stop_reason, "institutions_selected": len(rows),
+        "processed_this_invocation": stats["processed"], "failed": stats["failed"], "remaining": remaining,
+        "candidates": stats["candidates"], "high_confidence_candidates": stats["high"],
+        "institutions_with_high_confidence_candidate_total": int(with_candidates or 0),
+        "provider": provider.name, "searches_live": broker.live_calls, "searches_cached": broker.cached_calls,
+        "searches_failed": broker.failed_calls, "credits_estimated": broker.credits_used,
     }
 
 
-def promote_candidates(db: Database, threshold: float) -> dict[str, int]:
+_NAME_SPLIT = re.compile(r"\s+[|–—:-]\s+|\s+-\s+")
+_GENERIC_NAME = re.compile(r"^(?:home|homepage|news|student media|student newspaper|the student newspaper|welcome|index|"
+                           r"student publications?|campus newspaper|official site)$", re.I)
+
+
+def clean_publication_name(title: str | None, url: str, inst_name: str) -> str:
+    parts = [p.strip() for p in _NAME_SPLIT.split(title or "") if p.strip()]
+    for p in parts:
+        if _GENERIC_NAME.match(p) or STRONG_STUDENT_TERMS.fullmatch(p):
+            continue
+        if PAPER_NAME_TERMS.search(p) or p.lower().startswith("the "):
+            return p[:120]
+    for p in parts:
+        if not _GENERIC_NAME.match(p) and len(p) <= 80 and p.lower() != inst_name.lower():
+            return p[:120]
+    host = registrableish_domain(url)
+    return f"{inst_name} student publication ({host})"
+
+
+def _relationship(inst_website: str | None, url: str) -> str:
+    if not inst_website:
+        return "unknown"
+    if not same_site(inst_website, url):
+        return "independent_domain"
+    host = registrableish_domain(url)
+    inst = registrableish_domain(inst_website)
+    if host != inst:
+        return "institution_subdomain"
+    return "institution_path"
+
+
+def promote_candidates(db: Database, threshold: float, margin: float = 0.08) -> dict[str, int]:
+    """Promote the best candidate per institution, preserving human/manual verifications.
+
+    - Effective score = verified_score when available, else search score.
+    - A student-media hub page on the university site loses to an independently hosted publication
+      that scores within 0.10, because hubs usually link to the actual paper.
+    - Two distinct domains above threshold within ``margin`` are flagged ``ambiguous`` and queued for review.
+    """
+    protected = {r[0] for r in db.execute(
+        "SELECT unitid FROM publications WHERE verification_status IN ('manual','human_verified')")}
     rows = db.execute(
         """
-        SELECT c.*, i.name AS institution_name
+        SELECT c.*, COALESCE(c.verified_score, c.score) AS eff, i.name AS institution_name, i.website
         FROM publication_candidates c JOIN institutions i ON i.unitid=c.unitid
-        WHERE c.score>=? AND c.status!='rejected'
-        ORDER BY c.unitid,c.score DESC,c.id
-        """, (threshold,)
-    ).fetchall()
-    promoted = 0
-    seen_unitids: set[str] = set()
+        WHERE c.status NOT IN ('rejected') AND COALESCE(c.verified_score, c.score) >= ?
+        ORDER BY c.unitid, eff DESC, c.id
+        """, (threshold - 0.10,)).fetchall()
+    by_unit: dict[str, list] = {}
+    for r in rows:
+        by_unit.setdefault(r["unitid"], []).append(r)
+    promoted = ambiguous = skipped_protected = 0
     with db.transaction():
-        for row in rows:
-            if row["unitid"] in seen_unitids:
+        for unitid, cands in by_unit.items():
+            if unitid in protected:
+                skipped_protected += 1
                 continue
-            seen_unitids.add(row["unitid"])
+            best_by_domain: dict[str, object] = {}
+            for c in cands:
+                best_by_domain.setdefault(c["domain"], c)
+            ranked = sorted(best_by_domain.values(), key=lambda c: -c["eff"])
+            best = ranked[0]
+            if best["eff"] < threshold:
+                continue
+            if _relationship(best["website"], best["url"]) != "independent_domain":
+                indep = [c for c in ranked[1:] if _relationship(c["website"], c["url"]) == "independent_domain"
+                         and c["eff"] >= best["eff"] - 0.10]
+                if indep:
+                    best = indep[0]
+            rivals = [c for c in ranked if c is not best and c["eff"] >= threshold and abs(best["eff"] - c["eff"]) <= margin]
+            is_amb = int(bool(rivals))
+            rel = _relationship(best["website"], best["url"])
+            pub_name = clean_publication_name(best["title"], best["url"], best["institution_name"])
+            db.conn.execute("UPDATE publications SET is_primary=0, updated_at=CURRENT_TIMESTAMP WHERE unitid=? AND domain!=? "
+                            "AND verification_status='auto'", (unitid, best["domain"]))
             db.conn.execute(
                 """
-                INSERT INTO publications(unitid,name,homepage_url,domain,confidence,verification_status,is_primary)
-                VALUES(?,?,?,?,?,'auto',1)
-                ON CONFLICT(unitid,domain) DO UPDATE SET
-                  homepage_url=excluded.homepage_url,confidence=MAX(publications.confidence,excluded.confidence),
+                INSERT INTO publications(unitid,name,homepage_url,domain,confidence,verification_status,is_primary,relationship,
+                  discovery_method,candidate_id,ambiguous)
+                VALUES(?,?,?,?,?,'auto',1,?,?,?,?)
+                ON CONFLICT(unitid,domain) DO UPDATE SET name=excluded.name,homepage_url=excluded.homepage_url,
+                  confidence=excluded.confidence,is_primary=1,relationship=excluded.relationship,
+                  discovery_method=excluded.discovery_method,candidate_id=excluded.candidate_id,ambiguous=excluded.ambiguous,
                   updated_at=CURRENT_TIMESTAMP
                 """,
-                (row["unitid"], row["title"] or row["institution_name"], row["url"], row["domain"], row["score"]),
+                (unitid, pub_name, best["url"], best["domain"], best["eff"], rel, best["source"], best["id"], is_amb),
             )
-            db.conn.execute("UPDATE publication_candidates SET status='promoted' WHERE id=?", (row["id"],))
+            db.conn.execute("UPDATE publication_candidates SET status='promoted' WHERE id=?", (best["id"],))
+            pid = db.conn.execute("SELECT id FROM publications WHERE unitid=? AND domain=?", (unitid, best["domain"])).fetchone()[0]
+            reasons = ["auto_promoted"]
+            prio = 5.0
+            if is_amb:
+                ambiguous += 1
+                prio += 20
+                reasons.append("ambiguous_publication_identification")
+            if best["eff"] < threshold + 0.1:
+                prio += 10
+                reasons.append("near_threshold_confidence")
+            enqueue_publication_review(db, pid, unitid, prio, reasons)
             promoted += 1
-    return {"promoted": promoted}
+    return {"promoted": promoted, "ambiguous": ambiguous, "skipped_human_verified": skipped_protected}
