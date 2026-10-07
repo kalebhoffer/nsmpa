@@ -510,3 +510,17 @@ def test_failed_migration_rolls_back(tmp_path, monkeypatch):
     assert conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE name='half_done'").fetchone()[0] == 0
     assert 3 not in {r[0] for r in conn.execute("SELECT version FROM schema_migrations")}
     conn.close()
+
+
+async def test_no_search_provider_never_yields_no_guidance(tmp_path, db):
+    """Regression (found in live smoke test): null-provider 'searches' must not count as inspection."""
+    from nsmpa.search import NullSearchProvider
+    settings = make_settings(tmp_path)
+    seed_newsrooms(tmp_path, db)
+    rid, s = await run_research(db, settings, NullSearchProvider())
+    st = stances(db, rid)
+    assert st["Quiet Gazette"] == "UNDETERMINED"
+    assert db.scalar("SELECT COUNT(*) FROM search_queries WHERE run_id=?", (rid,)) == 0
+    assert s["searches_live"] == 0
+    # Determinate first-party policy found via homepage links is still classified.
+    assert st["Strict Times"] in {"UPDATE_ONLY", "STRICT_ARCHIVE"}

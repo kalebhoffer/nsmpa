@@ -67,8 +67,10 @@ def coverage_for(db: Database, run_id: str, entity_id: int) -> dict:
     fp = [r for r in rows if r["first_party"]]
     fp_ok = [r for r in fp if r["access_class"] == "ok"]
     fp_bad = [r for r in fp if (r["access_class"] or "") in INACCESSIBLE_CLASSES]
+    # Only real search providers count toward inspection coverage.
     q = db.execute(
-        "SELECT status, purpose FROM search_queries WHERE run_id=? AND entity_id=?", (run_id, entity_id)).fetchall()
+        "SELECT status, purpose FROM search_queries WHERE run_id=? AND entity_id=? AND provider!='none'",
+        (run_id, entity_id)).fetchall()
     tier1 = [r for r in q if ":t1:" in (r["purpose"] or "")]
     return {
         "first_party_pages_attempted": len(fp),
@@ -169,7 +171,9 @@ def classify_entity(db: Database, settings: Settings, run_id: str, entity) -> St
                 missing.append(f"only {cov['first_party_pages_ok']} first-party page(s) fetched")
             if cov["first_party_inaccessible"]:
                 missing.append(f"{cov['first_party_inaccessible']} first-party page(s) inaccessible")
-            if cov["tier1_completed"] < cov["tier1_queries"] or not cov["tier1_queries"]:
+            if not cov["tier1_queries"]:
+                missing.append("no targeted searches were run (no search provider configured)")
+            elif cov["tier1_completed"] < cov["tier1_queries"]:
                 missing.append("core searches incomplete")
             rationale = "Insufficient inspection for a no-guidance finding: " + ("; ".join(missing) or "coverage threshold not met")
 
