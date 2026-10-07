@@ -16,7 +16,7 @@ from rich.table import Table
 from . import __version__
 from .benchmarks import seed_benchmark_newsrooms
 from .classify import classify_all
-from .config import load_settings, resolve_config_path
+from .config import load_settings
 from .crawl import complete_run, crawl_all, create_run
 from .db import Database
 from .discovery import discover_all, promote_candidates
@@ -644,6 +644,23 @@ def doctor_cmd(network: bool = typer.Option(True, "--network/--no-network", help
     from .doctor import run_doctor
     ok = run_doctor(console, config, network=network, check_serper=check_serper)
     raise typer.Exit(code=0 if ok else 1)
+
+
+@app.command("exclude-run")
+def exclude_run_cmd(run_id: str = typer.Argument(...), reason: str = typer.Option(..., "--reason"),
+                    undo: bool = typer.Option(False, "--undo", help="Restore the run to 'completed'"),
+                    config: Path | None = ConfigOpt) -> None:
+    """Exclude a run (e.g. a smoke test) from validation and reports without deleting any data."""
+    db, _ = _db(config)
+    try:
+        if not db.scalar("SELECT COUNT(*) FROM research_runs WHERE id=?", (run_id,)):
+            raise typer.BadParameter(f"Unknown run {run_id}")
+        db.execute("UPDATE research_runs SET status=?, status_reason=? WHERE id=?",
+                   ("completed" if undo else "excluded", None if undo else f"excluded: {reason}", run_id))
+        db.conn.commit()
+        console.print(f"Run {run_id} {'restored' if undo else 'excluded from reports'}")
+    finally:
+        db.close()
 
 
 @app.command("version")

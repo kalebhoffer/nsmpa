@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import asyncio
 import heapq
 import json
 import re
 import uuid
-from dataclasses import asdict
-from pathlib import Path
 from urllib.parse import urljoin, urlsplit
 
 from .config import Settings

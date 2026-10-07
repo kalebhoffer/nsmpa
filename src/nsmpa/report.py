@@ -54,7 +54,8 @@ def _fmt(v) -> str:
 
 def _evidence_sql(where: str, latest_only: bool) -> str:
     run_clause = ("AND e.run_id=(SELECT s2.run_id FROM entity_stances s2 WHERE s2.entity_id=e.entity_id "
-                  "AND s2.stance_version='0.3' ORDER BY s2.id DESC LIMIT 1)") if latest_only else "AND e.run_id=:run"
+                  "AND s2.stance_version='0.3' AND s2.run_id NOT IN (SELECT id FROM research_runs WHERE status='excluded') "
+                  "ORDER BY s2.id DESC LIMIT 1)") if latest_only else "AND e.run_id=:run"
     return f"""
       SELECT e.id AS evidence_id, e.cohort, re.name AS entity, re.parent_name, e.evidence_class, e.statement_type,
              e.direction, e.similarity_score, e.authority_score, e.verification_status, e.excerpt, e.source_url,
@@ -143,7 +144,7 @@ def build_report(db: Database, settings: Settings, out_dir: Path, run_id: str | 
 
     runs = [dict(r) for r in db.execute(
         "SELECT id, mode, status, status_reason, engine_version, started_at, completed_at, searches_live, searches_cached, credits_estimated "
-        "FROM research_runs WHERE engine_version!='0.2' ORDER BY started_at")]
+        "FROM research_runs WHERE engine_version!='0.2' AND status!='excluded' ORDER BY started_at")]
 
     # ------------------------------------------------------------------ markdown
     L: list[str] = [
