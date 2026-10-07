@@ -1,0 +1,597 @@
+"""Versioned, additive schema migrations.
+
+Rules:
+- Migrations never drop or rewrite research data. Legacy tables stay readable.
+- Each migration runs in its own transaction and is recorded in ``schema_migrations``.
+- Before the first pending migration is applied to a non-empty database, a full SQLite
+  backup is written next to the database (``backups/``).
+"""
+from __future__ import annotations
+
+import sqlite3
+from typing import Callable
+
+BASELINE_V2 = r"""
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS institutions (
+  unitid TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  city TEXT,
+  state TEXT,
+  website TEXT,
+  control INTEGER,
+  level INTEGER,
+  source_year INTEGER,
+  included INTEGER NOT NULL DEFAULT 1,
+  raw_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS publication_candidates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  unitid TEXT NOT NULL REFERENCES institutions(unitid) ON DELETE CASCADE,
+  url TEXT NOT NULL,
+  domain TEXT NOT NULL,
+  title TEXT,
+  snippet TEXT,
+  source TEXT NOT NULL,
+  query TEXT,
+  score REAL NOT NULL DEFAULT 0,
+  score_reasons_json TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL DEFAULT 'candidate',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(unitid, url)
+);
+
+CREATE INDEX IF NOT EXISTS idx_candidates_unitid_score ON publication_candidates(unitid, score DESC);
+
+CREATE TABLE IF NOT EXISTS publications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  unitid TEXT NOT NULL REFERENCES institutions(unitid) ON DELETE CASCADE,
+  name TEXT,
+  homepage_url TEXT NOT NULL,
+  domain TEXT NOT NULL,
+  confidence REAL NOT NULL,
+  verification_status TEXT NOT NULL DEFAULT 'auto',
+  is_primary INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(unitid, domain)
+);
+
+CREATE TABLE IF NOT EXISTS crawl_runs (
+  id TEXT PRIMARY KEY,
+  started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  completed_at TEXT,
+  command TEXT,
+  config_json TEXT NOT NULL,
+  git_sha TEXT,
+  status TEXT NOT NULL DEFAULT 'running'
+);
+
+CREATE TABLE IF NOT EXISTS pages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  publication_id INTEGER NOT NULL REFERENCES publications(id) ON DELETE CASCADE,
+  run_id TEXT NOT NULL REFERENCES crawl_runs(id) ON DELETE CASCADE,
+  requested_url TEXT NOT NULL,
+  final_url TEXT,
+  canonical_url TEXT,
+  depth INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL,
+  http_status INTEGER,
+  content_type TEXT,
+  title TEXT,
+  text_length INTEGER NOT NULL DEFAULT 0,
+  content_sha256 TEXT,
+  meta_robots TEXT,
+  x_robots_tag TEXT,
+  noindex INTEGER NOT NULL DEFAULT 0,
+  nofollow INTEGER NOT NULL DEFAULT 0,
+  policy_score REAL NOT NULL DEFAULT 0,
+  evidence_tags_json TEXT NOT NULL DEFAULT '[]',
+  headers_json TEXT NOT NULL DEFAULT '{}',
+  snapshot_path TEXT,
+  error TEXT,
+  fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(publication_id, run_id, requested_url)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pages_pub_policy ON pages(publication_id, policy_score DESC);
+CREATE INDEX IF NOT EXISTS idx_pages_noindex ON pages(publication_id, noindex);
+
+CREATE TABLE IF NOT EXISTS evidence (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  publication_id INTEGER NOT NULL REFERENCES publications(id) ON DELETE CASCADE,
+  page_id INTEGER REFERENCES pages(id) ON DELETE CASCADE,
+  run_id TEXT NOT NULL REFERENCES crawl_runs(id) ON DELETE CASCADE,
+  tag TEXT NOT NULL,
+  excerpt TEXT NOT NULL,
+  source_url TEXT NOT NULL,
+  evidence_type TEXT NOT NULL DEFAULT 'written_policy',
+  supports_relief INTEGER,
+  confidence REAL NOT NULL DEFAULT 0.5,
+  excerpt_sha256 TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(publication_id, run_id, tag, excerpt_sha256)
+);
+
+CREATE TABLE IF NOT EXISTS classifications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  publication_id INTEGER NOT NULL REFERENCES publications(id) ON DELETE CASCADE,
+  run_id TEXT NOT NULL REFERENCES crawl_runs(id) ON DELETE CASCADE,
+  primary_class TEXT NOT NULL,
+  confidence REAL NOT NULL,
+  rationale TEXT NOT NULL,
+  inspection_complete INTEGER NOT NULL DEFAULT 0,
+  pages_attempted INTEGER NOT NULL DEFAULT 0,
+  pages_fetched INTEGER NOT NULL DEFAULT 0,
+  policy_pages_found INTEGER NOT NULL DEFAULT 0,
+  blockers_json TEXT NOT NULL DEFAULT '[]',
+  requires_human_review INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(publication_id, run_id)
+);
+
+CREATE TABLE IF NOT EXISTS errors (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT REFERENCES crawl_runs(id) ON DELETE SET NULL,
+  unitid TEXT,
+  publication_id INTEGER,
+  stage TEXT NOT NULL,
+  url TEXT,
+  error_type TEXT,
+  message TEXT NOT NULL,
+  retryable INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS research_runs (
+  id TEXT PRIMARY KEY,
+  mode TEXT NOT NULL DEFAULT 'full',
+  started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  completed_at TEXT,
+  config_json TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'running',
+  searches_live INTEGER NOT NULL DEFAULT 0,
+  searches_cached INTEGER NOT NULL DEFAULT 0,
+  credits_estimated INTEGER NOT NULL DEFAULT 0,
+  entities_completed INTEGER NOT NULL DEFAULT 0,
+  notes TEXT
+);
+
+CREATE TABLE IF NOT EXISTS research_entities (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  cohort TEXT NOT NULL,
+  source_key TEXT NOT NULL,
+  name TEXT NOT NULL,
+  homepage_url TEXT,
+  domain TEXT,
+  state TEXT,
+  parent_name TEXT,
+  source TEXT NOT NULL DEFAULT 'manual',
+  verification_status TEXT NOT NULL DEFAULT 'seeded',
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(cohort, source_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_research_entities_cohort ON research_entities(cohort, active, name);
+CREATE INDEX IF NOT EXISTS idx_research_entities_domain ON research_entities(domain);
+
+CREATE TABLE IF NOT EXISTS search_cache (
+  provider TEXT NOT NULL,
+  query_hash TEXT NOT NULL,
+  query TEXT NOT NULL,
+  count_requested INTEGER NOT NULL,
+  response_json TEXT NOT NULL,
+  result_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_used_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  uses INTEGER NOT NULL DEFAULT 1,
+  PRIMARY KEY(provider, query_hash)
+);
+
+CREATE TABLE IF NOT EXISTS search_queries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+  entity_id INTEGER REFERENCES research_entities(id) ON DELETE SET NULL,
+  unitid TEXT,
+  provider TEXT NOT NULL,
+  purpose TEXT NOT NULL,
+  query TEXT NOT NULL,
+  query_hash TEXT NOT NULL,
+  count_requested INTEGER NOT NULL,
+  result_count INTEGER NOT NULL DEFAULT 0,
+  was_cached INTEGER NOT NULL DEFAULT 0,
+  credits_estimated INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'completed',
+  error TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_search_queries_run ON search_queries(run_id, purpose, entity_id, unitid);
+CREATE INDEX IF NOT EXISTS idx_search_queries_hash ON search_queries(provider, query_hash);
+
+CREATE TABLE IF NOT EXISTS search_results (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  query_id INTEGER NOT NULL REFERENCES search_queries(id) ON DELETE CASCADE,
+  rank INTEGER NOT NULL,
+  url TEXT NOT NULL,
+  domain TEXT,
+  title TEXT,
+  snippet TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(query_id, rank, url)
+);
+
+CREATE TABLE IF NOT EXISTS research_targets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+  entity_id INTEGER NOT NULL REFERENCES research_entities(id) ON DELETE CASCADE,
+  query_id INTEGER REFERENCES search_queries(id) ON DELETE SET NULL,
+  purpose TEXT NOT NULL,
+  topic TEXT NOT NULL,
+  url TEXT NOT NULL,
+  domain TEXT,
+  title TEXT,
+  snippet TEXT,
+  score REAL NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'candidate',
+  score_reasons_json TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(run_id, entity_id, purpose, url)
+);
+
+CREATE INDEX IF NOT EXISTS idx_research_targets_entity_score ON research_targets(run_id, entity_id, score DESC);
+
+CREATE TABLE IF NOT EXISTS research_pages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+  entity_id INTEGER NOT NULL REFERENCES research_entities(id) ON DELETE CASCADE,
+  target_id INTEGER REFERENCES research_targets(id) ON DELETE SET NULL,
+  requested_url TEXT NOT NULL,
+  final_url TEXT,
+  http_status INTEGER,
+  status TEXT NOT NULL,
+  content_type TEXT,
+  title TEXT,
+  text_length INTEGER NOT NULL DEFAULT 0,
+  content_sha256 TEXT,
+  meta_robots TEXT,
+  x_robots_tag TEXT,
+  noindex INTEGER NOT NULL DEFAULT 0,
+  policy_score REAL NOT NULL DEFAULT 0,
+  evidence_tags_json TEXT NOT NULL DEFAULT '[]',
+  headers_json TEXT NOT NULL DEFAULT '{}',
+  snapshot_path TEXT,
+  error TEXT,
+  fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(run_id, entity_id, requested_url)
+);
+
+CREATE INDEX IF NOT EXISTS idx_research_pages_entity ON research_pages(run_id, entity_id, policy_score DESC);
+
+CREATE TABLE IF NOT EXISTS research_evidence (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+  entity_id INTEGER NOT NULL REFERENCES research_entities(id) ON DELETE CASCADE,
+  page_id INTEGER REFERENCES research_pages(id) ON DELETE CASCADE,
+  topic TEXT,
+  tag TEXT NOT NULL,
+  excerpt TEXT NOT NULL,
+  source_url TEXT NOT NULL,
+  evidence_type TEXT NOT NULL DEFAULT 'written_policy',
+  supports_relief INTEGER,
+  confidence REAL NOT NULL DEFAULT 0.5,
+  similarity_score REAL NOT NULL DEFAULT 0,
+  excerpt_sha256 TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(run_id, entity_id, tag, excerpt_sha256)
+);
+
+CREATE INDEX IF NOT EXISTS idx_research_evidence_similarity ON research_evidence(run_id, similarity_score DESC);
+
+CREATE TABLE IF NOT EXISTS entity_stances (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+  entity_id INTEGER NOT NULL REFERENCES research_entities(id) ON DELETE CASCADE,
+  stance TEXT NOT NULL,
+  confidence REAL NOT NULL,
+  rationale TEXT NOT NULL,
+  evidence_count INTEGER NOT NULL DEFAULT 0,
+  supportive_count INTEGER NOT NULL DEFAULT 0,
+  adverse_count INTEGER NOT NULL DEFAULT 0,
+  max_similarity_score REAL NOT NULL DEFAULT 0,
+  requires_human_review INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(run_id, entity_id)
+);
+
+"""
+
+def run_script(conn: sqlite3.Connection, script: str) -> None:
+    """Execute a multi-statement script inside the caller's transaction.
+
+    ``sqlite3.executescript`` commits implicitly, which would break per-migration atomicity.
+    """
+    buf = ""
+    for line in script.splitlines(keepends=True):
+        buf += line
+        if sqlite3.complete_statement(buf):
+            stmt = buf.strip()
+            buf = ""
+            if stmt and not stmt.upper().startswith("PRAGMA"):
+                conn.execute(stmt)
+    if buf.strip():
+        raise ValueError(f"Incomplete SQL statement in migration: {buf[:120]!r}")
+
+
+def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def _add_column(conn: sqlite3.Connection, table: str, column: str, decl: str) -> None:
+    if column not in _columns(conn, table):
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+
+def migrate_v2(conn: sqlite3.Connection) -> None:
+    """Baseline schema shipped with v0.1/v0.2 (idempotent)."""
+    run_script(conn, BASELINE_V2)
+
+
+V3_TABLES = r"""
+CREATE TABLE IF NOT EXISTS run_items (
+  run_id TEXT NOT NULL,
+  item_type TEXT NOT NULL,
+  item_key TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  started_at TEXT,
+  completed_at TEXT,
+  error TEXT,
+  result_json TEXT NOT NULL DEFAULT '{}',
+  PRIMARY KEY(run_id, item_type, item_key)
+);
+CREATE INDEX IF NOT EXISTS idx_run_items_status ON run_items(run_id, item_type, status);
+
+CREATE TABLE IF NOT EXISTS snapshots (
+  sha256 TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  path TEXT NOT NULL,
+  content_type TEXT,
+  bytes INTEGER NOT NULL,
+  first_url TEXT,
+  first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS evidence_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+  entity_id INTEGER NOT NULL REFERENCES research_entities(id) ON DELETE CASCADE,
+  page_id INTEGER REFERENCES research_pages(id) ON DELETE SET NULL,
+  query_id INTEGER REFERENCES search_queries(id) ON DELETE SET NULL,
+  cohort TEXT NOT NULL,
+  source_url TEXT NOT NULL,
+  source_title TEXT,
+  source_domain TEXT,
+  fetched_at TEXT,
+  page_sha256 TEXT,
+  text_sha256 TEXT,
+  excerpt TEXT NOT NULL,
+  context TEXT,
+  excerpt_sha256 TEXT NOT NULL,
+  near_dup_key TEXT NOT NULL,
+  duplicate_of INTEGER REFERENCES evidence_items(id) ON DELETE SET NULL,
+  first_party INTEGER NOT NULL DEFAULT 0,
+  about_entity INTEGER NOT NULL DEFAULT 0,
+  evidence_class TEXT NOT NULL,
+  statement_type TEXT NOT NULL,
+  direction TEXT NOT NULL,
+  topic TEXT,
+  authority_score REAL NOT NULL DEFAULT 0,
+  relevance_score REAL NOT NULL DEFAULT 0,
+  similarity_score REAL NOT NULL DEFAULT 0,
+  similarity_factors_json TEXT NOT NULL DEFAULT '[]',
+  extraction_confidence REAL NOT NULL DEFAULT 0,
+  rationale TEXT,
+  verification_status TEXT NOT NULL DEFAULT 'unverified',
+  reviewer_note TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(run_id, entity_id, excerpt_sha256)
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_items_entity ON evidence_items(run_id, entity_id, direction);
+CREATE INDEX IF NOT EXISTS idx_evidence_items_similarity ON evidence_items(run_id, similarity_score DESC);
+CREATE INDEX IF NOT EXISTS idx_evidence_items_neardup ON evidence_items(near_dup_key);
+CREATE INDEX IF NOT EXISTS idx_evidence_items_cohort ON evidence_items(run_id, cohort, statement_type);
+
+CREATE TABLE IF NOT EXISTS evidence_item_tags (
+  evidence_id INTEGER NOT NULL REFERENCES evidence_items(id) ON DELETE CASCADE,
+  tag TEXT NOT NULL,
+  PRIMARY KEY(evidence_id, tag)
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_item_tags_tag ON evidence_item_tags(tag);
+
+CREATE TABLE IF NOT EXISTS review_queue (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL,
+  item_type TEXT NOT NULL,
+  item_id INTEGER NOT NULL,
+  entity_id INTEGER,
+  cohort TEXT,
+  priority REAL NOT NULL DEFAULT 0,
+  reasons_json TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL DEFAULT 'open',
+  decision TEXT,
+  reviewer TEXT,
+  note TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  reviewed_at TEXT,
+  UNIQUE(run_id, item_type, item_id)
+);
+CREATE INDEX IF NOT EXISTS idx_review_queue_open ON review_queue(status, priority DESC);
+
+CREATE TABLE IF NOT EXISTS entity_sources (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entity_id INTEGER NOT NULL REFERENCES research_entities(id) ON DELETE CASCADE,
+  source TEXT NOT NULL,
+  source_key TEXT NOT NULL,
+  source_url TEXT,
+  membership_label TEXT,
+  raw_json TEXT NOT NULL DEFAULT '{}',
+  imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(entity_id, source, source_key)
+);
+CREATE INDEX IF NOT EXISTS idx_entity_sources_source ON entity_sources(source);
+
+CREATE TABLE IF NOT EXISTS institution_attributes (
+  unitid TEXT NOT NULL REFERENCES institutions(unitid) ON DELETE CASCADE,
+  key TEXT NOT NULL,
+  value TEXT,
+  source TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(unitid, key, source)
+);
+CREATE INDEX IF NOT EXISTS idx_institution_attributes_key ON institution_attributes(key, value);
+
+CREATE INDEX IF NOT EXISTS idx_institutions_included ON institutions(included, state);
+CREATE INDEX IF NOT EXISTS idx_publications_unitid ON publications(unitid);
+CREATE INDEX IF NOT EXISTS idx_research_pages_url ON research_pages(final_url);
+CREATE INDEX IF NOT EXISTS idx_research_pages_status ON research_pages(run_id, status);
+CREATE INDEX IF NOT EXISTS idx_errors_run ON errors(run_id, stage);
+CREATE INDEX IF NOT EXISTS idx_search_results_query ON search_results(query_id);
+CREATE INDEX IF NOT EXISTS idx_entity_stances_run ON entity_stances(run_id, stance);
+"""
+
+
+def migrate_v3(conn: sqlite3.Connection) -> None:
+    """v0.3: checkpoints, unique evidence items, review queue, provenance, peer attributes."""
+    run_script(conn, V3_TABLES)
+    for col, decl in [
+        ("engine_version", "TEXT NOT NULL DEFAULT '0.2'"),
+        ("command", "TEXT"),
+        ("params_json", "TEXT NOT NULL DEFAULT '{}'"),
+        ("status_reason", "TEXT"),
+        ("last_checkpoint_at", "TEXT"),
+        ("max_searches", "INTEGER"),
+    ]:
+        _add_column(conn, "research_runs", col, decl)
+    for col, decl in [
+        ("produced_evidence", "INTEGER NOT NULL DEFAULT 0"),
+        ("latency_ms", "INTEGER"),
+        ("refresh", "INTEGER NOT NULL DEFAULT 0"),
+    ]:
+        _add_column(conn, "search_queries", col, decl)
+    for col, decl in [
+        ("canonical_url", "TEXT"),
+        ("access_class", "TEXT"),
+        ("page_kind", "TEXT"),
+        ("text_sha256", "TEXT"),
+        ("redirect_chain_json", "TEXT NOT NULL DEFAULT '[]'"),
+        ("in_sitemap", "INTEGER"),
+        ("query_id", "INTEGER"),
+    ]:
+        _add_column(conn, "research_pages", col, decl)
+    for col, decl in [
+        ("stance_version", "TEXT NOT NULL DEFAULT '0.2'"),
+        ("strongest_supportive_id", "INTEGER"),
+        ("strongest_adverse_id", "INTEGER"),
+        ("coverage_json", "TEXT NOT NULL DEFAULT '{}'"),
+        ("review_reasons_json", "TEXT NOT NULL DEFAULT '[]'"),
+        ("review_status", "TEXT NOT NULL DEFAULT 'unreviewed'"),
+        ("practice_summary", "TEXT"),
+        ("technical_summary", "TEXT"),
+    ]:
+        _add_column(conn, "entity_stances", col, decl)
+    for col, decl in [
+        ("merged_into", "INTEGER"),
+        ("priority_tier", "TEXT"),
+        ("entity_type", "TEXT"),
+    ]:
+        _add_column(conn, "research_entities", col, decl)
+    for col, decl in [
+        ("relationship", "TEXT NOT NULL DEFAULT 'unknown'"),
+        ("discovery_method", "TEXT"),
+        ("candidate_id", "INTEGER"),
+        ("ambiguous", "INTEGER NOT NULL DEFAULT 0"),
+        ("verification_note", "TEXT"),
+        ("verified_at", "TEXT"),
+    ]:
+        _add_column(conn, "publications", col, decl)
+    for col, decl in [
+        ("discovery_run_id", "TEXT"),
+        ("verification_json", "TEXT NOT NULL DEFAULT '{}'"),
+        ("verified_score", "REAL"),
+    ]:
+        _add_column(conn, "publication_candidates", col, decl)
+    for col, decl in [("entity_id", "INTEGER"), ("host", "TEXT")]:
+        _add_column(conn, "errors", col, decl)
+
+    # Record provenance for pre-existing seeded/imported entities so that later merges keep it.
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO entity_sources(entity_id,source,source_key,source_url,raw_json)
+        SELECT id, source, source_key, homepage_url, metadata_json FROM research_entities
+        """
+    )
+    # Mark v0.2 research data as legacy so v0.3 reports never mix engines silently.
+    conn.execute("UPDATE research_runs SET engine_version='0.2' WHERE engine_version IS NULL OR engine_version=''")
+    _create_views(conn)
+
+
+VIEWS = r"""
+DROP VIEW IF EXISTS v_institution_peer;
+CREATE VIEW v_institution_peer AS
+SELECT i.unitid, i.name, i.state, i.included,
+  CASE i.control WHEN 1 THEN 'public' WHEN 2 THEN 'private_nonprofit' WHEN 3 THEN 'private_for_profit' ELSE 'unknown' END AS control_label,
+  CAST(json_extract(i.raw_json,'$.OBEREG') AS INTEGER) AS obe_region,
+  CAST(json_extract(i.raw_json,'$.INSTSIZE') AS INTEGER) AS size_category,
+  CAST(json_extract(i.raw_json,'$.C21BASIC') AS INTEGER) AS carnegie_basic,
+  CAST(json_extract(i.raw_json,'$.HBCU') AS INTEGER) AS hbcu,
+  CAST(json_extract(i.raw_json,'$.LANDGRNT') AS INTEGER) AS land_grant,
+  CASE WHEN CAST(json_extract(i.raw_json,'$.C21BASIC') AS INTEGER) IN (15,16) THEN 1 ELSE 0 END AS research_university
+FROM institutions i;
+
+DROP VIEW IF EXISTS v_evidence_unique;
+CREATE VIEW v_evidence_unique AS
+SELECT e.*, re.name AS entity_name, re.parent_name,
+  (SELECT group_concat(tag, ';') FROM evidence_item_tags t WHERE t.evidence_id=e.id) AS tags
+FROM evidence_items e JOIN research_entities re ON re.id=e.entity_id
+WHERE e.duplicate_of IS NULL;
+
+DROP VIEW IF EXISTS v_cohort_stance_counts;
+CREATE VIEW v_cohort_stance_counts AS
+SELECT s.run_id, re.cohort, s.stance, COUNT(*) AS n
+FROM entity_stances s JOIN research_entities re ON re.id=s.entity_id
+GROUP BY s.run_id, re.cohort, s.stance;
+
+DROP VIEW IF EXISTS v_query_usefulness;
+CREATE VIEW v_query_usefulness AS
+SELECT run_id, purpose, COUNT(*) AS queries, SUM(was_cached) AS cached,
+  SUM(credits_estimated) AS credits, SUM(produced_evidence) AS useful,
+  ROUND(1.0*SUM(produced_evidence)/COUNT(*),3) AS useful_rate
+FROM search_queries GROUP BY run_id, purpose;
+"""
+
+
+def _create_views(conn: sqlite3.Connection) -> None:
+    run_script(conn, VIEWS)
+
+
+MIGRATIONS: list[tuple[int, str, Callable[[sqlite3.Connection], None]]] = [
+    (2, "baseline v0.1/v0.2 schema", migrate_v2),
+    (3, "v0.3 checkpoints, unique evidence, review queue, provenance, views", migrate_v3),
+]
+
+LATEST_VERSION = MIGRATIONS[-1][0]

@@ -59,6 +59,8 @@ class FetchResult:
     content_type: str
     robots_allowed: bool = True
     error: str | None = None
+    redirect_chain: list[str] = field(default_factory=list)
+    access_class: str = "ok"
 
 
 @dataclass(slots=True)
