@@ -96,6 +96,12 @@ def canned_findings(page: str) -> list[dict]:
             dict(quote="We happily delete any story on request.", kind="policy", action="unpublish",  # fabricated
                  position="permitted", direction="supportive", conditions="", speaker="", speaker_role=""),
         ]
+    if "Relief Daily removed the name" in page:
+        findings = [dict(quote="The Relief Daily removed the name of a former student from a 2015 arrest story after the charges were dismissed",
+                         kind="practice", action="anonymize", position="practiced", direction="supportive", conditions="",
+                         speaker="Pat Columnist", speaker_role="media columnist"),
+                    dict(quote="Another paper in Ohio refused to change anything", kind="opinion", action="none",
+                         position="mentioned", direction="neutral", conditions="", speaker="Ohio", speaker_role="")]
     if "served the valley since 1901" in page:
         findings = [dict(quote="The Strict Times has served the valley since 1901", kind="other", action="none",
                          position="mentioned", direction="adverse", conditions="", speaker="", speaker_role="")]
@@ -156,6 +162,9 @@ async def test_ai_review_verifies_quotes_compares_and_caches(tmp_path, db):
     assert db.scalar("SELECT COUNT(*) FROM review_queue WHERE reasons_json LIKE '%ai_rule%'") >= 1
     # Stances are untouched by AI output.
     assert tp.stances(db, rid)["Strict Times"] == "UPDATE_ONLY"
+    v = db.execute("SELECT * FROM voices WHERE person_name='Pat Columnist'").fetchone()
+    assert v and v["attribution_method"].startswith("ai:") and v["role"] == "media columnist" and v["direction"] == "supportive"
+    assert db.scalar("SELECT COUNT(*) FROM voices WHERE person_name='Ohio'") == 0  # single-word "speaker" rejected
     ai2 = FakeAI()
     res2 = await run_ai_review(db, s, run_id=rid, quiet=True, client=ai2)
     assert ai2.calls == 0 and res2["cached"] == res["live_calls"]
@@ -290,3 +299,55 @@ def test_notify_escapes_and_is_platform_safe(monkeypatch):
     assert n.notify("t", "m", enabled=False) is False
     monkeypatch.setattr(n.sys, "platform", "linux")
     assert n.notify("t", "m") is False
+
+
+
+# ============================================================================ v0.6 stage 5: AI discovery assist
+
+class FakeDiscoveryAI:
+    def __init__(self, answer):
+        self.answer, self.calls = answer, 0
+        self.models = SimpleNamespace(generate_content=self.generate_content)
+
+    def generate_content(self, *, model, contents, config):
+        self.calls += 1
+        from google.genai import types
+        return SimpleNamespace(text=json.dumps(self.answer), prompt_feedback=None,
+                               candidates=[SimpleNamespace(finish_reason=types.FinishReason.STOP)],
+                               usage_metadata=SimpleNamespace(prompt_token_count=10, candidates_token_count=5))
+
+
+def _ambiguous_institution(db):
+    db.execute("INSERT INTO institutions(unitid,name,website,control,level,included) VALUES('900009','Ambig U','https://ambig.edu/',1,1,1)")
+    for url, dom, title in (("https://paper-a.example/", "paper-a.example", "The Ambig Times | student newspaper"),
+                            ("https://paper-b.example/", "paper-b.example", "Ambig Review | student news")):
+        db.execute("INSERT INTO publication_candidates(unitid,url,domain,title,source,score,verified_score) VALUES(?,?,?,?,?,?,?)",
+                   ("900009", url, dom, title, "serper", 0.70, 0.70))
+    db.conn.commit()
+
+
+def test_ai_discovery_pick_breaks_tie_and_is_reviewed(tmp_path, db):
+    from nsmpa.ai_discovery import run_ai_discovery
+    from nsmpa.discovery import promote_candidates
+    s = make_settings(tmp_path)
+    _ambiguous_institution(db)
+    res = run_ai_discovery(db, s, client=FakeDiscoveryAI({"choice": 2, "confidence": 0.9, "publication_name": "Ambig Review", "reason": "r"}))
+    assert res["picked"] == 1
+    out = promote_candidates(db, 0.6, use_ai=True)
+    pub = db.execute("SELECT * FROM publications WHERE unitid='900009'").fetchone()
+    assert out["ai_assisted"] == 1 and pub["domain"] == "paper-b.example" and pub["ambiguous"] == 0
+    assert "ai_assist" in pub["discovery_method"]
+    assert "ai_assisted_identification" in db.scalar("SELECT reasons_json FROM review_queue WHERE item_type='publication'")
+
+
+def test_ai_discovery_rejects_out_of_range_choice_and_respects_none(tmp_path, db):
+    from nsmpa.ai_discovery import run_ai_discovery
+    from nsmpa.discovery import promote_candidates
+    s = make_settings(tmp_path)
+    _ambiguous_institution(db)
+    assert run_ai_discovery(db, s, client=FakeDiscoveryAI({"choice": 7, "confidence": 0.99, "publication_name": "x", "reason": "r"}))["invalid"] == 1
+    assert db.scalar("SELECT COUNT(*) FROM publication_candidates WHERE ai_pick_json IS NOT NULL") == 0
+    db.execute("DELETE FROM ai_cache")
+    run_ai_discovery(db, s, client=FakeDiscoveryAI({"choice": 0, "confidence": 0.95, "publication_name": "", "reason": "press pages"}))
+    assert promote_candidates(db, 0.6, use_ai=True)["ai_blocked"] == 1
+    assert db.scalar("SELECT COUNT(*) FROM publications WHERE unitid='900009'") == 0

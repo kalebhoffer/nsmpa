@@ -685,13 +685,23 @@ def _relationship(inst_website: str | None, url: str) -> str:
     return "institution_path"
 
 
-def promote_candidates(db: Database, threshold: float, margin: float = 0.08) -> dict[str, int]:
+def _ai_pick(c) -> dict | None:
+    try:
+        return json.loads(c["ai_pick_json"]) if c["ai_pick_json"] else None
+    except (ValueError, TypeError, IndexError, KeyError):
+        return None
+
+
+def promote_candidates(db: Database, threshold: float, margin: float = 0.08, *, use_ai: bool = False,
+                       ai_min_confidence: float = 0.6) -> dict[str, int]:
     """Promote the best candidate per institution, preserving human/manual verifications.
 
     - Effective score = verified_score when available, else search score.
     - A student-media hub page on the university site loses to an independently hosted publication
       that scores within 0.10, because hubs usually link to the actual paper.
     - Two distinct domains above threshold within ``margin`` are flagged ``ambiguous`` and queued for review.
+    - ``use_ai``: a confident AI pick (``nsmpa ai-discovery``) scoring within 0.15 of the threshold breaks ties or lifts a
+      near-threshold candidate; a confident AI "none of these" blocks promotion. Every AI-assisted case is queued for review.
     """
     protected = {r[0] for r in db.execute(
         "SELECT unitid FROM publications WHERE verification_status IN ('manual','human_verified')")}
@@ -701,11 +711,11 @@ def promote_candidates(db: Database, threshold: float, margin: float = 0.08) -> 
         FROM publication_candidates c JOIN institutions i ON i.unitid=c.unitid
         WHERE c.status NOT IN ('rejected') AND COALESCE(c.verified_score, c.score) >= ?
         ORDER BY c.unitid, eff DESC, c.id
-        """, (threshold - 0.10,)).fetchall()
+        """, (threshold - (0.15 if use_ai else 0.10),)).fetchall()
     by_unit: dict[str, list] = {}
     for r in rows:
         by_unit.setdefault(r["unitid"], []).append(r)
-    promoted = ambiguous = skipped_protected = 0
+    promoted = ambiguous = skipped_protected = ai_assisted = ai_blocked = 0
     with db.transaction():
         for unitid, cands in by_unit.items():
             if unitid in protected:
@@ -716,15 +726,27 @@ def promote_candidates(db: Database, threshold: float, margin: float = 0.08) -> 
                 best_by_domain.setdefault(c["domain"], c)
             ranked = sorted(best_by_domain.values(), key=lambda c: -c["eff"])
             best = ranked[0]
-            if best["eff"] < threshold:
+            ai_used = False
+            if use_ai:
+                picks = [(c, _ai_pick(c)) for c in cands if _ai_pick(c)]
+                says_none = [p for _, p in picks if p.get("choice") == "none" and p.get("confidence", 0) >= max(ai_min_confidence, 0.7)]
+                chosen = [c for c, p in picks if p.get("choice") == "this" and p.get("confidence", 0) >= ai_min_confidence
+                          and c["eff"] >= threshold - 0.15]
+                tied = len(ranked) > 1 and ranked[1]["eff"] >= threshold and ranked[0]["eff"] - ranked[1]["eff"] <= margin
+                if says_none and (best["eff"] < threshold + 0.1 or tied):
+                    ai_blocked += 1
+                    continue
+                if chosen:
+                    best, ai_used = chosen[0], True
+            if best["eff"] < threshold and not ai_used:
                 continue
-            if _relationship(best["website"], best["url"]) != "independent_domain":
+            if not ai_used and _relationship(best["website"], best["url"]) != "independent_domain":
                 indep = [c for c in ranked[1:] if _relationship(c["website"], c["url"]) == "independent_domain"
                          and c["eff"] >= best["eff"] - 0.10]
                 if indep:
                     best = indep[0]
             rivals = [c for c in ranked if c is not best and c["eff"] >= threshold and abs(best["eff"] - c["eff"]) <= margin]
-            is_amb = int(bool(rivals))
+            is_amb = int(bool(rivals)) if not ai_used else 0
             rel = _relationship(best["website"], best["url"])
             pub_name = clean_publication_name(best["title"], best["url"], best["institution_name"])
             db.conn.execute("UPDATE publications SET is_primary=0, updated_at=CURRENT_TIMESTAMP WHERE unitid=? AND domain!=? "
@@ -739,7 +761,8 @@ def promote_candidates(db: Database, threshold: float, margin: float = 0.08) -> 
                   discovery_method=excluded.discovery_method,candidate_id=excluded.candidate_id,ambiguous=excluded.ambiguous,
                   updated_at=CURRENT_TIMESTAMP
                 """,
-                (unitid, pub_name, best["url"], best["domain"], best["eff"], rel, best["source"], best["id"], is_amb),
+                (unitid, pub_name, best["url"], best["domain"], best["eff"], rel,
+                 best["source"] + ("+ai_assist" if ai_used else ""), best["id"], is_amb),
             )
             db.conn.execute("UPDATE publication_candidates SET status='promoted' WHERE id=?", (best["id"],))
             pid = db.conn.execute("SELECT id FROM publications WHERE unitid=? AND domain=?", (unitid, best["domain"])).fetchone()[0]
@@ -752,6 +775,11 @@ def promote_candidates(db: Database, threshold: float, margin: float = 0.08) -> 
             if best["eff"] < threshold + 0.1:
                 prio += 10
                 reasons.append("near_threshold_confidence")
+            if ai_used:
+                ai_assisted += 1
+                prio += 15
+                reasons.append("ai_assisted_identification")
             enqueue_publication_review(db, pid, unitid, prio, reasons)
             promoted += 1
-    return {"promoted": promoted, "ambiguous": ambiguous, "skipped_human_verified": skipped_protected}
+    return {"promoted": promoted, "ambiguous": ambiguous, "skipped_human_verified": skipped_protected,
+            "ai_assisted": ai_assisted, "ai_blocked": ai_blocked}
