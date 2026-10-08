@@ -436,13 +436,18 @@ async def match_from_homepages(db: Database, settings, *, limit: int | None = No
         rows = rows[:limit]
     stats = defaultdict(int)
     own = fetcher is None
-    fetcher = fetcher or HardenedFetcher(settings)
-    sem = __import__("asyncio").Semaphore(max(1, settings.discovery_concurrency * 2))
+    # A homepage check needs one answer, not perseverance: fewer retries and a shorter timeout keep dead 2018 sites
+    # from dominating the run. A worker pool means one slow site never holds up the rest.
+    quick = settings.model_copy(update={"max_retries": 1, "request_timeout_seconds": min(settings.request_timeout_seconds, 12)})
+    fetcher = fetcher or HardenedFetcher(quick)
     results: list[tuple] = []
+    import asyncio as _asyncio
+    queue: _asyncio.Queue = _asyncio.Queue()
+    for e in rows:
+        queue.put_nowait(e)
 
     async def one(e):
-        async with sem:
-            r = await fetcher.fetch_safe(e["homepage_url"])
+        r = await fetcher.fetch_safe(e["homepage_url"])
         meta = json.loads(e["metadata_json"] or "{}")
         meta["homepage_access"] = r.access_class
         if r.access_class != "ok" or not r.content:
@@ -453,11 +458,19 @@ async def match_from_homepages(db: Database, settings, *, limit: int | None = No
         inst, method, conf, note = classify_homepage(f"{page.title} {page.full_text[:60000]}", idx.by_state.get((e["state"] or "").upper(), []))
         results.append((e, meta, inst, method, conf, note))
 
-    with RunDashboard("NSMPA Directory homepage matching", len(rows), quiet=quiet) as dash:
-        import asyncio as _asyncio
-        for i in range(0, len(rows), 25):
-            await _asyncio.gather(*(one(e) for e in rows[i:i + 25]))
-            dash.update(completed=min(len(rows), i + 25))
+    with RunDashboard("NSMPA Directory homepage matching", len(rows), quiet=quiet, db=db, run_id="directory-homepages",
+                      persist_seconds=settings.heartbeat_seconds) as dash:
+        async def worker():
+            while not queue.empty():
+                e = queue.get_nowait()
+                dash.update(current=e["name"])
+                try:
+                    await one(e)
+                except Exception as exc:  # one bad page never stops the run
+                    results.append((e, json.loads(e["metadata_json"] or "{}"), None, "error", 0.0, f"{type(exc).__name__}: {exc}"[:200]))
+                dash.increment(completed=1)
+
+        await _asyncio.gather(*(worker() for _ in range(max(1, min(16, len(rows))))))
     if own:
         await fetcher.close()
     with db.transaction():
