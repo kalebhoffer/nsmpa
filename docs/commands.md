@@ -68,3 +68,16 @@ Common options: `--quiet/-q` minimal output · `--verbose/-v` queries, URLs, dec
 | `classify` | `--run-id` (required) | A–F/U classification |
 | `export` | `--run-id` (required), `--out-dir` | Export crawl run |
 | `pipeline` | `--limit`, `--run-id` | promote → crawl → classify → export |
+
+
+## Evidence packet (v0.4)
+
+| Command | Options | Purpose |
+|---|---|---|
+| `my-case` | `--init` | Show or create the `my_case.yml` fact profile |
+| `verify-precedents` | `--max-searches`, `--run-id`, `-q`, `-v` | Find and snapshot sources for precedent leads (never self-verifies) |
+| `precedent` | `--key --status --note`; `--add --key --org --title --claim (--url\|--query) [--year]` | List leads, record human verification, add a lead |
+| `research-experts` | `--max-searches`, `--run-id`, `-q`, `-v` | Search each expert's statements; extract attributed quotes |
+| `add-expert` | `--name --role --affiliation [--note]` | Add a respected practitioner/scholar |
+| `voices` | `--person`, `--direction`, `--verify ID --status --note`, `--limit` | List attributed statements or verify one |
+| `packet` | `--run-id`, `--out-dir`, `--title` | Build Excel workbook + PowerPoint deck + summary |

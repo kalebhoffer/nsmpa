@@ -41,7 +41,7 @@ TAGS: dict[str, re.Pattern[str]] = {k: re.compile(v, re.I) for k, v in {
     "time_passage": r"\b(?:\d{1,2}|several|many|ten|five|seven|twenty) (?:or more )?years? (?:ago|later|old|after|have passed|has passed)\b|\bpassage of time\b|\bdecades? (?:ago|later|old)\b|\byears (?:later|after)\b",
     "reputational_harm": r"\breputation(?:al)?\b|\bemployment prospects\b|\bjob (?:search|prospects|applications?)\b|\bstigma\b|\bharm(?:s|ed|ful)? to (?:a |the )?(?:person|individual|subject)\b",
     "search_engine": r"\bsearch engines?\b|\bgoogle\b|\bsearch results?\b|\bbing\b|\bwhen (?:someone|people|employers) search\b",
-    "digital_permanence": r"\bdigital (?:permanence|footprint|age)\b|\bonline forever\b|\bpermanent(?:ly)? (?:online|available|searchable)\b|\blives? (?:on )?(?:online )?forever\b",
+    "digital_permanence": r"\bpermanence of (?:publication|the (?:internet|web|archive))\b|\bextended reach\b|\bdigital (?:permanence|footprint|age)\b|\bonline forever\b|\bpermanent(?:ly)? (?:online|available|searchable)\b|\blives? (?:on )?(?:online )?forever\b",
     "right_to_be_forgotten": r"\bright to be forgotten\b|\bright to erasure\b",
     "privacy": r"\bprivacy\b|\bprivate (?:individual|citizen|person|figure)s?\b",
     "safety": r"\b(?:physical )?safety\b|\bthreat(?:s|ened)? of (?:violence|harm)\b|\bdanger\b|\bstalk(?:ing|er)\b|\bdomestic violence\b",
@@ -62,7 +62,7 @@ CONTENT_OBJECT = re.compile(
     r"\b(?:articles?|stor(?:y|ies)|content|archives?|archived|coverage|reports?|reporting|posts?|"
     r"names?|photos?|photographs?|images?|mug ?shots?|pieces?|headlines?|urls?|links?|items?|"
     r"published (?:work|material|information)|material|blotter|crime logs?|police logs?|columns?|"
-    r"editorials?|news (?:items?|reports?|stories)|our (?:site|website|pages)|information about)\b",
+    r"editorials?|news (?:items?|reports?|stories)|our (?:site|website|pages)|information about|publications?|information)\b",
     re.I,
 )
 RELIEF_ACTION = re.compile(
@@ -81,7 +81,7 @@ _RELIEF_OR_UPDATE_VERB = (r"(?:remov|unpublish|delet|take[ns]? down|taken down|d
                           r"replac|suppress|hid|updat|add|append|chang|alter|edit|omit)\w*")
 # Explicit permission: a non-negated modal governing a relief/update verb, or limited-case language.
 PERMISSIVE = re.compile(
-    r"\b(?:may|might|can|could|will|would|shall)\s+(?!not\b|never\b)(?:\w+\s+){0,3}?" + _RELIEF_OR_UPDATE_VERB + r"|"
+    r"\b(?:may|might|can|could|will|would|shall|should|must|ought to)\s+(?!not\b|never\b)(?:\w+\s+){0,3}?" + _RELIEF_OR_UPDATE_VERB + r"|"
     r"\b(?:is|are) (?:willing|able|permitted|allowed) to\b|\b(?:is|are) (?:possible|permitted|allowed)\b|"
     r"\bin (?:some|rare|limited|certain|exceptional|extraordinary|special|unusual) (?:cases|circumstances|instances|situations)\b|"
     r"\bunder (?:some|certain|limited|rare|exceptional) circumstances\b|\brare(?:ly)?\b|\bexceptional(?:ly)?\b|"
@@ -89,6 +89,10 @@ PERMISSIVE = re.compile(
     r"\bopen to\b",
     re.I,
 )
+# Codes of ethics are written as imperatives ("Consider ...", "Provide updated information ...").
+IMPERATIVE = re.compile(
+    r"^\s*(?:consider|provide|update|remove|avoid|weigh|explain|recognize|show|seek|balance|ensure|correct|add|use|treat|"
+    r"acknowledge|minimi[sz]e|be (?:cautious|careful|transparent|open)|think about|evaluate)\b", re.I)
 # Review-process language: requests are considered/evaluated, without a promise either way.
 PROCESS = re.compile(
     r"\b(?:review(?:ed|s|ing)?|evaluat\w+|consider(?:ed|s|ing|ation)?|assess\w*|weigh(?:ed|s|ing)?|decid\w+|"
@@ -239,6 +243,12 @@ def tags_for(text: str) -> list[str]:
     return sorted(tag for tag, pat in TAGS.items() if pat.search(text))
 
 
+_FUNCTION_WORDS = {"the", "a", "an", "of", "to", "and", "or", "is", "are", "we", "be", "in", "for", "that", "if", "will", "may",
+                   "not", "with", "our", "on", "by", "from", "should", "would", "can", "could", "it", "its", "this", "their",
+                   "them", "they", "as", "at", "any", "all", "when", "who", "which", "has", "have", "was", "were", "must", "do",
+                   "does", "than", "but", "such", "because", "about", "after", "before", "no", "never", "only", "us", "you"}
+
+
 def looks_like_chrome(sentence: str) -> bool:
     s = sentence.strip()
     if len(s) < 40:
@@ -247,8 +257,8 @@ def looks_like_chrome(sentence: str) -> bool:
     if len(words) < 7:
         return True
     # Menus and link soup: very low ratio of lowercase function words.
-    function = sum(1 for w in words if w.lower() in {"the", "a", "an", "of", "to", "and", "or", "is", "are", "we", "be", "in", "for", "that", "if", "will", "may", "not", "with", "our", "on", "by"})
-    if function / len(words) < 0.08:
+    function = sum(1 for w in words if w.lower().strip(",.;:") in _FUNCTION_WORDS)
+    if len(words) >= 12 and function / len(words) < 0.06:
         return True
     return bool(CHROME.search(s)) and not RELIEF_ACTION.search(s.replace("this page", ""))
 
@@ -260,7 +270,7 @@ def classify_statement(sentence: str, context: str = "") -> Statement:
     has_object = bool(CONTENT_OBJECT.search(sentence))
     relief = RELIEF_ACTION.search(sentence)
     update = UPDATE_ACTION.search(sentence)
-    permissive = PERMISSIVE.search(sentence)
+    permissive = PERMISSIVE.search(sentence) or (IMPERATIVE.match(sentence) if not PROHIBITIVE.search(sentence) else None)
     process = PROCESS.search(sentence)
     prohibitive = PROHIBITIVE.search(sentence)
     narrow = NARROW_EXCEPTION.search(sentence)

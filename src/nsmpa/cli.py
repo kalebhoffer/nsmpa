@@ -321,8 +321,9 @@ def research_setup_cmd(config: Path | None = ConfigOpt) -> None:
     """Seed support orgs + benchmark newsrooms and sync promoted student publications."""
     db, _ = _db(config)
     try:
+        from .seeds import seed_experts, seed_precedents
         result = {"support_orgs": seed_support_orgs(db), "benchmark_newsrooms": seed_benchmark_newsrooms(db),
-                  "student_entities": sync_student_entities(db)}
+                  "student_entities": sync_student_entities(db), **seed_precedents(db), **seed_experts(db)}
         console.print_json(json.dumps(result))
     finally:
         db.close()
@@ -644,6 +645,162 @@ def doctor_cmd(network: bool = typer.Option(True, "--network/--no-network", help
     from .doctor import run_doctor
     ok = run_doctor(console, config, network=network, check_serper=check_serper)
     raise typer.Exit(code=0 if ok else 1)
+
+
+# ============================================================================ precedents, experts, case packet
+
+@app.command("verify-precedents")
+def verify_precedents_cmd(
+    max_searches: int | None = MaxSearchesOpt, run_id: str | None = typer.Option(None, "--run-id"),
+    quiet: bool = QuietOpt, verbose: bool = VerboseOpt, config: Path | None = ConfigOpt,
+) -> None:
+    """Search, fetch and snapshot sources for seeded precedents (Boston Globe Fresh Start, AP, SPJ...). Never self-verifies."""
+    from .seeds import run_seeds
+    db, settings = _db(config)
+    try:
+        res = asyncio.run(run_seeds(db, settings, "precedents", run_id=run_id, max_searches=max_searches, quiet=quiet,
+                                    verbose=verbose, command=_cmdline()))
+        console.print_json(json.dumps(res, default=str))
+        _print_stop(res, f"nsmpa verify-precedents --run-id {res['run_id']}")
+    finally:
+        db.close()
+
+
+@app.command("precedent")
+def precedent_cmd(
+    key: str | None = typer.Option(None, "--key", help="Seed key to update"),
+    status: str | None = typer.Option(None, "--status", help="human_verified | refuted | ..."),
+    note: str = typer.Option("", "--note"),
+    add: bool = typer.Option(False, "--add", help="Add a new lead (with --key --org --title --claim and --url or --query)"),
+    org: str | None = typer.Option(None, "--org"), title: str | None = typer.Option(None, "--title"),
+    claim: str | None = typer.Option(None, "--claim"), url: str | None = typer.Option(None, "--url"),
+    query: str | None = typer.Option(None, "--query"), year: str = typer.Option("", "--year"),
+    config: Path | None = ConfigOpt,
+) -> None:
+    """List precedent leads, record human verification, or add your own lead."""
+    from .seeds import add_precedent, seed_precedents, set_precedent_status
+    db, _ = _db(config)
+    try:
+        seed_precedents(db)
+        if add:
+            if not (key and org and title and claim and (url or query)):
+                raise typer.BadParameter("--add needs --key --org --title --claim and --url or --query")
+            add_precedent(db, key, org, title, claim, url=url, query=query, year=year)
+            console.print(f"Added precedent lead {key}")
+            return
+        if key and status:
+            set_precedent_status(db, key, status, note)
+            console.print(f"{key}: {status}")
+            return
+        t = Table(title="Precedent leads")
+        for c in ("key", "organization", "title", "year", "status", "lead quality"):
+            t.add_column(c)
+        for r in db.execute("SELECT * FROM precedent_seeds ORDER BY id"):
+            t.add_row(r["seed_key"], r["organization"], r["title"], r["approx_year"] or "", r["status"], r["prior_confidence"])
+        console.print(t)
+    finally:
+        db.close()
+
+
+@app.command("research-experts")
+def research_experts_cmd(
+    max_searches: int | None = MaxSearchesOpt, run_id: str | None = typer.Option(None, "--run-id"),
+    quiet: bool = QuietOpt, verbose: bool = VerboseOpt, config: Path | None = ConfigOpt,
+) -> None:
+    """Find attributed statements by seeded/added experts (one search each); captures both directions."""
+    from .seeds import run_seeds
+    db, settings = _db(config)
+    try:
+        res = asyncio.run(run_seeds(db, settings, "experts", run_id=run_id, max_searches=max_searches, quiet=quiet,
+                                    verbose=verbose, command=_cmdline()))
+        console.print_json(json.dumps(res, default=str))
+        _print_stop(res, f"nsmpa research-experts --run-id {res['run_id']}")
+    finally:
+        db.close()
+
+
+@app.command("add-expert")
+def add_expert_cmd(name: str = typer.Option(..., "--name"), role: str = typer.Option(..., "--role"),
+                   affiliation: str = typer.Option(..., "--affiliation"),
+                   note: str = typer.Option("", "--note", help="Why this person is respected (credentials)"),
+                   config: Path | None = ConfigOpt) -> None:
+    """Add a respected practitioner/scholar whose statements should be sought and linked."""
+    from .seeds import add_expert
+    db, _ = _db(config)
+    try:
+        console.print(f"Expert id {add_expert(db, name, role, affiliation, note)}: {name}")
+    finally:
+        db.close()
+
+
+@app.command("voices")
+def voices_cmd(person: str | None = typer.Option(None, "--person"), direction: str | None = typer.Option(None, "--direction"),
+               verify: int | None = typer.Option(None, "--verify", help="Voice id to mark"),
+               status: str = typer.Option("verified", "--status", help="verified | rejected | disputed"),
+               note: str = typer.Option("", "--note"), limit: int = typer.Option(25, "--limit"),
+               config: Path | None = ConfigOpt) -> None:
+    """List attributed expert/practitioner statements, or record human verification of one."""
+    db, _ = _db(config)
+    try:
+        if verify is not None:
+            if status not in {"verified", "rejected", "disputed", "unverified"}:
+                raise typer.BadParameter("status must be verified|rejected|disputed|unverified")
+            db.execute("UPDATE voices SET verification_status=?, reviewer_note=? WHERE id=?", (status, note or None, verify))
+            db.conn.commit()
+            console.print(f"Voice {verify}: {status}")
+            return
+        sql = "SELECT v.*, x.role AS xrole FROM voices v LEFT JOIN experts x ON x.id=v.expert_id WHERE 1=1"
+        params: list = []
+        if person:
+            sql += " AND v.person_name LIKE ?"
+            params.append(f"%{person}%")
+        if direction:
+            sql += " AND v.direction=?"
+            params.append(direction)
+        sql += " ORDER BY v.expert_id IS NULL, v.case_match_score DESC LIMIT ?"
+        t = Table(title="Voices")
+        for c in ("id", "person", "role", "direction", "verified", "quote", "source"):
+            t.add_column(c)
+        for r in db.execute(sql, params + [limit]):
+            t.add_row(str(r["id"]), r["person_name"], (r["xrole"] or r["role"] or "")[:24], r["direction"], r["verification_status"],
+                      r["quote"][:90], r["source_domain"] or "")
+        console.print(t)
+    finally:
+        db.close()
+
+
+@app.command("my-case")
+def my_case_cmd(init: bool = typer.Option(False, "--init", help="Create my_case.yml from the example"),
+                config: Path | None = ConfigOpt) -> None:
+    """Show (or create) the fact profile that precedents are matched against."""
+    import shutil
+    if init:
+        if Path("my_case.yml").exists():
+            console.print("my_case.yml already exists; edit it directly.")
+        else:
+            shutil.copy("my_case.example.yml", "my_case.yml")
+            console.print("Created my_case.yml (gitignored). Edit it, then set configured: true.")
+        return
+    settings = load_settings(config)
+    mc = settings.my_case
+    console.print_json(json.dumps(mc.model_dump(), default=str))
+    console.print(f"Active match factors: {', '.join(sorted(mc.active_factors()))}")
+    if not mc.configured:
+        console.print("[yellow]Using defaults. Run `nsmpa my-case --init` and edit my_case.yml.[/yellow]")
+
+
+@app.command("packet")
+def packet_cmd(run_id: str | None = typer.Option(None, "--run-id"), out_dir: Path | None = typer.Option(None, "--out-dir"),
+               title: str = typer.Option("Post-publication relief in U.S. journalism: the evidence", "--title"),
+               config: Path | None = ConfigOpt) -> None:
+    """Build the shareable case packet: Excel evidence workbook + PowerPoint deck + summary."""
+    from .packet import build_packet
+    db, settings = _db(config)
+    try:
+        res = build_packet(db, settings, out_dir or settings.output_dir, run_id=run_id, title=title)
+        console.print_json(json.dumps(res))
+    finally:
+        db.close()
 
 
 @app.command("exclude-run")

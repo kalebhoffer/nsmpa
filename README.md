@@ -55,6 +55,18 @@ The default terminal mode is a live dashboard. `--verbose` adds queries, URLs, s
 
 Ctrl+C once: finish in-flight items, checkpoint, print the resume command. Ctrl+C twice: cancel immediately (completed items are already saved). `nsmpa resume` continues the most recent interrupted or budget-stopped run; cached searches are never paid for twice.
 
+## Evidence packet (Excel + PowerPoint)
+
+```bash
+nsmpa my-case --init                      # describe your situation (gitignored)
+nsmpa verify-precedents --max-searches 15 # named programs: find sources (you verify)
+nsmpa research-experts --max-searches 15  # attributed opinions, both directions
+nsmpa packet                              # output/packet_<UTC>/NSMPA_evidence.xlsx + NSMPA_presentation.pptx
+```
+
+See `docs/evidence_packet.md`. Newsrooms without written policies are still examined: their archived crime
+stories are sampled for editor's notes, name removals and targeted noindex tags.
+
 ## Reproducing the national run
 
 See `docs/scale_runbook.md` for credit estimates. The sequence is:

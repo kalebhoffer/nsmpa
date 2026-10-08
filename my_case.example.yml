@@ -1,0 +1,18 @@
+# Copy to my_case.yml (gitignored; `nsmpa my-case --init`) and describe YOUR situation.
+# Only the factors set true here count toward each excerpt's "match to my case" score.
+my_case:
+  configured: false          # set true once edited
+  description: ""            # optional one-line summary shown in the presentation
+  student_or_university_setting: true
+  criminal_allegation_or_arrest: true
+  charges_dismissed_or_dropped: true
+  acquittal_or_exoneration: false
+  conviction_vacated_or_plea_withdrawn: false
+  record_expunged_or_sealed: false
+  substantial_time_passed: true
+  private_individual_no_public_role: true
+  search_engine_prominence: true
+  reputational_consequences: true
+  relief_sought: [deindex]   # any of: deindex, anonymize, unpublish, update
+  article_year: null
+  outcome_year: null

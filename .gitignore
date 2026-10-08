@@ -8,3 +8,4 @@ output/
 .pytest_cache/
 .ruff_cache/
 HD*.zip
+my_case.yml

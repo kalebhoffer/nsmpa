@@ -58,6 +58,16 @@ research_candidate_threshold: 0.28
 no_guidance_min_first_party_pages: 2
 no_guidance_max_inaccessible_ratio: 0.5
 
+# --- deep practice digging & packet (v0.4) -------------------------------------------------
+research_practice_dig: always       # never | auto (only when no written policy) | always
+research_practice_queries: true     # 4 practice searches per newsroom
+research_crime_article_sample: 20   # archived crime/arrest articles read per newsroom (free)
+research_baseline_article_sample: 3 # ordinary articles used to rule out site-wide noindex
+expert_max_pages_per_person: 5
+precedent_max_pages_per_seed: 4
+packet_max_rows_per_sheet: 100000
+packet_precedent_slides: 8
+
 # --- IPEDS universe ----------------------------------------------------------------------
 allowed_states: []
 institution_filters:
