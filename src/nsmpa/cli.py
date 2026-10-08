@@ -309,6 +309,64 @@ def import_entities_cmd(
         db.close()
 
 
+@app.command("import-directory")
+def import_directory_cmd(path: Path = typer.Argument(..., exists=True, readable=True),
+                         no_promote: bool = typer.Option(False, "--no-promote", help="Only stage student matches as candidates"),
+                         config: Path | None = ConfigOpt) -> None:
+    """Import the newspaper directory CSV (student + professional): IPEDS matching, domain merging, priorities."""
+    from .directory import import_directory
+    db, settings = _db(config)
+    try:
+        backup = db.backup(label="pre-directory-import")
+        console.print(f"[dim]Backup written: {backup}[/dim]")
+        console.print_json(json.dumps(import_directory(db, path, promote=not no_promote, report_dir=settings.output_dir), default=str))
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    finally:
+        db.close()
+
+
+@app.command("match-directory-homepages")
+def match_directory_homepages_cmd(limit: int | None = typer.Option(None, "--limit"), quiet: bool = QuietOpt,
+                                  config: Path | None = ConfigOpt) -> None:
+    """Read unmatched student papers' homepages to identify their institution (free; also checks if sites still work)."""
+    from .directory import match_from_homepages
+    db, settings = _db(config)
+    try:
+        db.backup(label="pre-homepage-matching")
+        console.print_json(json.dumps(asyncio.run(match_from_homepages(db, settings, limit=limit, quiet=quiet)), default=str))
+    finally:
+        db.close()
+
+
+@app.command("apply-directory-review")
+def apply_directory_review_cmd(review: Path = typer.Argument(..., exists=True, help="The edited *_ipeds_matches.csv"),
+                               directory: Path = typer.Argument(..., exists=True, help="The original directory CSV"),
+                               config: Path | None = ConfigOpt) -> None:
+    """Apply your confirm (y/n) / correct UNITID edits from the match report."""
+    from .directory import apply_match_review
+    db, _ = _db(config)
+    try:
+        db.backup(label="pre-directory-review")
+        console.print_json(json.dumps(apply_match_review(db, review, directory), default=str))
+    finally:
+        db.close()
+
+
+@app.command("export-directory")
+def export_directory_cmd(template: Path = typer.Argument(..., exists=True, readable=True, help="The original directory CSV"),
+                         out: Path | None = typer.Option(None, "--out"), config: Path | None = ConfigOpt) -> None:
+    """Write your directory CSV back with status, policy URLs, stance and noindex columns filled from the research."""
+    from .directory import export_directory
+    db, settings = _db(config)
+    try:
+        target = out or settings.output_dir / (template.stem + "_with_findings.csv")
+        console.print_json(json.dumps(export_directory(db, template, target)))
+    finally:
+        db.close()
+
+
 @app.command("merge-duplicates")
 def merge_duplicates_cmd(cohort: str | None = typer.Option(None, "--cohort"), config: Path | None = ConfigOpt) -> None:
     """Merge active entities sharing a domain within a cohort (provenance preserved)."""
@@ -340,6 +398,7 @@ def research_cmd(
     cohort: str | None = typer.Option(None, "--cohort", help=", ".join(sorted(COHORTS))),
     limit: int | None = typer.Option(None, "--limit", min=1),
     entity_id: list[int] = typer.Option([], "--entity-id", help="Research specific entity ids"),
+    max_priority: int | None = typer.Option(None, "--max-priority", help="Only directory research priority <= N (1 = highest)"),
     depth: str | None = typer.Option(None, "--depth", help="quick | standard | deep (default from config)"),
     concurrency: int | None = typer.Option(None, "--concurrency", min=1, max=32),
     run_id: str | None = typer.Option(None, "--run-id", help="Resume this run id"),
@@ -368,7 +427,7 @@ def research_cmd(
             console.print(f"{'Resuming' if resumed else 'Starting'} research run [bold]{rid}[/bold] (depth={settings.research_depth})")
         stats = asyncio.run(research_all(db, settings, rid, cohort=cohort, limit=limit, quiet=quiet, verbose=verbose,
                                          max_searches=max_searches, refresh_search=refresh_search, fresh=fresh,
-                                         entity_ids=entity_id or None))
+                                         entity_ids=entity_id or None, max_priority=max_priority))
         stats["run_id"] = rid
         if not no_export:
             stats["exported"] = export_research(db, rid, settings.output_dir)

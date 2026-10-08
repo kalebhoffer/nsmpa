@@ -778,7 +778,8 @@ STANCE_BADGE = {
 }
 
 
-def select_entities(db: Database, cohort: str | None, limit: int | None, entity_ids: list[int] | None = None) -> list:
+def select_entities(db: Database, cohort: str | None, limit: int | None, entity_ids: list[int] | None = None,
+                    max_priority: int | None = None) -> list:
     sql = "SELECT * FROM research_entities WHERE active=1 AND merged_into IS NULL"
     params: list = []
     if cohort:
@@ -790,7 +791,11 @@ def select_entities(db: Database, cohort: str | None, limit: int | None, entity_
     if entity_ids:
         sql += f" AND id IN ({','.join('?' * len(entity_ids))})"
         params += entity_ids
-    sql += " ORDER BY cohort, id"
+    if max_priority is not None:
+        sql += " AND CAST(json_extract(metadata_json,'$.research_priority') AS INTEGER) <= ?"
+        params.append(max_priority)
+    # Directory research priority first (1 = highest), then stable order.
+    sql += " ORDER BY COALESCE(CAST(json_extract(metadata_json,'$.research_priority') AS INTEGER), 9), cohort, id"
     if limit:
         sql += " LIMIT ?"
         params.append(limit)
@@ -801,10 +806,10 @@ async def research_all(db: Database, settings: Settings, run_id: str, cohort: st
                        quiet: bool = False, verbose: bool = False, *, max_searches: int | None = None,
                        refresh_search: bool = False, fresh: bool = False, entity_ids: list[int] | None = None,
                        provider=None, fetcher: HardenedFetcher | None = None, stop: StopController | None = None,
-                       dashboard: RunDashboard | None = None) -> dict:
+                       dashboard: RunDashboard | None = None, max_priority: int | None = None) -> dict:
     provider = provider or get_search_provider(settings.search_provider, settings.user_agent)
     broker = SearchBroker(db, settings, run_id, provider, max_searches=max_searches, refresh=refresh_search)
-    rows = select_entities(db, cohort, limit, entity_ids)
+    rows = select_entities(db, cohort, limit, entity_ids, max_priority)
     keys = [str(r["id"]) for r in rows]
     register_items(db, run_id, "entity", keys)
     if fresh:
