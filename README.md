@@ -34,13 +34,15 @@ check the results.
 
 This is an early snapshot, not a national result. As of 8 October 2026:
 
-- **21 organizations have been researched; 19 have a determined position.** Among them are clear relief programs:
-  the Associated Press considers requests to block old minor-crime stories and asks Google to de-index them; the
-  Philadelphia Inquirer's "Up for Review" makes de-indexing its main remedy; the Chicago Sun-Times, Bangor Daily News,
-  Atlanta Journal-Constitution and four broadcasters (NBC Chicago, News4JAX, NewsChannel 5 Nashville, WCBU) review
-  requests. Five student papers say they update stories but do not remove them, and the Student Press Law Center
-  advises against discretionary takedowns. Both sides are in the workbook, and 104 further named precedents (such as
-  the Boston Globe's Fresh Start) are listed with the sources NSMPA read.
+- **67 organizations have been researched; 31 have a determined position.** Stage 1 of the national run covered all
+  50 standards and support organizations: 24 publish no relevant guidance, and the rest range from support for relief
+  (e.g. the National Press Club Journalism Institute on removing names while keeping stories online) to updates-only
+  and archive-first advice. Among newsrooms there are clear relief programs: the Associated Press considers requests to
+  block old minor-crime stories and asks Google to de-index them; the Philadelphia Inquirer's "Up for Review" makes
+  de-indexing its main remedy; the Chicago Sun-Times, Bangor Daily News, Atlanta Journal-Constitution and four
+  broadcasters review requests. Five student papers say they update stories but do not remove them. Both sides are in
+  the workbook, and 103 further named precedents (such as the Boston Globe's Fresh Start) are listed with the sources
+  NSMPA read.
 - **A hand-built index of 130 organizations was used as a check on the tool.** NSMPA read every linked source itself:
   it confirmed 63 of the 69 strongest entries, and from only each organization's name and homepage it found the policy
   page for 10 of 10 tested organizations.
