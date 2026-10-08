@@ -15,6 +15,7 @@ Design principles (see docs/classification_rubric.md):
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from .utils import compact_ws, near_duplicate_key, normalize_for_hash, sha256_text
@@ -362,169 +363,234 @@ def looks_like_chrome(sentence: str) -> bool:
     return bool(CHROME.search(s)) and not RELIEF_ACTION.search(s.replace("this page", ""))
 
 
+@dataclass
+class _Signals:
+    """Every cue the decision rules look at, computed once per sentence."""
+    sentence: str
+    context: str
+    has_object: bool
+    relief: re.Match | None
+    update: re.Match | None
+    permissive: re.Match | None
+    process: re.Match | None
+    prohibitive: re.Match | None
+    narrow: re.Match | None
+    changed: re.Match | None
+    changed_ctx: re.Match | None
+    case: re.Match | None
+    archive: re.Match | None
+    request: re.Match | None
+
+    @classmethod
+    def of(cls, sentence: str, context: str) -> _Signals:
+        neg = _neg(sentence)
+        changed = CHANGED_OUTCOME.search(sentence)
+        return cls(
+            sentence=sentence, context=context,
+            has_object=bool(CONTENT_OBJECT.search(sentence)),
+            relief=RELIEF_ACTION.search(sentence),
+            update=UPDATE_ACTION.search(sentence),
+            permissive=PERMISSIVE.search(sentence) or (IMPERATIVE.match(sentence) if not neg else None),
+            process=PROCESS.search(sentence),
+            prohibitive=neg,
+            narrow=NARROW_EXCEPTION.search(sentence),
+            changed=changed,
+            changed_ctx=changed or (CHANGED_OUTCOME.search(context) if context else None),
+            case=CASE_BY_CASE_CUE.search(sentence),
+            archive=ARCHIVE_CUE.search(sentence),
+            request=REQUEST_CUE.search(sentence),
+        )
+
+    def cue_list(self) -> list[str]:
+        cues = []
+        for name, m in (("object", self.has_object and CONTENT_OBJECT.search(self.sentence)), ("relief", self.relief),
+                        ("update", self.update), ("permissive", self.permissive), ("process", self.process),
+                        ("prohibitive", self.prohibitive), ("narrow_exception", self.narrow), ("changed_outcome", self.changed),
+                        ("case_by_case", self.case), ("archive", self.archive), ("request", self.request)):
+            if m:
+                cues.append(f"{name}:{m.group(0)[:40].lower()}")
+        if self.changed_ctx and not self.changed:
+            cues.append("changed_outcome_in_context")
+        return cues
+
+
+_JOURNALISM_WORD = re.compile(r"\b(?:articles?|stor(?:y|ies)|coverage|archive|published)\b", re.I)
+_JOURNALISM_UNIT = re.compile(r"\b(?:stor(?:y|ies)|articles?|archives?|requests?|crimes?|coverage|names?|headlines?)\b", re.I)
+_MEDIA_EDIT_ACTION = re.compile(
+    r"\b(?:audio|video|photo\w*|image)\b[^.]{0,60}\b(?:remov\w*|alter\w*|conceal\w*)\b|"
+    r"\b(?:remov\w*|alter\w*|conceal\w*)\b[^.]{0,60}\b(?:audio|video|photo\w*|image)\b|"
+    r"\b(?:remov\w*|edit\w*)\b[^.]{0,40}\b(?:pauses?|stumbles?|background)\b", re.I)
+_PUBLISHER_ACTOR = re.compile(r"\b(?:we|our|editors? (?:have|has|had|decided|agreed|chose))\b", re.I)
+
+
+def _media_editing(s: _Signals) -> bool:
+    return not _JOURNALISM_UNIT.search(s.sentence) and (
+        len(MEDIA_EDITING.findall(s.sentence)) >= 2 or bool(_MEDIA_EDIT_ACTION.search(s.sentence)))
+
+
+# Ordered rules for sentences that use removal words about something other than post-publication relief for
+# journalism, plus two publisher-to-search-engine rules that must run before them. First match wins.
+# Each entry: (cue, test, (statement_type, confidence) or a function of the signals returning that pair).
+_SCOPE_RULES: tuple[tuple[str | None, Callable[[_Signals], bool], object], ...] = (
+    (None, lambda s: looks_like_chrome(s.sentence), ("mention", 0.1)),
+    ("personal_data_not_journalism",
+     lambda s: bool(PERSONAL_DATA.search(s.sentence)) and not _JOURNALISM_WORD.search(s.sentence), ("mention", 0.1)),
+    # "But should you?" asks; it does not state a policy.
+    ("question_not_position", lambda s: bool(re.search(r"\?[\"'”’)\]]*\s*$", s.sentence)), ("mention", 0.2)),
+    ("contact_details", lambda s: bool(CONTACT_INFO.search(s.sentence)) and not s.relief, ("mention", 0.1)),
+    # Stolen print copies, newsstands: not post-publication relief.
+    ("physical_copies_not_archive", lambda s: bool(PHYSICAL_COPIES.search(s.sentence)) and not re.search(
+        r"\b(?:online|website|archive|search)\b", s.sentence, re.I), ("mention", 0.2)),
+    # "Unpublished writers/manuscripts".
+    ("unpublished_adjective", lambda s: bool(UNPUBLISHED_ADJ.search(s.sentence)) and not relief_other(s.sentence),
+     ("mention", 0.2)),
+    ("court_record_process_not_publication", lambda s: bool(COURT_PROCESS.search(s.sentence)) and not re.search(
+        r"\b(?:articles?|stor(?:y|ies)|archives?|our (?:site|website))\b", s.sentence, re.I), ("mention", 0.2)),
+    ("publisher_cooperates_with_search_engine",
+     lambda s: bool(SEARCH_COOPERATION.search(s.sentence)) and not s.prohibitive, ("relief_permitted", 0.6)),
+    ("publisher_requests_search_removal", lambda s: bool(SEARCH_REMOVAL_REQUEST.search(s.sentence)) and not s.prohibitive,
+     lambda s: ("changed_circumstance_relief" if s.changed_ctx else "relief_permitted", 0.75)),
+    ("media_editing_not_relief", _media_editing, ("mention", 0.2)),
+)
+# Applied after the run-on comment-list split (see classify_statement).
+_SCOPE_RULES_LATE: tuple[tuple[str, Callable[[_Signals], bool], tuple[str, float]], ...] = (
+    # Removing reader comments is not post-publication relief for journalism.
+    ("comment_moderation", lambda s: bool(COMMENT_MODERATION.search(s.sentence)) and not re.search(
+        r"\b(?:articles?|stor(?:y|ies)|archives?)\b(?![^.]{0,30}comment)", s.sentence, re.I), ("mention", 0.2)),
+    # "Certain parts of the memos were redacted", "a parking sign was removed".
+    ("removal_not_of_journalism", lambda s: bool(PASSIVE_REMOVAL.search(s.sentence)) and not PASSIVE_CONTENT.search(s.sentence)
+     and not (PRACTICE_NOTE.search(s.sentence) or _PUBLISHER_ACTOR.search(s.sentence)), ("mention", 0.2)),
+    # "The subject may demand removal", "people wish they could hide…".
+    ("requester_not_publisher", lambda s: bool(REQUESTER_WISH.search(s.sentence) or REQUESTER_HABIT.search(s.sentence))
+     and not PUBLISHER_VOICE.search(s.sentence) and not PRACTICE_NOTE.search(s.sentence), ("mention", 0.3)),
+    ("requester_not_publisher", lambda s: bool(re.search(r"\bwish(?:es|ed)?\b[^.]{0,40}\bcould\b", s.sentence, re.I))
+     and not PUBLISHER_VOICE.search(s.sentence), ("mention", 0.3)),
+)
+
+
+def _practice(s: _Signals) -> tuple[str, str, float] | None:
+    """Documented practice (what actually happened) takes precedence over stated policy. Returns (cue, type, conf)."""
+    t = s.sentence
+    if PRACTICE_ADVERSE.search(t) and (s.has_object or s.request):
+        return "practice:denied", "practice_relief_denied", 0.75
+    if PRACTICE_NOTE.search(t) and ACCURACY_REASON.search(t):
+        return "practice:correction", "practice_update", 0.6  # removing false/unverifiable material is a correction
+    if PRACTICE_NOTE.search(t):
+        return "practice:note", "practice_relief_granted", 0.8
+    if (PRACTICE_SUPPORT.search(t) or PRACTICE_NAMED.search(t)) and (s.has_object or s.relief) and not s.prohibitive:
+        return "practice:granted", "practice_relief_granted", 0.75 if s.changed_ctx else 0.65
+    if PRACTICE_UPDATE.search(t) and (s.has_object or s.changed_ctx):
+        return "practice:update", "practice_update", 0.6
+    return None
+
+
+def _relief_policy(s: _Signals, cues: list[str]) -> tuple[str, float] | None:
+    """A stated position on removing, unpublishing, anonymizing or de-indexing (relief verb with a journalism object)."""
+    permissive, prohibitive = s.permissive, s.prohibitive
+    if not (s.relief and (s.has_object or (s.request and s.relief))):
+        return None
+    if prohibitive and s.narrow:
+        return "relief_narrow_exceptions", 0.85
+    if prohibitive and not permissive:
+        return "relief_rejected", 0.85
+    if prohibitive and permissive:
+        # e.g. "We generally do not unpublish, but may consider it when charges are dismissed."
+        if s.changed_ctx:
+            return "changed_circumstance_relief", 0.7
+        if s.case:
+            return "case_by_case", 0.65
+        return ("relief_narrow_exceptions" if s.narrow else "case_by_case"), 0.55
+    if permissive:
+        if s.changed_ctx:
+            return "changed_circumstance_relief", 0.85
+        if LIMITED_GROUNDS.search(s.sentence) and not HUMANE_GROUNDS.search(s.sentence):
+            # "will remove if factually inaccurate": an errors-only exception, a strict-archive position for accurate reporting.
+            cues.append("limited_to_errors_or_legal")
+            return "relief_narrow_exceptions", 0.7
+        if s.case:
+            return "case_by_case", 0.8
+        return "relief_permitted", 0.8
+    if s.case or (s.process and (s.request or s.has_object)):
+        if s.changed_ctx:
+            return "changed_circumstance_relief", 0.7
+        return "case_by_case", (0.7 if s.case else 0.6)
+    if s.changed and s.request:
+        return "changed_circumstance_relief", 0.6
+    return None
+
+
+_HARM_TAGS = {"reputational_harm", "search_engine", "digital_permanence", "right_to_be_forgotten", "minimize_harm"}
+_RELIEF_ACTIONS = ("deindex", "anonymize", "unpublish")
+
+
 def classify_statement(sentence: str, context: str = "") -> Statement:
-    """Classify one sentence. ``context`` (neighbouring sentences) only informs changed-outcome cues."""
+    """Classify one sentence. ``context`` (neighbouring sentences) only informs changed-outcome cues.
+
+    Order: scope rules (is this about relief for journalism at all?) -> documented practice -> stated relief policy ->
+    case-by-case / update / archive statements -> clause-level positions -> mention.
+    """
+    s = _Signals.of(sentence, context)
     tags = tags_for(sentence)
-    cues: list[str] = []
-    has_object = bool(CONTENT_OBJECT.search(sentence))
-    relief = RELIEF_ACTION.search(sentence)
-    update = UPDATE_ACTION.search(sentence)
-    permissive = PERMISSIVE.search(sentence) or (IMPERATIVE.match(sentence) if not _neg(sentence) else None)
-    process = PROCESS.search(sentence)
-    prohibitive = _neg(sentence)
-    narrow = NARROW_EXCEPTION.search(sentence)
-    changed = CHANGED_OUTCOME.search(sentence)
-    changed_ctx = changed or (CHANGED_OUTCOME.search(context) if context else None)
-    case = CASE_BY_CASE_CUE.search(sentence)
-    archive = ARCHIVE_CUE.search(sentence)
-    request = REQUEST_CUE.search(sentence)
-    for name, m in (("object", has_object and CONTENT_OBJECT.search(sentence)), ("relief", relief), ("update", update),
-                    ("permissive", permissive), ("process", process), ("prohibitive", prohibitive), ("narrow_exception", narrow),
-                    ("changed_outcome", changed), ("case_by_case", case), ("archive", archive), ("request", request)):
-        if m:
-            cues.append(f"{name}:{m.group(0)[:40].lower()}")
-    if changed_ctx and not changed:
-        cues.append("changed_outcome_in_context")
+    cues = s.cue_list()
 
     def done(stype: str, conf: float) -> Statement:
         return Statement(sentence, tags, stype, STATEMENT_DIRECTION[stype], cues, round(conf, 3))
 
-    if looks_like_chrome(sentence):
-        return done("mention", 0.1)
-    if PERSONAL_DATA.search(sentence) and not re.search(r"\b(?:articles?|stor(?:y|ies)|coverage|archive|published)\b", sentence, re.I):
-        cues.append("personal_data_not_journalism")
-        return done("mention", 0.1)
-
-    if re.search(r"\?[\"'”’)\]]*\s*$", sentence):
-        cues.append("question_not_position")  # "But should you?" asks, it does not state a policy
-        return done("mention", 0.2)
-    if CONTACT_INFO.search(sentence) and not relief:
-        cues.append("contact_details")
-        return done("mention", 0.1)
-    if PHYSICAL_COPIES.search(sentence) and not re.search(r"\b(?:online|website|archive|search)\b", sentence, re.I):
-        cues.append("physical_copies_not_archive")  # stolen print copies, newsstands: not post-publication relief
-        return done("mention", 0.2)
-    if UNPUBLISHED_ADJ.search(sentence) and not relief_other(sentence):
-        cues.append("unpublished_adjective")  # "unpublished writers/manuscripts": not post-publication relief
-        return done("mention", 0.2)
-    if COURT_PROCESS.search(sentence) and not re.search(r"\b(?:articles?|stor(?:y|ies)|archives?|our (?:site|website))\b",
-                                                         sentence, re.I):
-        cues.append("court_record_process_not_publication")
-        return done("mention", 0.2)
-    if SEARCH_COOPERATION.search(sentence) and not _neg(sentence):
-        cues.append("publisher_cooperates_with_search_engine")
-        return done("relief_permitted", 0.6)
-    if SEARCH_REMOVAL_REQUEST.search(sentence) and not _neg(sentence):
-        cues.append("publisher_requests_search_removal")
-        return done("changed_circumstance_relief" if changed_ctx else "relief_permitted", 0.75)
-    journalism_unit = re.search(r"\b(?:stor(?:y|ies)|articles?|archives?|requests?|crimes?|coverage|names?|headlines?)\b",
-                                sentence, re.I)
-    if not journalism_unit and (len(MEDIA_EDITING.findall(sentence)) >= 2 or re.search(
-            r"\b(?:audio|video|photo\w*|image)\b[^.]{0,60}\b(?:remov\w*|alter\w*|conceal\w*)\b|"
-            r"\b(?:remov\w*|alter\w*|conceal\w*)\b[^.]{0,60}\b(?:audio|video|photo\w*|image)\b|"
-            r"\b(?:remov\w*|edit\w*)\b[^.]{0,40}\b(?:pauses?|stumbles?|background)\b", sentence, re.I)):
-        cues.append("media_editing_not_relief")
-        return done("mention", 0.2)
+    for cue, test, result in _SCOPE_RULES:
+        if test(s):
+            if cue:
+                cues.append(cue)
+            return done(*(result(s) if callable(result) else result))
     if COMMENT_MODERATION.search(sentence) and len(sentence) > 250:
         # Run-on policy pages: a comment-moderation list followed by the real archive policy. Judge the tail alone.
-        tail = sentence[[m.end() for m in COMMENT_MODERATION.finditer(sentence)][-1]:]
-        tail = re.sub(r"^[^A-Z]*", "", tail)
+        tail = re.sub(r"^[^A-Z]*", "", sentence[[m.end() for m in COMMENT_MODERATION.finditer(sentence)][-1]:])
         if len(tail) >= 60 and tail != sentence:
             return classify_statement(tail, context)
-    if COMMENT_MODERATION.search(sentence) and not re.search(r"\b(?:articles?|stor(?:y|ies)|archives?)\b(?![^.]{0,30}comment)", sentence, re.I):
-        cues.append("comment_moderation")  # removing reader comments is not post-publication relief for journalism
-        return done("mention", 0.2)
-    if PASSIVE_REMOVAL.search(sentence) and not PASSIVE_CONTENT.search(sentence) and not (
-            PRACTICE_NOTE.search(sentence) or re.search(r"\b(?:we|our|editors? (?:have|has|had|decided|agreed|chose))\b", sentence, re.I)):
-        cues.append("removal_not_of_journalism")
-        return done("mention", 0.2)
-    if (REQUESTER_WISH.search(sentence) or REQUESTER_HABIT.search(sentence)) and not PUBLISHER_VOICE.search(sentence) and not PRACTICE_NOTE.search(sentence):
-        cues.append("requester_not_publisher")
-        return done("mention", 0.3)
-    if re.search(r"\bwish(?:es|ed)?\b[^.]{0,40}\bcould\b", sentence, re.I) and not PUBLISHER_VOICE.search(sentence):
-        cues.append("requester_not_publisher")
-        return done("mention", 0.3)
+    for cue, test, result in _SCOPE_RULES_LATE:
+        if test(s):
+            cues.append(cue)
+            return done(*result)
 
-    # Documented practice (past tense, what actually happened) takes precedence.
-    if PRACTICE_ADVERSE.search(sentence) and (has_object or request):
-        cues.append("practice:denied")
-        return done("practice_relief_denied", 0.75)
-    if PRACTICE_NOTE.search(sentence) and ACCURACY_REASON.search(sentence):
-        cues.append("practice:correction")  # removing unverifiable or false material is a correction, not relief
-        return done("practice_update", 0.6)
-    if PRACTICE_NOTE.search(sentence):
-        cues.append("practice:note")
-        return done("practice_relief_granted", 0.8)
-    if (PRACTICE_SUPPORT.search(sentence) or PRACTICE_NAMED.search(sentence)) and (has_object or relief) and not prohibitive:
-        cues.append("practice:granted")
-        return done("practice_relief_granted", 0.75 if changed_ctx else 0.65)
-    if PRACTICE_UPDATE.search(sentence) and (has_object or changed_ctx):
-        cues.append("practice:update")
-        return done("practice_update", 0.6)
-
-    subject_ok = has_object or (request and relief)
-    if prohibitive and re.match(r"(?:not one|none of|no )", prohibitive.group(0), re.I):
-        permissive = None  # "Not one of the editors would remove…": the modal is inside the negation
-    if relief and prohibitive and not _governs(prohibitive, relief, sentence):
+    if (practice := _practice(s)) is not None:
+        cues.append(practice[0])
+        return done(practice[1], practice[2])
+    # Negation scope, applied once and seen by every later rule.
+    if s.prohibitive and re.match(r"(?:not one|none of|no )", s.prohibitive.group(0), re.I):
+        s.permissive = None  # "Not one of the editors would remove…": the modal is inside the negation
+    if s.relief and s.prohibitive and not _governs(s.prohibitive, s.relief, s.sentence):
         cues.append("negation_not_on_relief")
-        prohibitive = None
-    if relief and subject_ok:
-        if prohibitive and narrow:
-            return done("relief_narrow_exceptions", 0.85)
-        if prohibitive and not permissive:
-            return done("relief_rejected", 0.85)
-        if prohibitive and permissive:
-            # e.g. "We generally do not unpublish, but may consider it when charges are dismissed."
-            if changed_ctx:
-                return done("changed_circumstance_relief", 0.7)
-            if case:
-                return done("case_by_case", 0.65)
-            return done("relief_narrow_exceptions" if narrow else "case_by_case", 0.55)
-        if permissive:
-            if changed_ctx:
-                return done("changed_circumstance_relief", 0.85)
-            if LIMITED_GROUNDS.search(sentence) and not HUMANE_GROUNDS.search(sentence):
-                # "will remove if factually inaccurate / so substantially wrong": an errors-only exception, which is a
-                # strict-archive position for accurate reporting.
-                cues.append("limited_to_errors_or_legal")
-                return done("relief_narrow_exceptions", 0.7)
-            if case:
-                return done("case_by_case", 0.8)
-            return done("relief_permitted", 0.8)
-        if case or (process and (request or has_object)):
-            if changed_ctx:
-                return done("changed_circumstance_relief", 0.7)
-            return done("case_by_case", 0.7 if case else 0.6)
-        if changed and request:
-            return done("changed_circumstance_relief", 0.6)
-    if case and (has_object or request):
+        s.prohibitive = None
+    if (policy := _relief_policy(s, cues)) is not None:
+        return done(*policy)
+
+    if s.case and (s.has_object or s.request):
         return done("case_by_case", 0.7)
-    if update and (has_object or changed_ctx) and (changed_ctx or permissive or request or re.search(r"\b(?:we|our|editors?)\b", sentence, re.I)):
-        if changed_ctx:
+    if s.update and (s.has_object or s.changed_ctx) and (
+            s.changed_ctx or s.permissive or s.request or re.search(r"\b(?:we|our|editors?)\b", sentence, re.I)):
+        if s.changed_ctx:
             return done("changed_circumstance_update", 0.75)
-        if relief is None and (prohibitive is None):
+        if s.relief is None and s.prohibitive is None:
             return done("update_remedy", 0.6)
-    if archive and (has_object or re.search(r"\b(?:we|our)\b", sentence, re.I)) and RELIEF_TOPIC.search(f"{sentence} {context}"):
+    if s.archive and (s.has_object or re.search(r"\b(?:we|our)\b", sentence, re.I)) and RELIEF_TOPIC.search(f"{sentence} {context}"):
         return done("archive_principle", 0.6)
-    early = action_positions(sentence)
-    if any(early.get(a) == "permitted" for a in ("deindex", "anonymize", "unpublish")) and not any(
-            early.get(a) == "rejected" for a in ("deindex", "anonymize", "unpublish")) and (has_object or relief):
-        cues.append("clause:relief_permitted")
-        return done("changed_circumstance_relief" if changed_ctx else "relief_permitted", 0.7)
-    if (tags and set(tags) & {"reputational_harm", "search_engine", "digital_permanence", "right_to_be_forgotten", "minimize_harm"}
-            and (has_object or request)):
-        return done("harm_consideration", 0.5)
+
     pos = action_positions(sentence)
     relief_pos = {a: p for a, p in pos.items() if a != "update"}
+    if any(pos.get(a) == "permitted" for a in _RELIEF_ACTIONS) and not any(
+            pos.get(a) == "rejected" for a in _RELIEF_ACTIONS) and (s.has_object or s.relief):
+        cues.append("clause:relief_permitted")
+        return done("changed_circumstance_relief" if s.changed_ctx else "relief_permitted", 0.7)
+    if tags and set(tags) & _HARM_TAGS and (s.has_object or s.request):
+        return done("harm_consideration", 0.5)
     if any(p == "rejected" for p in relief_pos.values()) and not any(p in {"permitted", "practiced"} for p in relief_pos.values()):
         if pos.get("update") in {"permitted", "practiced"}:
             cues.append("clause:update_instead_of_removal")
             return done("update_remedy", 0.7)
         cues.append("clause:relief_rejected")
         return done("relief_rejected", 0.7)
-    if pos.get("update") in {"permitted", "practiced"} and (has_object or re.search(r"\bthem\b|\bit\b", sentence)):
+    if pos.get("update") in {"permitted", "practiced"} and (s.has_object or re.search(r"\bthem\b|\bit\b", sentence)):
         cues.append("clause:update")
-        return done("changed_circumstance_update" if changed_ctx else "update_remedy", 0.65)
+        return done("changed_circumstance_update" if s.changed_ctx else "update_remedy", 0.65)
     return done("mention", 0.2)
 
 
@@ -625,10 +691,11 @@ def action_positions(sentence: str) -> dict[str, str]:
         if not clause or not clause.strip():
             continue
         found = [a for a, pat in _ACTION_PATTERNS.items() if pat.search(clause)]
-        if "anonymize" in found and "unpublish" in found:
-            # "remove the name from the story": the object is the name, not the story.
-            if not re.search(r"\b(?:remov|delet|take|unpublish)\w*\s+(?:the |an? |our |old |that |this )?(?:\w+ )?(?:articles?|stor(?:y|ies)|content|posts?)\b", clause, re.I):
-                found.remove("unpublish")
+        # "remove the name from the story": the object is the name, not the story.
+        if "anonymize" in found and "unpublish" in found and not re.search(
+                r"\b(?:remov|delet|take|unpublish)\w*\s+(?:the |an? |our |old |that |this )?(?:\w+ )?(?:articles?|stor(?:y|ies)|content|posts?)\b",
+                clause, re.I):
+            found.remove("unpublish")
         if "deindex" in found and "unpublish" in found and re.search(
                 r"\bfrom\s+(?:google|bing|search engines?|search results?|internet search)", clause, re.I) and not re.search(
                 r"\bfrom\s+(?:our|the|its)\s+(?:site|website|archives?|pages?)|\bunpublish", clause, re.I):

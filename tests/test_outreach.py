@@ -4,10 +4,18 @@ import email
 import email.policy
 
 import pytest
-
-from conftest import make_settings
-from nsmpa.outreach import add_contact, do_not_contact, draft_campaign, emails_in, harvest_contacts, mark_sent, record_response
 import test_pipeline as tp
+from conftest import make_settings
+
+from nsmpa.outreach import (
+    add_contact,
+    do_not_contact,
+    draft_campaign,
+    emails_in,
+    harvest_contacts,
+    mark_sent,
+    record_response,
+)
 
 
 async def _setup(tmp_path, db):
@@ -23,12 +31,12 @@ def test_emails_in_and_filters():
 
 
 async def test_harvest_draft_never_send_and_dnc(tmp_path, db, monkeypatch):
-    s, rid = await _setup(tmp_path, db)
+    s, _rid = await _setup(tmp_path, db)
     monkeypatch.setitem(tp.WEB, "https://quiet.example/about", (200, tp.PAGE.format(title="About us", body=(
         "<p>The Quiet Gazette is a weekly newspaper owned by local residents since 1950.</p>"
         "<a href='mailto:editor@quiet.example'>editor</a> <a href='mailto:ads@quiet.example'>ads</a> "
         "<a href='mailto:someone@gmail.com'>x</a>"))))
-    rid2, _ = await tp.run_research(db, s, tp.FakeSearch(tp.SEARCH_ROUTES), fresh=True)
+    _rid2, _ = await tp.run_research(db, s, tp.FakeSearch(tp.SEARCH_ROUTES), fresh=True)
     res = harvest_contacts(db)
     assert res["contacts_added"] >= 1 and res["entities_with_contacts"] >= 1
     emails = {r["email"] for r in db.execute("SELECT email FROM contacts")}

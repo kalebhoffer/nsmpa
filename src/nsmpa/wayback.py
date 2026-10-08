@@ -38,7 +38,7 @@ _NOT_NAME_WORD = {
     "Thursday", "Friday", "Saturday", "Sunday", "January", "February", "March", "April", "May", "June", "July",
     "August", "September", "October", "November", "December", "Editor", "Editors", "Staff", "Sheriff", "Superior",
     "Associated", "Press", "By", "On", "In", "At", "For", "And", "But", "After", "When", "Before", "During", "According",
-    "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday", "News", "Sports", "Opinion", "Photo", "Jan", "Feb", "Mar", "Apr", "Jun", "Jul", "Aug", "Sep", "Sept", "Oct", "Nov", "Dec", "United", "States", "Read", "More", "Related", "Share", "Comments", "Contact", "Advertise",
+    "Sports", "Opinion", "Photo", "Jan", "Feb", "Mar", "Apr", "Jun", "Jul", "Aug", "Sep", "Sept", "Oct", "Nov", "Dec", "United", "States", "Read", "More", "Related", "Share", "Comments", "Contact", "Advertise",
     "Prosecuting", "Attorney", "Judge", "Officer", "Sergeant", "Detective", "Chief", "President", "Dean", "Professor",
 }
 
@@ -99,7 +99,7 @@ def compare_versions(old_html: bytes, new_html: bytes | None, *, url: str, curre
     # A name counts as removed only when none of its words survive anywhere on the current page; partial matches are
     # template/byline reflow ("By Callie" + "Craighead Apr"), not redaction.
     removed = sorted(n for n in old_names if not any(w.rstrip(".") in new_words for w in n.split() if len(w.rstrip(".")) >= 3))
-    old_vocab = {w for w in re.findall(r"[a-z]{4,}", normalize_for_hash(old.main_text))}
+    old_vocab = set(re.findall(r"[a-z]{4,}", normalize_for_hash(old.main_text)))
     same_article = not old_vocab or len(old_vocab & set(re.findall(r"[a-z]{4,}", normalize_for_hash(new_text)))) / len(old_vocab) >= 0.6
     if removed and same_article:  # still recognisably the same article (vocabulary overlap survives redaction and redesigns)
         obs.append({"type": "names_removed", "count": len(removed),
@@ -124,7 +124,7 @@ OBS_TO_EVIDENCE = {
 }
 
 
-def describe(o: dict, earliest: str, compared: str) -> str:
+def describe(o: dict, earliest: str) -> str:
     d = f"{earliest[:4]}-{earliest[4:6]}-{earliest[6:8]}"
     if o["type"] == "names_removed":
         return (f"Wayback Machine comparison: the archived copy of this crime/arrest article captured {d} named "
@@ -189,7 +189,7 @@ async def check_url(researcher, entity, page_row, url: str) -> dict:
          VIEW.format(ts=rec["earliest"], url=url) if rec["earliest"] else None, json.dumps(rec["observations"]), rec["error"]))
     for o in rec["observations"]:
         stype, direction, actions, conf = OBS_TO_EVIDENCE[o["type"]]
-        text = describe(o, rec["earliest"], rec["compared"] or rec["earliest"])
+        text = describe(o, rec["earliest"])
 
         class _Page:  # minimal page facade for _insert_item; deliberately no title (may contain names)
             pass

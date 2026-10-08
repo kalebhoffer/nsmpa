@@ -71,7 +71,7 @@ def _acronym(inst: str) -> str | None:
 def _news_signals(text: str, page) -> tuple[int, int]:
     links = getattr(page, "links", []) or []
     structure = sum(1 for _, h in links if SECTION_LINK.search(h) or DATE_LINK.search(h))
-    return structure, len(set(m.lower() for m in NEWSROOM_WORDS.findall(text)))
+    return structure, len({m.lower() for m in NEWSROOM_WORDS.findall(text)})
 
 
 def _newsy(text: str, page) -> bool:

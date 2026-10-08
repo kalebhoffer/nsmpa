@@ -15,12 +15,12 @@ import re
 
 from .config import Settings
 from .db import Database
+from .evidence import person_key
 from .fetch import HardenedFetcher
 from .progress import RunDashboard
 from .research import EntityResearcher, QuerySpec
 from .runs import StopController, create_or_resume_run, done_keys, finish_run, mark_item, register_items
 from .search import SearchAuthError, SearchBroker, SearchBudgetExceeded, get_search_provider
-from .evidence import person_key
 from .utils import prepare_request_url, registrableish_domain
 
 # (key, organization, title, approx_year, claim to verify, actions, verification query, primary_url, prior)
@@ -200,7 +200,7 @@ async def run_seeds(db: Database, settings: Settings, kind: str, *, run_id: str 
         uninstall = stop.install()
         researcher = EntityResearcher(db, settings, broker, fetcher, rid, dash, stop)
         try:
-            for row, key in zip(rows, keys):
+            for row, key in zip(rows, keys, strict=True):
                 if stop.stop_requested:
                     status, reason = "interrupted", stop.reason
                     break
@@ -290,16 +290,13 @@ def _substantive_about(db: Database, run_id: str, entity_id: int, row) -> int:
     papers, a feature on several newsrooms) counts only where the excerpt or its context names this organization."""
     rows = db.execute("SELECT excerpt, context FROM evidence_items WHERE entity_id=? AND run_id=? AND about_entity=1 "
                       "AND statement_type NOT IN ('mention')", (entity_id, run_id)).fetchall()
-    keys = row.keys() if hasattr(row, "keys") else []
-    if "source_kind" not in keys or row["source_kind"] not in {"secondary_report", "group_standards"}:
+    if row["source_kind"] != "secondary_report":
         return len(rows)
-    home = None
-    if "index_id" in keys and row["index_id"]:
-        home = db.scalar("SELECT homepage_url FROM research_entities WHERE cohort!='precedent_case' AND id IN "
-                         "(SELECT entity_id FROM entity_sources WHERE source_key=?)", (row["seed_key"],), None)
+    home = db.scalar("SELECT homepage_url FROM research_entities WHERE cohort!='precedent_case' AND id IN "
+                     "(SELECT entity_id FROM entity_sources WHERE source_key=?)", (row["seed_key"],), None) \
+        if row["index_id"] else None
     terms = [t.lower() for t in _org_terms(row["organization"], home)]
-    return sum(1 for r in rows if any(t in f"{r['excerpt']} {r['context']}".lower() for t in terms)) if \
-        row["source_kind"] == "secondary_report" else len(rows)
+    return sum(1 for r in rows if any(t in f"{r['excerpt']} {r['context']}".lower() for t in terms))
 
 
 def recount_index_statuses(db: Database, run_id: str) -> dict:

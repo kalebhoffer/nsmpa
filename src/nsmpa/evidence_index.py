@@ -23,7 +23,7 @@ from collections import Counter
 from pathlib import Path
 
 from .db import Database
-from .utils import prepare_request_url, registrableish_domain
+from .utils import json_meta, prepare_request_url, registrableish_domain
 
 REQUIRED = {"index_id", "organization", "tier", "evidence_focus", "source_url", "kind", "homepage", "country", "source_kind"}
 KIND_TO_COHORT = {
@@ -94,7 +94,7 @@ def import_evidence_index(db: Database, path: Path, *, name: str) -> dict:
                 ent = _find_entity(db, cohort, domain)
                 out[f"new_{cohort}"] += 1
             else:
-                meta = json.loads(ent["metadata_json"] or "{}")
+                meta = json_meta(ent)
                 listed = meta.setdefault("evidence_index", [])
                 if not any(x.get("index_id") == iid and x.get("list") == name for x in listed):
                     listed.append(entry)
@@ -127,12 +127,12 @@ def index_report(db: Database, name: str | None = None) -> list[dict]:
     for p in db.execute(sql + " ORDER BY p.source_list, p.index_id", params).fetchall():
         ev = db.execute(
             """SELECT direction, COUNT(*) n FROM evidence_items WHERE entity_id=? AND statement_type!='mention'
-               AND run_id NOT IN (SELECT id FROM research_runs WHERE status='excluded') GROUP BY direction""",
+               AND run_id NOT IN (SELECT id FROM v_excluded_runs) GROUP BY direction""",
             (p["entity_id"],)).fetchall() if p["entity_id"] else []
         counts = {r["direction"]: r["n"] for r in ev}
         best = db.execute(
             """SELECT excerpt, acquisition FROM evidence_items WHERE entity_id=? AND direction='supportive'
-               AND statement_type!='mention' AND run_id NOT IN (SELECT id FROM research_runs WHERE status='excluded')
+               AND statement_type!='mention' AND run_id NOT IN (SELECT id FROM v_excluded_runs)
                ORDER BY authority_score DESC, extraction_confidence DESC LIMIT 1""", (p["entity_id"],)).fetchone() \
             if p["entity_id"] else None
         out.append({**dict(p), "supportive": counts.get("supportive", 0), "adverse": counts.get("adverse", 0),

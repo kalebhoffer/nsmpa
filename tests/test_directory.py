@@ -3,10 +3,11 @@ from __future__ import annotations
 import csv
 import json
 
+import test_pipeline as tp
 from conftest import make_settings
+
 from nsmpa.directory import export_directory, import_directory
 from nsmpa.research import select_entities
-import test_pipeline as tp
 
 COLS = ["Publication ID", "Publication", "Category", "State", "City", "Institution / Affiliation", "Website (historical or supplied)",
         "Domain", "Ownership", "Operating status", "Website verification", "Verified on", "Source year", "Source name", "Source URL",
@@ -120,7 +121,7 @@ async def test_export_fills_template_columns(tmp_path, db):
     write_dir(p)
     import_directory(db, p)
     s = make_settings(tmp_path)
-    rid, _ = await tp.run_research(db, s, tp.FakeSearch(tp.SEARCH_ROUTES))
+    _rid, _ = await tp.run_research(db, s, tp.FakeSearch(tp.SEARCH_ROUTES))
     res = export_directory(db, p, tmp_path / "out.csv")
     rows = {r["Publication ID"]: r for r in csv.DictReader(open(tmp_path / "out.csv", encoding="utf-8"))}
     assert res["with_findings"] >= 2
@@ -169,7 +170,7 @@ def test_classify_homepage_phrase_and_mentions():
     idx = InstitutionIndex.__new__(InstitutionIndex)
     InstitutionIndex.__init__(idx, FakeDB())
     cands = idx.by_state["OH"]
-    inst, method, conf, _ = classify_homepage("The Lantern | The student voice of The Ohio State University since 1881. "
+    inst, method, _conf, _ = classify_homepage("The Lantern | The student voice of The Ohio State University since 1881. "
                                               "Football: Ohio State beats University of Michigan-Ann Arbor.", cands)
     assert (inst["unitid"], method) == ("1", "homepage_phrase")
     inst, method, *_ = classify_homepage("Sports roundup: University of Michigan-Ann Arbor and The Ohio State University tie.", cands)
@@ -179,6 +180,7 @@ def test_classify_homepage_phrase_and_mentions():
 async def test_match_from_homepages_resolves_unmatched(tmp_path, db):
     import httpx
     from conftest import public_resolver
+
     from nsmpa.directory import match_from_homepages
     from nsmpa.fetch import HardenedFetcher
     seed(db)

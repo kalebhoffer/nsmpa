@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
+import json
 import re
 import socket
 import unicodedata
@@ -273,3 +274,12 @@ def near_duplicate_key(text: str, shingle: int = 5) -> str:
         return sha256_text(" ".join(words))[:24]
     hashes = sorted({sha256_text(" ".join(words[i:i + shingle]))[:16] for i in range(len(words) - shingle + 1)})
     return sha256_text("|".join(hashes[:6]))[:24]
+
+
+def json_meta(row, column: str = "metadata_json") -> dict:
+    """A row's JSON metadata column as a dict; empty, missing or malformed metadata reads as ``{}``."""
+    try:
+        value = json.loads(row[column] or "{}")
+    except (KeyError, IndexError, TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}

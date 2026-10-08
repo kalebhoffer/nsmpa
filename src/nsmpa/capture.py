@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from .config import Settings
 from .db import Database
@@ -38,11 +38,6 @@ class _Page:
         self.is_pdf = self.is_listing = False
 
 
-class _QuietDash:
-    def __getattr__(self, name):
-        return lambda *a, **k: None
-
-
 def _target_run(db: Database, settings: Settings, entity_id: int) -> str:
     row = db.execute(
         "SELECT s.run_id FROM entity_stances s JOIN research_runs r ON r.id=s.run_id WHERE s.entity_id=? "
@@ -50,7 +45,7 @@ def _target_run(db: Database, settings: Settings, entity_id: int) -> str:
     if row:
         return row["run_id"]
     from .runs import create_or_resume_run
-    rid, _ = create_or_resume_run(db, settings, "capture", f"capture-{datetime.now(timezone.utc):%Y%m%d}",
+    rid, _ = create_or_resume_run(db, settings, "capture", f"capture-{datetime.now(UTC):%Y%m%d}",
                                   params={"kind": "researcher_capture"}, command="nsmpa capture")
     return rid
 
@@ -59,9 +54,9 @@ def add_capture(db: Database, settings: Settings, *, entity_id: int, url: str, t
                 title: str = "", note: str = "") -> dict:
     """Store and classify one capture. Returns a summary dict. Raises CaptureError on bad input."""
     from .research import EntityResearcher, is_first_party, page_kind
+    from .review import enqueue_entity_review
     from .snapshots import store_text
     from .stance import classify_entity, store_stance
-    from .review import enqueue_entity_review
 
     entity = db.execute("SELECT * FROM research_entities WHERE id=?", (entity_id,)).fetchone()
     if entity is None:
@@ -97,7 +92,7 @@ def add_capture(db: Database, settings: Settings, *, entity_id: int, url: str, t
          int(first), "ok", "capture", json.dumps({"captured_by": captured_by, "capture_id": cap_id})))
     page_id = int(db.scalar("SELECT id FROM research_pages WHERE run_id=? AND entity_id=? AND requested_url=?",
                             (run_id, entity_id, requested)))
-    researcher = EntityResearcher(db, settings, None, None, run_id, _QuietDash(), None)
+    researcher = EntityResearcher.offline(db, settings, run_id)
     page = _Page(req, title or "", text)
     useful = researcher._store_evidence(entity, page, page_id, None, "researcher_capture", first, kind, None, text_sha)
     useful += researcher._store_voices(entity, page, page_id)

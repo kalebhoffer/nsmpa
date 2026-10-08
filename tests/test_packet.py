@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 import httpx
+import test_pipeline as tp
+import test_practice as pr
+import test_seeds as ts
+from conftest import make_settings, public_resolver
 from openpyxl import load_workbook
 from pptx import Presentation
 
-from conftest import make_settings, public_resolver
 from nsmpa.fetch import HardenedFetcher
 from nsmpa.packet import build_packet
 from nsmpa.research import research_all, start_research
 from nsmpa.seeds import run_seeds
-import test_pipeline as tp
-import test_practice as pr
-import test_seeds as ts
 
 
 async def populate(tmp_path, db):
@@ -75,8 +75,9 @@ async def test_packet_with_ai_summaries(tmp_path, db):
             self.models = SimpleNamespace(generate_content=self.gen)
 
         def gen(self, *, model, contents, config):
-            from google.genai import types
             import re as _re
+
+            from google.genai import types
             ids = [int(x) for x in _re.findall(r"\[E(\d+)\]", contents)][:2]
             body = {"sentences": [{"text": "The cited evidence describes the position.", "evidence_ids": ids},
                                   {"text": "Ninety-nine percent agree (99%).", "evidence_ids": ids}]}
@@ -91,3 +92,9 @@ async def test_packet_with_ai_summaries(tmp_path, db):
     assert sentences and all("99%" not in (x or "") for x in sentences)
     deck = Presentation(res["presentation"])
     assert any("AI-DRAFTED SUMMARY" in sh.text_frame.text for sl in deck.slides for sh in sl.shapes if sh.has_text_frame)
+
+
+def test_control_characters_never_break_the_workbook():
+    from nsmpa.packet import _xlsx_safe
+    assert _xlsx_safe("FIX logo \x1eCor bug") == "FIX logo  Cor bug"
+    assert _xlsx_safe("line\nbreak\ttab") == "line\nbreak\ttab"      # newlines and tabs are legal and kept

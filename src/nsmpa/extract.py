@@ -4,14 +4,13 @@ import html
 import json
 import re
 import xml.etree.ElementTree as ET
-from io import BytesIO
-
 from dataclasses import dataclass, field
+from io import BytesIO
 
 from bs4 import BeautifulSoup, UnicodeDammit
 
 from .models import PageAnalysis
-from .utils import normalize_for_hash, compact_ws, normalize_url, prepare_request_url
+from .utils import compact_ws, normalize_for_hash, normalize_url, prepare_request_url
 
 try:  # lxml is faster and more tolerant; html.parser is the always-available fallback
     import lxml  # noqa: F401
@@ -77,7 +76,7 @@ def decode_html(content: bytes, content_type_header: str | None = None) -> str:
         dammit = UnicodeDammit(content, [declared] if declared else [], is_html=True)
         if dammit.unicode_markup is not None:
             return dammit.unicode_markup
-    except Exception:
+    except (LookupError, ValueError, TypeError):  # unknown/bogus declared charset: fall back to UTF-8 below
         pass
     return content.decode("utf-8", errors="replace")
 

@@ -16,15 +16,16 @@ Guarantees:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import email.utils
 import ipaddress
 import random
 import time
 import urllib.robotparser
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Callable
+from datetime import UTC, datetime
 from urllib.parse import urlsplit
 
 import httpx
@@ -125,10 +126,8 @@ def parse_crawl_delay(text: str, agent_token: str) -> float | None:
             agents.add(value.lower())
         elif key == "crawl-delay":
             in_rules = True
-            try:
+            with contextlib.suppress(ValueError):
                 delay = float(value)
-            except ValueError:
-                pass
         else:
             in_rules = True
     groups.append((agents, delay))
@@ -139,7 +138,7 @@ def parse_crawl_delay(text: str, agent_token: str) -> float | None:
 
 
 class RobotsCache:
-    def __init__(self, fetcher: "HardenedFetcher"):
+    def __init__(self, fetcher: HardenedFetcher):
         self.fetcher = fetcher
         self.cache: dict[str, tuple[urllib.robotparser.RobotFileParser | None, str]] = {}
         self.delays: dict[str, float | None] = {}
@@ -240,7 +239,7 @@ class HardenedFetcher:
         self.robots = RobotsCache(self)
         self.stats = FetchStats()
 
-    async def __aenter__(self) -> "HardenedFetcher":
+    async def __aenter__(self) -> HardenedFetcher:
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
@@ -251,10 +250,9 @@ class HardenedFetcher:
 
     def _event(self, msg: str) -> None:
         if self.on_event:
-            try:
+            # A dashboard/logging callback must never break a fetch.
+            with contextlib.suppress(Exception):
                 self.on_event(msg)
-            except Exception:
-                pass
 
     # ------------------------------------------------------------------ safety
     async def _validate_destination(self, url: str) -> None:
@@ -313,8 +311,8 @@ class HardenedFetcher:
         try:
             dt = email.utils.parsedate_to_datetime(value)
             if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return max(0.0, min((dt - datetime.now(timezone.utc)).total_seconds(), 60.0))
+                dt = dt.replace(tzinfo=UTC)
+            return max(0.0, min((dt - datetime.now(UTC)).total_seconds(), 60.0))
         except Exception:
             return None
 
@@ -403,9 +401,9 @@ class HardenedFetcher:
             return True
         if self.settings.allow_pdf and (ctype == "application/pdf" or urlsplit(url).path.lower().endswith(".pdf")):
             return True
-        if ctype in {"application/gzip", "application/x-gzip", "application/octet-stream"} and urlsplit(url).path.lower().endswith(".xml.gz"):
-            return True  # compressed sitemaps
-        return False
+        # compressed sitemaps
+        return ctype in {"application/gzip", "application/x-gzip", "application/octet-stream"} and \
+            urlsplit(url).path.lower().endswith(".xml.gz")
 
     async def _fetch_http(self, url: str, check_robots: bool, max_bytes: int, textual_only: bool = True) -> FetchResult:
         current = url

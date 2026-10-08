@@ -7,10 +7,10 @@ import urllib.request
 from urllib.error import HTTPError
 
 import pytest
-
-from conftest import make_settings
-from nsmpa.gui import make_server, write_dashboard
 import test_pipeline as tp
+from conftest import make_settings
+
+from nsmpa.gui import make_server, write_dashboard
 
 
 @pytest.fixture
@@ -41,7 +41,7 @@ def req(port, path, *, method="GET", body=None, headers=None, host=None):
 
 
 async def test_gui_api_endpoints(gui):
-    s, port, token, db, rid = gui
+    _s, port, token, db, rid = gui
     st, html, hdr = req(port, "/")
     assert st == 200 and "NSMPA Monitor" in html and token in html
     assert "frame-ancestors 'none'" in hdr["Content-Security-Policy"]
@@ -60,7 +60,7 @@ async def test_gui_api_endpoints(gui):
 
 
 async def test_gui_security_guards(gui):
-    s, port, token, db, rid = gui
+    _s, port, token, db, _rid = gui
     assert req(port, "/api/overview", host="evil.example")[0] == 403          # DNS-rebinding guard
     item = json.loads(req(port, "/api/review")[1])["items"][0]
     assert req(port, f"/api/review/{item['id']}", method="POST", body={"decision": "accept"})[0] == 403   # no token
@@ -73,7 +73,7 @@ async def test_gui_security_guards(gui):
 
 
 async def test_offline_dashboard_file(gui, tmp_path):
-    s, port, token, db, rid = gui
+    s, _port, _token, db, _rid = gui
     out = write_dashboard(db, s, tmp_path / "dash.html")
     html = out.read_text()
     assert '"static": true' in html and "Strict Times" in html
@@ -82,7 +82,7 @@ async def test_offline_dashboard_file(gui, tmp_path):
 
 
 async def test_verify_queue_snapshot_and_decision(gui):
-    s, port, token, db, rid = gui
+    _s, port, token, db, _rid = gui
     q = json.loads(req(port, "/api/verify?kind=evidence")[1])
     assert q["items"] and q["counts"].get("unverified", 0) >= len(q["items"])
     first = q["items"][0]
@@ -93,7 +93,7 @@ async def test_verify_queue_snapshot_and_decision(gui):
     assert req(port, f"/api/verify/evidence/{first['id']}", method="POST", body={"status": "verified"})[0] == 403  # token required
     assert req(port, f"/api/verify/evidence/{first['id']}", method="POST", body={"status": "approved"},
                headers={"X-NSMPA-Token": token})[0] == 400  # only verified|rejected|disputed
-    st, body, _ = req(port, f"/api/verify/evidence/{first['id']}", method="POST", body={"status": "verified", "note": "matches live page"},
+    st, _body, _ = req(port, f"/api/verify/evidence/{first['id']}", method="POST", body={"status": "verified", "note": "matches live page"},
                       headers={"X-NSMPA-Token": token})
     assert st == 200 and db.scalar("SELECT verification_status FROM evidence_items WHERE id=?", (first["id"],)) == "verified"
     assert req(port, "/snapshot/evidence/notanumber")[0] == 404
@@ -101,7 +101,7 @@ async def test_verify_queue_snapshot_and_decision(gui):
 
 
 async def test_snapshot_escapes_hostile_page_text(gui):
-    s, port, token, db, rid = gui
+    _s, port, _token, db, _rid = gui
     eid = db.scalar("SELECT id FROM evidence_items WHERE page_id IS NOT NULL LIMIT 1")
     db.execute("UPDATE evidence_items SET excerpt='<script>alert(1)</script>' WHERE id=?", (eid,))
     db.conn.commit()
@@ -111,7 +111,7 @@ async def test_snapshot_escapes_hostile_page_text(gui):
 
 
 async def test_technical_snapshot_explains_instead_of_suggesting_dispute(gui):
-    s, port, token, db, rid = gui
+    _s, port, _token, db, _rid = gui
     eid = db.scalar("SELECT id FROM evidence_items WHERE page_id IS NOT NULL LIMIT 1")
     db.execute("UPDATE evidence_items SET evidence_class='technical' WHERE id=?", (eid,))
     db.conn.commit()

@@ -24,6 +24,20 @@
 | `report.py`, `export.py` | National report; per-run exports |
 | `doctor.py`, `cli.py` | Environment checks; Typer CLI |
 | `crawl.py`, `classify.py` | Legacy v0.1 deep crawl and A–F/U classification (retained) |
+| `models.py` | Plain dataclasses shared across modules (`FetchResult`, `SearchResult`, …) |
+| `identity.py` | Website identity check before any credits are spent (repurposed/parked domains, student vs newsroom signals) |
+| `fallback.py` | Sites that block robots: archived copies, search-snippet leads, AI search with word-for-word confirmation |
+| `capture.py` | Researcher captures (pasted text with SHA-256 fingerprint), capture queue |
+| `practice.py`, `wayback.py` | Documented practice in archived crime articles; Internet Archive comparisons (names removed, noindex added) |
+| `seeds.py`, `evidence_index.py` | Precedent and expert seeds; importing a researcher's evidence index without biasing rates |
+| `reclassify.py` | Re-judge stored excerpts with the current classifier and recompute stances (no fetching) |
+| `benchmarks.py`, `support_orgs.py`, `directory.py` | Built-in benchmark newsrooms and standards organizations; newspaper-directory import and IPEDS matching |
+| `ai_review.py`, `ai_discovery.py` | AI second opinion (quotes verified against fetched text); AI-assisted publication picks; shared AI cache |
+| `audit.py` | Accuracy audits: stratified samples, human labels, Wilson intervals, Cohen's kappa |
+| `packet.py`, `redact.py` | Excel/PowerPoint evidence packet; automated redaction of private individuals' names |
+| `gui.py`, `notify.py` | Local GUI (localhost-only, token-guarded writes) and offline dashboard; finish notifications |
+| `outreach.py`, `legal.py`, `recheck.py` | Draft-only outreach; legal-context leads; scheduled policy re-checks |
+| `estimate.py`, `pilot.py` | Cost/time estimates; capped end-to-end pilot with a plain-language report |
 
 ## Data flow
 

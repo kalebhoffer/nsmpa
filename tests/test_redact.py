@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import test_packet
 from openpyxl import load_workbook
 
 from nsmpa.packet import build_packet
 from nsmpa.redact import PLACEHOLDER, URL_SAFE_PLACEHOLDER, Redactor, redact_rows
-import test_packet
 
 
 def test_redacts_private_names_keeps_public_ones():

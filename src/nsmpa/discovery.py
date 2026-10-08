@@ -9,18 +9,16 @@ from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup
 
-from .extract import decode_html, extract_main_text
-
 from .config import Settings
 from .db import Database
+from .extract import decode_html, extract_main_text
 from .fetch import HardenedFetcher
 from .models import SearchResult
 from .progress import RunDashboard
 from .review import enqueue_publication_review
 from .runs import StopController, create_or_resume_run, done_keys, finish_run, mark_item, register_items
 from .search import SearchAuthError, SearchBroker, SearchBudgetExceeded, get_search_provider
-from .utils import (is_blocked_social_or_aggregator, normalize_url, prepare_request_url, registrableish_domain,
-                    same_site)
+from .utils import is_blocked_social_or_aggregator, normalize_url, prepare_request_url, registrableish_domain, same_site
 
 # Discovery intentionally distinguishes student journalism from institutional PR.
 STRONG_STUDENT_TERMS = re.compile(
@@ -121,10 +119,9 @@ def score_candidate(inst_name: str, inst_website: str | None, result: SearchResu
 
     # Search results are only lightly rewarded and only when the result itself has
     # a journalism-ish signal. The query text alone can never make a result valid.
-    if result.provider in {"brave", "serper"} and (strong_student or newspaper or paper_name):
-        if result.rank:
-            score += max(0.0, 0.07 - (result.rank - 1) * 0.008)
-            reasons.append(f"search_rank:{result.rank}")
+    if result.provider in {"brave", "serper"} and (strong_student or newspaper or paper_name) and result.rank:
+        score += max(0.0, 0.07 - (result.rank - 1) * 0.008)
+        reasons.append(f"search_rank:{result.rank}")
 
     if BAD_TERMS.search(hay):
         score -= 0.30
@@ -265,7 +262,7 @@ async def institution_site_candidates(fetcher: HardenedFetcher, website: str, in
 
         try:
             title, links = _html_links(r.content, r.final_url)
-        except Exception:
+        except (ValueError, TypeError, AssertionError, RecursionError):  # malformed markup: skip this page only
             continue
         student_context = _page_is_student_media_context(r.final_url, title, r.content)
 
@@ -292,7 +289,7 @@ async def institution_site_candidates(fetcher: HardenedFetcher, website: str, in
                     provider=source,
                     query=root,
                 ))
-            elif student_context and not same:
+            elif student_context and not same:  # noqa: SIM102 (comment explains the inner test)
                 # Student-media pages often link to independently hosted publications
                 # by brand name only, e.g. "The Northern Light".
                 if text and 2 <= len(text.split()) <= 12:
@@ -307,7 +304,7 @@ async def institution_site_candidates(fetcher: HardenedFetcher, website: str, in
 
             # Follow only a narrow set of same-site navigation pages and never exceed
             # depth 2. This keeps discovery bounded for a national run.
-            if same and depth < 2 and href not in queued and NAV_TERMS.search(f"{text} {href}"):
+            if same and depth < 2 and href not in queued and NAV_TERMS.search(f"{text} {href}"):  # noqa: SIM102
                 if not PR_TERMS.search(f"{text} {href}") or re.search(r"student", f"{text} {href}", re.I):
                     queued.add(href)
                     queue.append((href, depth + 1, "institution_navigation"))

@@ -25,14 +25,13 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from urllib.parse import quote, urlsplit
 
 from .evidence import action_positions, extract_evidence
-from .extract import extract_main_text
 from .identity import check_identity
 from .models import FetchResult
-from .utils import normalize_for_hash, registrableish_domain
+from .utils import json_meta, normalize_for_hash, registrableish_domain
 
 CDX_POLICY = ("https://web.archive.org/cdx/search/cdx?url={domain}&matchType=domain&output=json&fl=original,timestamp"
               "&filter=statuscode:200&filter=original:{regex}&collapse=urlkey&limit=200")
@@ -98,7 +97,7 @@ class BlockedSiteFallback:
         self.archived.add(key)
         # Asking for a capture "as of now" redirects to the nearest one in a second or two; a CDX "latest" query
         # scans the whole history and times out on large sites.
-        snap = await self.fetcher.fetch_safe(RAW.format(ts=ts or datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S"), url=url))
+        snap = await self.fetcher.fetch_safe(RAW.format(ts=ts or datetime.now(UTC).strftime("%Y%m%d%H%M%S"), url=url))
         if snap.access_class != "ok" or not snap.content:
             return None, None
         m = re.search(r"/web/(\d{14})id_/", snap.final_url or "")
@@ -242,7 +241,6 @@ class BlockedSiteFallback:
     async def ai_search(self) -> int:
         from . import ai_review
         from .ai_review import AIUnavailable, make_client
-        from .utils import sha256_text
         from .research import is_first_party
         if self.r.ai_fallback_calls >= self.settings.blocked_fallback_ai_max_calls:
             self.notes.append("AI search skipped: per-run cap reached")
@@ -258,11 +256,11 @@ class BlockedSiteFallback:
                 "Find this organization's published policy or stated practice on unpublishing, removing, anonymizing or "
                 "de-indexing previously published articles (or its refusal to). Quote it verbatim with the exact URL.")
         # Cache lookups/writes stay on this thread (SQLite connections are thread-bound); only the API call is offloaded.
-        key = sha256_text(f"{self.settings.ai_provider}|{self.settings.ai_model}|{FIND_POLICY_PROMPT_VERSION}|{e['id']}|{e['homepage_url']}")
-        row = self.db.execute("SELECT response_json FROM ai_cache WHERE cache_key=?", (key,)).fetchone()
+        key = ai_review.ai_cache_key(self.settings, FIND_POLICY_PROMPT_VERSION, f"{e['id']}|{e['homepage_url']}")
+        hit = ai_review.ai_cache_get(self.db, key)
         try:
-            if row:
-                data, was_cached = json.loads(row["response_json"]), True
+            if hit is not None:
+                data, was_cached = hit, True
             else:
                 self.r.ai_fallback_calls += 1
                 try:
@@ -278,12 +276,8 @@ class BlockedSiteFallback:
                         "the policy pages and a one-sentence paraphrase; leave quotes empty.", FIND_POLICY_SYSTEM,
                         FIND_POLICY_SCHEMA, grounded=True)
                     data = {**data, "quotes": []}
-                data = {**data, "_sources": meta.get("sources", []), "_search_queries": meta.get("search_queries", [])}
-                self.db.execute("INSERT OR REPLACE INTO ai_cache(cache_key,model,prompt_version,response_json,input_tokens,"
-                                "output_tokens,stop_reason) VALUES(?,?,?,?,?,?,?)",
-                                (key, meta.get("model"), FIND_POLICY_PROMPT_VERSION, json.dumps(data), meta.get("input_tokens"),
-                                 meta.get("output_tokens"), meta.get("stop_reason")))
-                self.db.conn.commit()
+                data = ai_review.with_grounding(data, meta)
+                ai_review.ai_cache_put(self.db, key, FIND_POLICY_PROMPT_VERSION, data, meta)
                 was_cached = False
         except Exception as exc:  # AIUnavailable, API errors: the fallback continues without AI
             self.notes.append(f"AI search failed: {type(exc).__name__}: {str(exc)[:120]}")
@@ -373,7 +367,7 @@ class BlockedSiteFallback:
         if home_page is None:
             self.notes.append("no archived copy of the homepage")
         else:
-            arch_ident = check_identity(e, json.loads(e["metadata_json"] or "{}"), "ok", home_page)
+            arch_ident = check_identity(e, json_meta(e), "ok", home_page)
             if arch_ident.status == "mismatch":
                 return {"identity": "mismatch", "reason": f"archived homepage: {arch_ident.reason}"}
             for text, href in home_page.links:
