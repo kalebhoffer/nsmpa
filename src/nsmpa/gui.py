@@ -189,9 +189,29 @@ def render_page(token: str | None, embedded: dict | None = None) -> str:
                 .replace("/*__NSMPA_DATA__*/null", data))
 
 
-def write_dashboard(db: Database, settings: Settings, out: Path) -> Path:
+def redact_payload(db: Database, payload: dict) -> dict:
+    from .redact import Redactor, redact_rows
+    r = Redactor.from_db(db)
+    payload["evidence"]["rows"] = redact_rows(payload["evidence"]["rows"], r)
+    payload["review"]["items"] = redact_rows(payload["review"]["items"], r)
+    ins = payload["insights"]
+    for k in ("voices", "legal", "policy_changes"):
+        ins[k] = redact_rows(ins[k], r)
+    ins["ai"]["disagreements"] = redact_rows(ins["ai"]["disagreements"], r)
+    ins["wayback"]["changed"] = redact_rows(ins["wayback"]["changed"], r)
+    payload["ops"]["recent_queries"] = redact_rows(payload["ops"]["recent_queries"], r)
+    payload["ops"]["failed_items"] = [dict(x, error="[withheld in shared copy]") for x in payload["ops"]["failed_items"]]
+    payload["overview"]["database"] = "[withheld]"
+    payload["redacted"] = True
+    return payload
+
+
+def write_dashboard(db: Database, settings: Settings, out: Path, *, redact: bool = False) -> Path:
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(render_page(None, snapshot_payload(db, settings)), encoding="utf-8")
+    payload = snapshot_payload(db, settings)
+    if redact:
+        payload = redact_payload(db, payload)
+    out.write_text(render_page(None, payload), encoding="utf-8")
     return out
 
 

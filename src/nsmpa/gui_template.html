@@ -300,7 +300,7 @@ document.addEventListener("click", async e => {
   if (b) { const id = b.dataset.decide, note = (document.querySelector(`[data-note="${id}"]`) || {}).value || "";
     const res = await post(`/api/review/${id}`, {decision: b.dataset.d, note}); if (res.error) alert(res.error); loadReview(); }
 });
-if (CFG.static) { $("#static-banner").hidden = false; $("#snap-time").textContent = DATA.overview.generated; }
+if (CFG.static) { $("#static-banner").hidden = false; $("#snap-time").textContent = DATA.overview.generated + (DATA.redacted ? ". Names of private individuals withheld (automated redaction)" : ""); }
 show(loaders[location.hash.slice(1)] ? location.hash.slice(1) : "live");
 if (!CFG.static) setInterval(() => { if (current === "live") loadLive(); }, 2000);
 </script>
