@@ -39,6 +39,8 @@ from .utils import (is_blocked_social_or_aggregator, normalize_for_hash, normali
                     registrableish_domain, same_site, sha256_text)
 
 COHORTS = {"student_media", "professional_newsroom", "support_org", "press_association", "journalism_school", "other"}
+# Lead lists, not populations: never part of any denominator and skipped by `research` unless named explicitly.
+SEED_COHORTS = {"expert", "precedent_case"}
 GUIDANCE_COHORTS = {"support_org", "press_association", "journalism_school"}
 
 POLICY_PAGE_RE = re.compile(
@@ -769,6 +771,9 @@ def select_entities(db: Database, cohort: str | None, limit: int | None, entity_
     if cohort:
         sql += " AND cohort=?"
         params.append(cohort)
+    elif not entity_ids:
+        sql += f" AND cohort NOT IN ({','.join('?' * len(SEED_COHORTS))})"
+        params += sorted(SEED_COHORTS)
     if entity_ids:
         sql += f" AND id IN ({','.join('?' * len(entity_ids))})"
         params += entity_ids
