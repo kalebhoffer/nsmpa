@@ -292,9 +292,12 @@ def render_page(token: str | None, embedded: dict | None = None) -> str:
 def redact_payload(db: Database, payload: dict) -> dict:
     from .redact import Redactor, redact_rows
     r = Redactor.from_db(db)
+    ins = payload["insights"]
+    lists = [payload["evidence"]["rows"], payload["review"]["items"], ins["voices"], ins["legal"], ins["policy_changes"],
+             ins["ai"]["disagreements"]]
+    r.learn_common_words(v for rows in lists for row in rows for v in row.values() if isinstance(v, str))
     payload["evidence"]["rows"] = redact_rows(payload["evidence"]["rows"], r)
     payload["review"]["items"] = redact_rows(payload["review"]["items"], r)
-    ins = payload["insights"]
     for k in ("voices", "legal", "policy_changes"):
         ins[k] = redact_rows(ins[k], r)
     ins["ai"]["disagreements"] = redact_rows(ins["ai"]["disagreements"], r)

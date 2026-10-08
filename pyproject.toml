@@ -4,11 +4,21 @@ build-backend = "hatchling.build"
 
 [project]
 name = "nsmpa"
-version = "0.7.2"
-description = "NSMPA: a resumable national journalism post-publication policy, precedent, and guidance research engine."
+version = "0.7.3"
+description = "Evidence engine for how U.S. newsrooms handle requests to unpublish, de-index or anonymize old reporting."
 readme = "README.md"
-requires-python = ">=3.11"
-authors = [{name = "NSMPA"}]
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "Kaleb Hoffer"}]
+keywords = ["journalism", "ethics", "unpublishing", "de-indexing", "right to be forgotten", "research"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Sociology",
+]
 dependencies = [
   "beautifulsoup4>=4.12",
   "httpx[http2]>=0.27",
@@ -29,6 +39,11 @@ ai = ["google-genai>=2.0"]
 claude = ["anthropic>=1.0"]
 playwright = ["playwright>=1.48"]
 dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "ruff>=0.7"]
+
+[project.urls]
+Repository = "https://github.com/kalebhoffer/nsmpa"
+Evidence = "https://github.com/kalebhoffer/nsmpa/tree/main/evidence"
+Issues = "https://github.com/kalebhoffer/nsmpa/issues"
 
 [project.scripts]
 nsmpa = "nsmpa.cli:main"

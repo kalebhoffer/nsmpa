@@ -64,3 +64,17 @@ async def test_redacted_dashboard(tmp_path, db):
     db.conn.commit()
     html = write_dashboard(db, s, tmp_path / "d.html", redact=True).read_text()
     assert "Smithers" not in html and '"redacted": true' in html
+
+
+def test_headline_phrases_are_not_names_but_people_still_are():
+    from nsmpa.redact import Redactor
+    r = Redactor()
+    r.learn_common_words([
+        "a case study of how student papers handle requests", "the study found", "in this case", "publishing principles and policies",
+        "publishing standards",
+        "news standards and principles", "a brown paper bag", "brown and green", "policies on anonymity and anonymity rules"])
+    out = r.text("Should campus papers delete stories? A Case Study of Ten College Newspapers. "
+                 "NBC News Standards and Publishing Principles. Review Your Takedown/Anonymity Policies. "
+                 "Police arrested John Brown on Tuesday.")
+    assert "A Case Study" in out and "Publishing Principles" in out and "Anonymity Policies" in out
+    assert "John Brown" not in out and "[name withheld]" in out          # a common surname does not save a real name
