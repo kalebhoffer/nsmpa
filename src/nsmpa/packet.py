@@ -260,6 +260,12 @@ def build_workbook(data: dict, path: Path) -> None:
         ("Every excerpt row includes the source URL (clickable), the time it was fetched, the SHA-256 of the exact page that was "
          "analysed and the local snapshot path, so anyone can confirm the quote against the live page or the archived copy.", False),
         ("Rows marked UNVERIFIED have not yet been checked by a person. Verify before quoting publicly.", False),
+        (("Names of private individuals have been replaced with [name withheld] by automated redaction "
+          f"({data.get('redaction_count', 0)} replacements). Organizations, institutions, cited experts and quoted speakers are "
+          "kept. URLs containing a redacted name and archived-copy links are withheld; originals are retained privately and "
+          "available on request by evidence ID.") if data.get("redacted") else
+         "This copy is NOT redacted: excerpts may contain names of private individuals. Use `nsmpa packet --redact-names` "
+         "before sharing outside your review team.", data.get("redacted", False)),
         ("", False),
         ("Rules used", True),
         ("• Student media, professional newsrooms and standards organizations are separate groups with separate denominators; "
@@ -498,7 +504,8 @@ def build_deck(data: dict, path: Path, *, title: str, max_precedent_slides: int)
         "Every statement in this deck is drawn from a source listed in the accompanying workbook, with its URL, fetch time "
         "and page hash.",
     ], size=20, color=INK_2)
-    footer(s, f"Prepared with NSMPA {data['version']} · scope: {data['scope']}")
+    footer(s, f"Prepared with NSMPA {data['version']} · scope: {data['scope']}"
+              + (" · names of private individuals withheld (automated redaction)" if data.get("redacted") else ""))
 
     # 2. My situation
     mc = data["my_case"]
@@ -790,17 +797,22 @@ def ai_summaries(db: Database, settings: Settings, data: dict, client=None) -> d
 
 def build_packet(db: Database, settings: Settings, out_dir: Path, *, run_id: str | None = None,
                  title: str = "Post-publication relief in U.S. journalism: the evidence", ai_summaries_on: bool = False,
-                 ai_client=None) -> dict:
+                 ai_client=None, redact: bool = False) -> dict:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out = Path(out_dir) / f"packet_{stamp}"
     out.mkdir(parents=True, exist_ok=True)
     data = gather(db, settings, run_id)
     data["ai_summaries"] = ai_summaries(db, settings, data, ai_client) if ai_summaries_on else {}
+    if redact:
+        from .redact import Redactor, redact_packet_data
+        redact_packet_data(data, Redactor.from_db(db))
     xlsx = out / "NSMPA_evidence.xlsx"
     pptx = out / "NSMPA_presentation.pptx"
     build_workbook(data, xlsx)
     slides = build_deck(data, pptx, title=title, max_precedent_slides=settings.packet_precedent_slides)
-    md = [f"# {title}", "", f"Generated {data['generated']} (NSMPA {data['version']}); scope: {data['scope']}.", "",
+    md = [f"# {title}", "", f"Generated {data['generated']} (NSMPA {data['version']}); scope: {data['scope']}."
+          + (f" Names of private individuals withheld ({data.get('redaction_count', 0)} automated replacements)." if data.get("redacted") else
+             " NOT redacted — may contain names of private individuals."), "",
           f"- Workbook: `{xlsx.name}` ({len(data['all_evidence'])} evidence rows, {len(data['voices'])} voices, "
           f"{len(data['precedents'])} precedent leads, {len(data['opposing'])} opposing excerpts)",
           f"- Presentation: `{pptx.name}` ({slides} slides)", ""]
@@ -813,4 +825,5 @@ def build_packet(db: Database, settings: Settings, out_dir: Path, *, run_id: str
                   f"{a.get('unpublish_rejected', 0)} reject unpublishing")
     (out / "case_packet.md").write_text("\n".join(md) + "\n", encoding="utf-8")
     return {"out_dir": str(out), "workbook": str(xlsx), "presentation": str(pptx), "slides": slides,
+            "redacted": bool(data.get("redacted")), "redactions": data.get("redaction_count", 0),
             "evidence_rows": len(data["all_evidence"]), "voices": len(data["voices"]), "precedents": len(data["precedents"])}
