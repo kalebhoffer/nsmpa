@@ -803,6 +803,127 @@ def packet_cmd(run_id: str | None = typer.Option(None, "--run-id"), out_dir: Pat
         db.close()
 
 
+# ============================================================================ v0.5: Wayback, AI review, audit
+
+@app.command("wayback")
+def wayback_cmd(run_id: str = typer.Option(..., "--run-id", help="Research run whose pages to compare"),
+                entity_id: list[int] = typer.Option([], "--entity-id"), quiet: bool = QuietOpt, verbose: bool = VerboseOpt,
+                config: Path | None = ConfigOpt) -> None:
+    """Compare sampled crime articles (and now-404 article URLs) with Wayback Machine captures. Free."""
+    from .wayback import run_wayback
+    db, settings = _db(config)
+    try:
+        res = asyncio.run(run_wayback(db, settings, run_id, quiet=quiet, verbose=verbose, entity_ids=entity_id or None))
+        console.print_json(json.dumps(res))
+    finally:
+        db.close()
+
+
+@app.command("ai-review")
+def ai_review_cmd(
+    run_id: str | None = typer.Option(None, "--run-id", help="Limit to pages from this research run"),
+    cohort: str | None = typer.Option(None, "--cohort"),
+    max_calls: int | None = typer.Option(None, "--max-calls", min=0, help="Max live AI calls this invocation"),
+    limit: int | None = typer.Option(None, "--limit", min=1, help="Max pages to consider"),
+    model: str | None = typer.Option(None, "--model", help="Override ai_model (default claude-opus-5-5)"),
+    resume_id: str | None = typer.Option(None, "--resume", help="Resume an earlier ai-review run id"),
+    quiet: bool = QuietOpt, verbose: bool = VerboseOpt, config: Path | None = ConfigOpt,
+) -> None:
+    """AI second opinion on fetched pages. Quotes are verified verbatim; never changes a stance on its own."""
+    from .ai_review import AIUnavailable, run_ai_review
+    db, settings = _db(config)
+    if model:
+        settings.ai_model = model
+    try:
+        res = asyncio.run(run_ai_review(db, settings, run_id=run_id, cohort=cohort, max_calls=max_calls, limit=limit,
+                                        quiet=quiet, verbose=verbose, review_run_id=resume_id, command=_cmdline()))
+        console.print_json(json.dumps(res, default=str))
+        if res["status"] in {"budget_exhausted", "interrupted"}:
+            console.print(f"[yellow]Resume with: nsmpa ai-review --resume {res['run_id']}"
+                          + (f" --run-id {run_id}" if run_id else "") + "[/yellow]")
+    except AIUnavailable as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    finally:
+        db.close()
+
+
+audit_app = typer.Typer(help="Accuracy audit: sample, label (Excel or terminal), report")
+app.add_typer(audit_app, name="audit")
+
+
+@audit_app.command("sample")
+def audit_sample(n: int = typer.Option(50, "--n", min=5), seed: int | None = typer.Option(None, "--seed"),
+                 cohort: str | None = typer.Option(None, "--cohort"), description: str = typer.Option("", "--description"),
+                 config: Path | None = ConfigOpt) -> None:
+    """Draw a reproducible stratified sample of evidence to hand-check."""
+    from .audit import create_sample
+    db, _ = _db(config)
+    try:
+        console.print_json(json.dumps(create_sample(db, n, seed=seed, cohort=cohort, description=description)))
+    finally:
+        db.close()
+
+
+@audit_app.command("export")
+def audit_export(out: Path = typer.Option(..., "--out", help="CSV to open in Excel"), audit_id: str | None = typer.Option(None, "--audit-id"),
+                 show_machine: bool = typer.Option(False, "--show-machine", help="Include the machine's answer (not blind)"),
+                 config: Path | None = ConfigOpt) -> None:
+    """Write the sample to CSV for labeling in Excel (blind by default)."""
+    from .audit import export_csv, latest_audit
+    db, _ = _db(config)
+    try:
+        aid = audit_id or latest_audit(db)
+        if not aid:
+            raise typer.BadParameter("No audit yet; run `nsmpa audit sample` first")
+        console.print(f"Wrote {export_csv(db, aid, out, blind=not show_machine)} items for audit {aid} to {out}")
+    finally:
+        db.close()
+
+
+@audit_app.command("import")
+def audit_import(path: Path = typer.Argument(..., exists=True), labeler: str = typer.Option(..., "--labeler"),
+                 config: Path | None = ConfigOpt) -> None:
+    """Import a labeled CSV (each person imports their own copy under their own --labeler name)."""
+    from .audit import import_csv
+    db, _ = _db(config)
+    try:
+        console.print_json(json.dumps(import_csv(db, path, labeler)))
+    finally:
+        db.close()
+
+
+@audit_app.command("label")
+def audit_label(labeler: str = typer.Option(..., "--labeler"), audit_id: str | None = typer.Option(None, "--audit-id"),
+                show_machine: bool = typer.Option(False, "--show-machine"), config: Path | None = ConfigOpt) -> None:
+    """Label the sample in the terminal (progress is saved; q to stop)."""
+    from .audit import label_interactive, latest_audit
+    db, _ = _db(config)
+    try:
+        aid = audit_id or latest_audit(db)
+        if not aid:
+            raise typer.BadParameter("No audit yet; run `nsmpa audit sample` first")
+        console.print(f"Labeled {label_interactive(db, aid, labeler, show_machine=show_machine)} items")
+    finally:
+        db.close()
+
+
+@audit_app.command("report")
+def audit_report(audit_id: str | None = typer.Option(None, "--audit-id"), as_json: bool = typer.Option(False, "--json"),
+                 config: Path | None = ConfigOpt) -> None:
+    """Accuracy with 95% intervals, confusion matrix, inter-rater kappa, AI-vs-human accuracy."""
+    from .audit import format_report, latest_audit, report
+    db, _ = _db(config)
+    try:
+        aid = audit_id or latest_audit(db)
+        if not aid:
+            raise typer.BadParameter("No audit yet; run `nsmpa audit sample` first")
+        rep = report(db, aid)
+        console.print_json(json.dumps(rep)) if as_json else console.print(format_report(rep))
+    finally:
+        db.close()
+
+
 @app.command("exclude-run")
 def exclude_run_cmd(run_id: str = typer.Argument(...), reason: str = typer.Option(..., "--reason"),
                     undo: bool = typer.Option(False, "--undo", help="Restore the run to 'completed'"),

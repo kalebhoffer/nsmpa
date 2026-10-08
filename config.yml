@@ -68,6 +68,19 @@ precedent_max_pages_per_seed: 4
 packet_max_rows_per_sheet: 100000
 packet_precedent_slides: 8
 
+# --- Wayback Machine comparison (v0.5, free) --------------------------------------------------
+wayback_enabled: true
+wayback_max_checks_per_entity: 10   # sampled crime articles + now-404 article URLs per newsroom
+wayback_change_threshold: 0.85      # text similarity below this = "content altered"
+
+# --- AI second opinion (v0.5; runs only via `nsmpa ai-review`) ---------------------------------
+ai_model: claude-opus-5-5
+ai_effort: medium
+ai_refusal_fallback: true           # server-side fallback if the model declines a page
+ai_max_page_chars: 60000
+ai_max_calls_per_run: 500
+ai_concurrency: 4
+
 # --- IPEDS universe ----------------------------------------------------------------------
 allowed_states: []
 institution_filters:

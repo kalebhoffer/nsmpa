@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.0 — archive evidence, AI second opinion, measured accuracy
+
+- Wayback Machine comparison (`wayback.py`, runs inside `research` and as `nsmpa wayback`): archived vs. current
+  versions of sampled crime articles and now-404 article URLs; detects names removed, noindex added, headline and
+  text changes, and unpublishing. Names of people are never stored (count + hash only); titles are not stored.
+- AI second opinion (`nsmpa ai-review`, Claude API, default `claude-opus-5-5`, structured JSON output): every quote
+  verified verbatim against the saved page, fabricated quotes discarded, agreement/disagreement with the rule-based
+  classifier recorded, disagreements sent to review; neutral prompt; cached by model+prompt version+page hash;
+  per-run call cap; never changes a stance. Server-side refusal fallback enabled by default (`ai_refusal_fallback`).
+- Accuracy audit (`nsmpa audit sample|export|import|label|report`): seeded stratified sample, blind Excel/CSV or
+  terminal labeling, relevance precision and direction accuracy with Wilson 95% intervals, confusion matrix,
+  Cohen's kappa between two labelers, AI-vs-human accuracy.
+- Packet: new sheets Archive Changes, AI Second Opinion, Accuracy; new accuracy slide.
+- Schema v5 (additive): ai_cache, ai_reviews, ai_findings, wayback_checks, audits, audit_items, audit_labels.
+
 ## 0.4.0 — evidence packet
 
 - Per-action positions: clause-level analysis separates unpublish / de-index / anonymize / update; `relief_mode`

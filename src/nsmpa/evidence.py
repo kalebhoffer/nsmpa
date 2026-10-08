@@ -184,6 +184,11 @@ STATEMENT_DIRECTION = {
     "practice_update": "neutral",
     "technical_noindex": "supportive",
     "technical_sitewide_noindex": "neutral",
+    "wayback_names_removed": "supportive",
+    "wayback_noindex_added": "supportive",
+    "wayback_unpublished": "supportive",
+    "wayback_content_altered": "neutral",
+    "wayback_title_changed": "neutral",
     "mention": "neutral",
 }
 STATEMENT_RELEVANCE = {
@@ -192,6 +197,8 @@ STATEMENT_RELEVANCE = {
     "practice_relief_denied": 0.9, "case_by_case": 0.75, "archive_principle": 0.65, "update_remedy": 0.6,
     "practice_update": 0.6, "harm_consideration": 0.4, "mention": 0.1,
     "technical_noindex": 0.85, "technical_sitewide_noindex": 0.2,
+    "wayback_names_removed": 0.9, "wayback_noindex_added": 0.9, "wayback_unpublished": 0.6,
+    "wayback_content_altered": 0.4, "wayback_title_changed": 0.4,
 }
 
 

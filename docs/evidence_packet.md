@@ -79,15 +79,57 @@ first-person statements by the page's byline author. Voices are captured on **ev
 only for seeded experts; those are labelled "captured from coverage (credentials unverified)". Both supportive
 and adverse voices are kept. Roles in the seed list are as commonly reported — verify before presenting.
 
-## 6. Build the packet
+## 6. Wayback Machine comparison (free)
+
+Runs automatically during `research` (and on demand: `nsmpa wayback --run-id RUN`). For each sampled crime/arrest
+article, and each first-party article URL that now returns 404/410, the Internet Archive index is checked; when the
+article has changed since its earliest capture, the two versions are compared:
+
+| Observation | Counts as |
+|---|---|
+| names in the archived version no longer appear | anonymization practiced |
+| current version has noindex, archived did not | de-indexing practiced |
+| archived as live, now 404/410 | possible unpublishing (or a site migration — verify) |
+| headline / text changed | neutral context |
+
+**Privacy:** NSMPA never stores or displays the removed names — only how many. The archived copy (linked in the
+"Archive Changes" sheet) may still show them; keep that in mind before sharing archive links.
+
+## 7. AI second opinion (optional)
+
+```bash
+nsmpa ai-review --run-id RUN --max-calls 50     # needs ANTHROPIC_API_KEY or an `ant auth login` profile
+```
+
+An independent reading of the same pages by Claude (`ai_model`, default `claude-opus-5-5`). Every quote it returns
+must appear word-for-word in the saved page or it is discarded. Each verified finding is compared with the rule-based
+classifier (`agree` / `disagree` / `ai_only`); disagreements and AI-only directional findings go to the review queue.
+AI output never changes a stance. The prompt asks only what the page says, in both directions, and never mentions
+your case. Results are cached, so re-running costs nothing.
+
+## 8. Measure accuracy
+
+```bash
+nsmpa audit sample --n 50                        # reproducible, stratified by direction
+nsmpa audit export --out audit_alice.csv         # blind: the machine's answer is hidden
+# fill "relevant (y/n)" and "direction" in Excel; a second person fills their own copy
+nsmpa audit import audit_alice.csv --labeler alice
+nsmpa audit import audit_bob.csv --labeler bob
+nsmpa audit report                               # accuracy with 95% CI, confusion matrix, kappa, AI accuracy
+```
+
+Or label in the terminal: `nsmpa audit label --labeler alice`. The packet's "Accuracy" sheet and slide show the
+latest labeled audit, or "not yet measured".
+
+## 9. Build the packet
 
 ```bash
 nsmpa packet                     # output/packet_<UTC>/
 ```
 
 - `NSMPA_evidence.xlsx` — sheets: Read Me, Summary, Closest to My Case, De-index vs Unpublish, Named Precedents,
-  Professional Guidance, Expert Voices, Documented Practice, **Opposing Evidence**, Entities, All Evidence,
-  Sources, Search Ledger. Clickable source links; filters and frozen headers on every sheet.
+  Professional Guidance, Expert Voices, Documented Practice, **Opposing Evidence**, Archive Changes, AI Second
+  Opinion, Accuracy, Entities, All Evidence, Sources, Search Ledger. Clickable source links; filters and frozen headers on every sheet.
 - `NSMPA_presentation.pptx` — title, your case profile, method, de-index vs. unpublish chart, position by group,
   named precedents, one slide per closest precedent, expert voices (supportive and cautionary), the
   archive-integrity objection with the data on archive-preserving relief, and limitations.

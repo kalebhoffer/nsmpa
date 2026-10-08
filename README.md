@@ -67,6 +67,15 @@ nsmpa packet                              # output/packet_<UTC>/NSMPA_evidence.x
 See `docs/evidence_packet.md`. Newsrooms without written policies are still examined: their archived crime
 stories are sampled for editor's notes, name removals and targeted noindex tags.
 
+## Archive evidence, AI second opinion, measured accuracy
+
+```bash
+nsmpa wayback --run-id RUN                  # archived vs. current crime articles (also runs inside `research`)
+nsmpa ai-review --run-id RUN --max-calls 50 # optional; needs ANTHROPIC_API_KEY
+nsmpa audit sample --n 50 && nsmpa audit export --out audit.csv   # label in Excel, then `audit import`
+nsmpa audit report
+```
+
 ## Reproducing the national run
 
 See `docs/scale_runbook.md` for credit estimates. The sequence is:

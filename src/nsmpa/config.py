@@ -191,6 +191,17 @@ class Settings(BaseModel):
     packet_max_rows_per_sheet: int = Field(100_000, ge=100, le=1_000_000)
     packet_precedent_slides: int = Field(8, ge=0, le=40)
     my_case: MyCase = Field(default_factory=MyCase)
+    # --- v0.5 Wayback Machine comparison --------------------------------------------------
+    wayback_enabled: bool = True
+    wayback_max_checks_per_entity: int = Field(10, ge=0, le=200)
+    wayback_change_threshold: float = Field(0.85, ge=0.1, le=1.0)
+    # --- v0.5 AI second opinion (off unless enabled; never the sole basis for a finding) --
+    ai_model: str = "claude-opus-5-5"
+    ai_effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
+    ai_refusal_fallback: bool = True
+    ai_max_page_chars: int = Field(60_000, ge=2_000, le=600_000)
+    ai_max_calls_per_run: int = Field(500, ge=1, le=1_000_000)
+    ai_concurrency: int = Field(4, ge=1, le=32)
 
     @model_validator(mode="after")
     def normalize_paths(self) -> "Settings":

@@ -32,6 +32,7 @@ from .review import enqueue_entity_review
 from .runs import (StopController, create_or_resume_run, done_keys, finish_run, mark_item, register_items)
 from .search import SearchAuthError, SearchBroker, SearchBudgetExceeded, get_search_provider
 from .practice import choose_samples, site_article_urls
+from .wayback import wayback_for_entity
 from .similarity import score_case_match, score_similarity
 from .snapshots import store_raw, store_text
 from .stance import classify_entity, store_stance
@@ -749,6 +750,8 @@ class EntityResearcher:
                 (self.run_id, eid)))
             if dig == "always" or not has_policy:
                 used += await self._dig_practice(entity, budget_per_entity - used)
+        if entity["cohort"] not in GUIDANCE_COHORTS and not self.stop.force:
+            await wayback_for_entity(self, entity)
         self.dash.update(phase="classifying")
         result = classify_entity(self.db, self.settings, self.run_id, entity)
         store_stance(self.db, self.run_id, eid, result)

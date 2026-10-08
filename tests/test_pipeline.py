@@ -478,7 +478,8 @@ def test_migration_from_v2_preserves_data_and_backs_up(tmp_path):
     conn.close()
     db = Database(path)
     try:
-        assert db.schema_version() == 4
+        from nsmpa.migrations import LATEST_VERSION
+        assert db.schema_version() == LATEST_VERSION
         assert db.last_backup is not None and db.last_backup.exists()
         assert db.scalar("SELECT name FROM institutions WHERE unitid='1'") == "Legacy U"
         assert db.scalar("SELECT engine_version FROM research_runs WHERE id='old'") == "0.2"
@@ -501,14 +502,15 @@ def test_failed_migration_rolls_back(tmp_path, monkeypatch):
         conn.execute("CREATE TABLE half_done(x)")
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(mig, "MIGRATIONS", [mig.MIGRATIONS[0], mig.MIGRATIONS[1], (4, "broken", broken)])
+    broken_version = mig.LATEST_VERSION
+    monkeypatch.setattr(mig, "MIGRATIONS", mig.MIGRATIONS[:-1] + [(broken_version, "broken", broken)])
     import nsmpa.db as dbmod
     monkeypatch.setattr(dbmod, "MIGRATIONS", mig.MIGRATIONS)
     with pytest.raises(RuntimeError):
         Database(path)
     conn = sqlite3.connect(path)
     assert conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE name='half_done'").fetchone()[0] == 0
-    assert 4 not in {r[0] for r in conn.execute("SELECT version FROM schema_migrations")}
+    assert broken_version not in {r[0] for r in conn.execute("SELECT version FROM schema_migrations")}
     conn.close()
 
 

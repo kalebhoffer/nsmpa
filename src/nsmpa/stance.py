@@ -112,13 +112,21 @@ def aggregate_actions(policy_items: list, practice_items: list, technical_items:
     for e in technical_items:
         if e["statement_type"] == "technical_noindex":
             out["deindex"]["technical"] = "noindex_observed"
+        elif e["statement_type"].startswith("wayback_") and e["direction"] == "supportive":
+            try:
+                acts = json.loads(e["actions_json"] or "{}")
+            except (ValueError, TypeError):
+                acts = {}
+            for a in acts:
+                if a in out and out[a]["technical"] == "none":
+                    out[a]["technical"] = "archive_change_observed"
     return out
 
 
 def relief_mode_for(actions: dict, archive_principle: bool) -> tuple[str, bool]:
     def yes(a: str) -> bool:
         x = actions[a]
-        return x["policy"] in {"permitted", "conditional", "mixed"} or x["practice"] == "granted" or x["technical"] == "noindex_observed"
+        return x["policy"] in {"permitted", "conditional", "mixed"} or x["practice"] == "granted" or x["technical"] != "none"
     preserving = yes("deindex") or yes("anonymize")
     unpublish_no = actions["unpublish"]["policy"] == "rejected" or archive_principle
     if preserving and (unpublish_no or not yes("unpublish")):
