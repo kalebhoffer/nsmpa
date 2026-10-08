@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.1
+
+- `--redact-names` for the packet and dashboard: private individuals' names withheld (organizations, institutions, cited
+  experts and quoted speakers kept); bare-surname follow-ups caught; name-bearing URLs, archive links and snapshot paths
+  withheld; masthead and place-name words protected from over-redaction.
+- `nsmpa estimate`: cache-aware credit, page-request, time and AI-call estimates; dollar figures only from configured prices.
+- `nsmpa pilot`: capped end-to-end trial (seed, estimate, discovery, research with archive/Wayback, AI review, accuracy
+  sample, redacted packet + dashboard) with `pilot_report.md`; budget exhaustion explained with the resume command.
+- GUI Verify tab: saved analysed text beside the excerpt with highlight, keyboard decisions, stance-driving items first,
+  technical observations explained; snapshot pages are script-free, same-origin framed only.
+
 ## 0.6.0 — GUI, monitoring, outreach, legal context, re-checks
 
 - Local GUI (`nsmpa gui`): localhost-only stdlib server; live job monitor from persisted heartbeats; results, evidence
