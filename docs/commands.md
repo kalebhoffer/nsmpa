@@ -94,3 +94,26 @@ Common options: `--quiet/-q` minimal output · `--verbose/-v` queries, URLs, dec
 | `audit import` | `PATH`, `--labeler` | Import one person's labels |
 | `audit label` | `--labeler`, `--audit-id`, `--show-machine` | Terminal labeling (q to stop; progress saved) |
 | `audit report` | `--audit-id`, `--json` | Accuracy, confidence intervals, confusion matrix, kappa |
+
+
+## Monitoring, outreach, legal, re-checks (v0.6)
+
+| Command | Options | Purpose |
+|---|---|---|
+| `gui` | `--port`, `--no-browser` | Local web monitor (127.0.0.1 only) |
+| `watch` | `--run-id`, `--interval` | Follow a running job's heartbeat in a terminal |
+| `dashboard` | `--out` | Offline, read-only HTML dashboard |
+| `ai-discovery` | `--max-calls`, `--limit`, `--unitid` | AI picks the student paper among existing candidates |
+| `promote` | `--use-ai` (new) | Let confident AI picks break ties; all queued for review |
+| `packet` | `--ai-summaries` (new) | Add citation-checked AI section summaries |
+| `outreach harvest` | | Collect contacts published on organizations' own domains |
+| `outreach add-contact` | `--entity-id --email [--name --role]` | Add a contact manually |
+| `outreach dnc` | `--email` | Do-not-contact |
+| `outreach draft` | `--campaign [--cohort --limit]` | Neutral survey drafts (.eml) + mail_merge.csv; never sends |
+| `outreach sent` | `--campaign [--entity-id]` | Record that you sent drafts |
+| `outreach response` | `--entity-id --file [--campaign]` | Store a reply as first-party evidence; refresh stance |
+| `outreach status` | | Counts by campaign and status |
+| `legal-research` | `--max-searches`, `--key`, `--run-id` | Find sources for legal-context leads |
+| `legal` | `--key --status --note` | List leads / record human verification |
+| `recheck` | `--limit`, `-q`, `-v` | Re-fetch known policy pages; record changes |
+| `schedule` | `--install`, `--uninstall`, `--weekday`, `--hour` | Weekly launchd `recheck` job (prints by default) |

@@ -121,7 +121,40 @@ nsmpa audit report                               # accuracy with 95% CI, confusi
 Or label in the terminal: `nsmpa audit label --labeler alice`. The packet's "Accuracy" sheet and slide show the
 latest labeled audit, or "not yet measured".
 
-## 9. Build the packet
+## 9. AI help with discovery and summaries (optional)
+
+- `nsmpa ai-discovery --max-calls 100` then `nsmpa promote --use-ai`: for institutions where discovery was uncertain, the
+  AI chooses among the numbered candidates already found (it cannot add a URL; out-of-range answers are rejected). A
+  confident "none of these" blocks promotion. Every AI-assisted promotion is queued for review.
+- `nsmpa packet --ai-summaries`: adds 2–3 sentence summaries for guidance, practice and opposing evidence. Every sentence
+  must cite evidence IDs that were provided and may not state numbers absent from the evidence; anything else is dropped.
+  Limitation: spelled-out numbers ("ninety-nine") are not caught; read each summary before presenting.
+- Verified AI attributions (speaker + verbatim quote) are added to Expert Voices with `attribution_method = ai:<model>`.
+
+## 10. Ask newsrooms directly
+
+1. Set `outreach_sender_name`, `outreach_sender_email` (and optionally `outreach_affiliation`) in `config.yml`. Drafts are
+   refused without them, so every message honestly identifies you.
+2. `nsmpa outreach harvest` collects addresses published on each organization's own domain (no third-party addresses,
+   no ad/sales/noreply). Add others with `outreach add-contact`; block any with `outreach dnc`.
+3. `nsmpa outreach draft --campaign pilot --limit 20` writes neutral drafts to `output/outreach/pilot/` (open the `.eml` in
+   Mail or Outlook, edit, send from your account) plus `mail_merge.csv`. **Nothing is sent by the tool.**
+4. `nsmpa outreach sent --campaign pilot` after sending; `nsmpa outreach response --entity-id N --file reply.eml` for each
+   reply. Replies become `direct_response` evidence (authority 1.0; quoted copies of the survey are ignored) and the
+   organization's stance is recomputed.
+
+## 11. Legal context
+
+`nsmpa legal-research --max-searches 60` searches each lead and keeps the best authoritative excerpt; `nsmpa legal` lists
+them. Leads include authority against a legal duty to remove (Martin v. Hearst) as well as erasure law. Not legal advice;
+verify before citing (`nsmpa legal --key K --status human_verified`).
+
+## 12. Keep it current
+
+`nsmpa recheck` re-fetches every captured policy page and records changes (similarity and relief statements added/
+removed), queuing changed organizations for review. `nsmpa schedule --install` runs it weekly via launchd.
+
+## 13. Build the packet
 
 ```bash
 nsmpa packet                     # output/packet_<UTC>/

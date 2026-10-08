@@ -55,6 +55,14 @@ The default terminal mode is a live dashboard. `--verbose` adds queries, URLs, s
 
 Ctrl+C once: finish in-flight items, checkpoint, print the resume command. Ctrl+C twice: cancel immediately (completed items are already saved). `nsmpa resume` continues the most recent interrupted or budget-stopped run; cached searches are never paid for twice.
 
+## Watching it run
+
+```bash
+nsmpa gui          # local web monitor: live progress, results, evidence, review queue (see docs/gui.md)
+nsmpa watch        # same live view in a second terminal
+nsmpa dashboard    # one offline HTML file to share
+```
+
 ## Evidence packet (Excel + PowerPoint)
 
 ```bash
@@ -74,6 +82,15 @@ nsmpa wayback --run-id RUN                  # archived vs. current crime article
 nsmpa ai-review --run-id RUN --max-calls 50 # optional; needs GEMINI_API_KEY
 nsmpa audit sample --n 50 && nsmpa audit export --out audit.csv   # label in Excel, then `audit import`
 nsmpa audit report
+```
+
+## Outreach, legal context, re-checks
+
+```bash
+nsmpa outreach harvest && nsmpa outreach draft --campaign pilot --limit 20   # drafts only; you send them
+nsmpa outreach response --entity-id 12 --file reply.eml --campaign pilot     # reply becomes first-party evidence
+nsmpa legal-research --max-searches 60 && nsmpa legal
+nsmpa recheck && nsmpa schedule            # weekly re-check (prints the launchd job; --install to enable)
 ```
 
 ## Reproducing the national run

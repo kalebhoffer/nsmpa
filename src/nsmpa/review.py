@@ -93,7 +93,7 @@ def open_items(db: Database, run_id: str | None = None, cohort: str | None = Non
       FROM review_queue q
       LEFT JOIN research_entities re ON re.id=q.entity_id
       LEFT JOIN entity_stances s ON q.item_type='entity_stance' AND s.id=q.item_id
-      WHERE q.status='open'"""
+      WHERE q.status='open' AND q.run_id NOT IN (SELECT id FROM research_runs WHERE status='excluded')"""
     params: list = []
     if run_id:
         sql += " AND q.run_id=?"

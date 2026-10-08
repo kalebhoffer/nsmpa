@@ -27,6 +27,7 @@ from .db import Database
 
 TEMPLATE = Path(__file__).with_name("gui_template.html")
 ACTIVE_SECONDS = 60
+EXCL = "(SELECT id FROM research_runs WHERE status='excluded')"
 
 
 def _rows(cur) -> list[dict]:
@@ -59,10 +60,10 @@ def api_overview(db: Database, settings: Settings) -> dict:
             "institutions": s("SELECT COUNT(*) FROM institutions WHERE included=1"),
             "publications": s("SELECT COUNT(*) FROM publications WHERE is_primary=1"),
             "entities": s("SELECT COUNT(*) FROM research_entities WHERE active=1 AND cohort NOT IN ('expert','precedent_case')"),
-            "researched": s("SELECT COUNT(DISTINCT entity_id) FROM entity_stances WHERE stance_version='0.3'"),
-            "evidence": s("SELECT COUNT(DISTINCT near_dup_key) FROM evidence_items WHERE statement_type!='mention'"),
+            "researched": s(f"SELECT COUNT(DISTINCT entity_id) FROM entity_stances WHERE stance_version='0.3' AND run_id NOT IN {EXCL}"),
+            "evidence": s(f"SELECT COUNT(DISTINCT near_dup_key) FROM evidence_items WHERE statement_type!='mention' AND run_id NOT IN {EXCL}"),
             "voices": s("SELECT COUNT(*) FROM voices"),
-            "open_reviews": s("SELECT COUNT(*) FROM review_queue WHERE status='open'"),
+            "open_reviews": s(f"SELECT COUNT(*) FROM review_queue WHERE status='open' AND run_id NOT IN {EXCL}"),
             "errors": s("SELECT COUNT(*) FROM errors"),
             "credits": s("SELECT SUM(credits_estimated) FROM search_queries"),
             "cache_hits": s("SELECT COUNT(*) FROM search_queries WHERE was_cached=1"),

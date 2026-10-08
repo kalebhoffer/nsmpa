@@ -83,6 +83,14 @@ ai_max_page_chars: 60000
 ai_max_calls_per_run: 500
 ai_concurrency: 4
 
+# --- monitoring & outreach (v0.6) --------------------------------------------------------------
+notify_on_finish: true              # macOS notification when long runs end
+heartbeat_seconds: 2.0              # how often running jobs report progress to the GUI / `nsmpa watch`
+gui_port: 8765
+outreach_sender_name: ""            # required before `nsmpa outreach draft` (honest identification)
+outreach_sender_email: ""
+outreach_affiliation: ""
+
 # --- IPEDS universe ----------------------------------------------------------------------
 allowed_states: []
 institution_filters:
