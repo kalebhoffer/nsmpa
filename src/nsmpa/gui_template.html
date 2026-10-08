@@ -144,7 +144,9 @@ async function post(path, body) {
 function barChart(pairs, color = "var(--s1)") {
   pairs = pairs.filter(p => p[1] > 0);
   if (!pairs.length) return `<div class="empty">No data yet</div>`;
-  const max = Math.max(...pairs.map(p => p[1])), rowH = 24, labelW = 190, w = 430, barW = w - labelW - 40;
+  const longest = Math.max(...pairs.map(p => String(p[0]).length));
+  const labelW = Math.min(300, Math.max(110, Math.ceil(longest * 6.8) + 14)), barW = 220, w = labelW + barW + 40;
+  const max = Math.max(...pairs.map(p => p[1])), rowH = 24;
   const h = pairs.length * rowH + 6;
   return `<svg class="chart" viewBox="0 0 ${w} ${h}" width="100%" style="max-width:${w}px" role="img">` + pairs.map(([label, v], i) => {
     const y = i * rowH + 4, bw = Math.max(2, barW * v / max);

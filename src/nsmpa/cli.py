@@ -799,12 +799,13 @@ def my_case_cmd(init: bool = typer.Option(False, "--init", help="Create my_case.
 @app.command("packet")
 def packet_cmd(run_id: str | None = typer.Option(None, "--run-id"), out_dir: Path | None = typer.Option(None, "--out-dir"),
                title: str = typer.Option("Post-publication relief in U.S. journalism: the evidence", "--title"),
+               ai_summaries: bool = typer.Option(False, "--ai-summaries", help="Add AI-drafted, citation-checked section summaries"),
                config: Path | None = ConfigOpt) -> None:
     """Build the shareable case packet: Excel evidence workbook + PowerPoint deck + summary."""
     from .packet import build_packet
     db, settings = _db(config)
     try:
-        res = build_packet(db, settings, out_dir or settings.output_dir, run_id=run_id, title=title)
+        res = build_packet(db, settings, out_dir or settings.output_dir, run_id=run_id, title=title, ai_summaries_on=ai_summaries)
         console.print_json(json.dumps(res))
     finally:
         db.close()
