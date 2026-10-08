@@ -203,6 +203,10 @@ class Settings(BaseModel):
     ai_max_retries: int = Field(3, ge=0, le=10)
     ai_max_page_chars: int = Field(60_000, ge=2_000, le=600_000)
     ai_max_calls_per_run: int = Field(500, ge=1, le=1_000_000)
+    # --- v0.6 operations -------------------------------------------------------------------
+    notify_on_finish: bool = True
+    heartbeat_seconds: float = Field(2.0, ge=0.2, le=60)
+    gui_port: int = Field(8765, ge=1024, le=65535)
     ai_concurrency: int = Field(4, ge=1, le=32)
 
     @model_validator(mode="after")
