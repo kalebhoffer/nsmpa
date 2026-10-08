@@ -43,6 +43,9 @@ class StanceResult:
     review_reasons: list[str] = field(default_factory=list)
     practice_summary: str = ""
     technical_summary: str = ""
+    action_positions: dict = field(default_factory=dict)
+    preserves_archive_relief: bool = False
+    relief_mode: str = "UNADDRESSED"
 
     @property
     def requires_review(self) -> bool:
@@ -59,6 +62,74 @@ def _distinct(items: list, types: set[str]) -> list:
         seen.add(it["near_dup_key"])
         out.append(it)
     return out
+
+
+ACTIONS = ("unpublish", "deindex", "anonymize", "update")
+_POLICY_RANK = {"permitted": 3, "conditional": 2, "practiced": 3, "rejected": 1, "mentioned": 0}
+
+
+def aggregate_actions(policy_items: list, practice_items: list, technical_items: list) -> dict:
+    """Per-action positions, keeping written policy, documented practice and technical observation separate.
+
+    policy:    permitted | conditional | rejected | mixed | unaddressed
+    practice:  granted | denied | updated | none
+    technical: noindex_observed | none
+    """
+    out = {a: {"policy": "unaddressed", "practice": "none", "technical": "none"} for a in ACTIONS}
+    seen: dict[str, set[str]] = {a: set() for a in ACTIONS}
+    for e in policy_items:
+        try:
+            acts = json.loads(e["actions_json"] or "{}")
+        except (ValueError, TypeError):
+            acts = {}
+        for a, p in acts.items():
+            if a in seen and p != "mentioned":
+                seen[a].add("permitted" if p == "practiced" else p)
+    for a, vals in seen.items():
+        if not vals:
+            continue
+        if "rejected" in vals and ({"permitted", "conditional"} & vals):
+            out[a]["policy"] = "mixed"
+        elif "permitted" in vals:
+            out[a]["policy"] = "permitted"
+        elif "conditional" in vals:
+            out[a]["policy"] = "conditional"
+        else:
+            out[a]["policy"] = "rejected"
+    for e in practice_items:
+        try:
+            acts = json.loads(e["actions_json"] or "{}")
+        except (ValueError, TypeError):
+            acts = {}
+        if e["statement_type"] == "practice_relief_denied":
+            for a in acts or {"unpublish": "x"}:
+                if a in out and out[a]["practice"] == "none":
+                    out[a]["practice"] = "denied"
+        else:
+            for a, p in acts.items():
+                if a in out and p in {"practiced", "permitted"}:
+                    out[a]["practice"] = "updated" if a == "update" else "granted"
+    for e in technical_items:
+        if e["statement_type"] == "technical_noindex":
+            out["deindex"]["technical"] = "noindex_observed"
+    return out
+
+
+def relief_mode_for(actions: dict, archive_principle: bool) -> tuple[str, bool]:
+    def yes(a: str) -> bool:
+        x = actions[a]
+        return x["policy"] in {"permitted", "conditional", "mixed"} or x["practice"] == "granted" or x["technical"] == "noindex_observed"
+    preserving = yes("deindex") or yes("anonymize")
+    unpublish_no = actions["unpublish"]["policy"] == "rejected" or archive_principle
+    if preserving and (unpublish_no or not yes("unpublish")):
+        return "DEINDEX_OR_ANONYMIZE_PRESERVING_ARCHIVE", True
+    if yes("unpublish"):
+        return "UNPUBLISHING_PERMITTED", preserving
+    if actions["update"]["policy"] in {"permitted", "conditional"} or actions["update"]["practice"] == "updated":
+        return "UPDATE_ONLY", False
+    if unpublish_no or any(actions[a]["policy"] == "rejected" for a in ("deindex", "anonymize")):
+        return "NO_RELIEF", False
+    return "UNADDRESSED", False
 
 
 def coverage_for(db: Database, run_id: str, entity_id: int) -> dict:
@@ -187,9 +258,15 @@ def classify_entity(db: Database, settings: Settings, run_id: str, entity) -> St
         reasons.append("policy_practice_contradiction:supportive_policy_but_relief_denied")
 
     tech = db.execute(
-        "SELECT COUNT(*) n, SUM(noindex) ni FROM research_pages WHERE run_id=? AND entity_id=? AND access_class='ok'",
-        (run_id, entity_id)).fetchone()
-    technical_summary = f"pages_ok={tech['n'] or 0}, noindex_pages={tech['ni'] or 0}"
+        "SELECT COUNT(*) n, SUM(noindex) ni, SUM(page_kind='crime_article') ca, SUM(page_kind='crime_article' AND noindex=1) cani "
+        "FROM research_pages WHERE run_id=? AND entity_id=? AND access_class='ok'", (run_id, entity_id)).fetchone()
+    technical_items = [e for e in items if e["evidence_class"] == "technical"]
+    technical_summary = (f"pages_ok={tech['n'] or 0}, noindex_pages={tech['ni'] or 0}, crime_articles_sampled={tech['ca'] or 0}, "
+                         f"crime_articles_noindex={tech['cani'] or 0}, targeted_noindex={sum(1 for e in technical_items if e['statement_type']=='technical_noindex')}")
+    actions = aggregate_actions(policy, practice, technical_items)
+    relief_mode, preserves = relief_mode_for(actions, bool(t_archive))
+    if stance in {"NO_RELEVANT_GUIDANCE", "UNDETERMINED"} and relief_mode in {"DEINDEX_OR_ANONYMIZE_PRESERVING_ARCHIVE", "UNPUBLISHING_PERMITTED"}:
+        reasons.append("relief_practiced_without_written_policy")
 
     all_sup = [e for e in items if e["direction"] == "supportive" and e["about_entity"]]
     all_adv = [e for e in items if e["direction"] == "adverse" and e["about_entity"]]
@@ -210,7 +287,7 @@ def classify_entity(db: Database, settings: Settings, run_id: str, entity) -> St
         supportive=len(supportive), adverse=len(adverse), evidence_count=len(items),
         strongest_supportive_id=best(all_sup), strongest_adverse_id=best(all_adv), max_similarity=max_sim,
         coverage=cov, review_reasons=sorted(set(reasons)), practice_summary=practice_summary,
-        technical_summary=technical_summary,
+        technical_summary=technical_summary, action_positions=actions, preserves_archive_relief=preserves, relief_mode=relief_mode,
     )
 
 
@@ -219,17 +296,19 @@ def store_stance(db: Database, run_id: str, entity_id: int, r: StanceResult) -> 
         """
         INSERT INTO entity_stances(run_id,entity_id,stance,confidence,rationale,evidence_count,supportive_count,adverse_count,
           max_similarity_score,requires_human_review,stance_version,strongest_supportive_id,strongest_adverse_id,coverage_json,
-          review_reasons_json,practice_summary,technical_summary)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          review_reasons_json,practice_summary,technical_summary,action_positions_json,preserves_archive_relief,relief_mode)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(run_id,entity_id) DO UPDATE SET stance=excluded.stance,confidence=excluded.confidence,rationale=excluded.rationale,
           evidence_count=excluded.evidence_count,supportive_count=excluded.supportive_count,adverse_count=excluded.adverse_count,
           max_similarity_score=excluded.max_similarity_score,requires_human_review=excluded.requires_human_review,
           stance_version=excluded.stance_version,strongest_supportive_id=excluded.strongest_supportive_id,
           strongest_adverse_id=excluded.strongest_adverse_id,coverage_json=excluded.coverage_json,
           review_reasons_json=excluded.review_reasons_json,practice_summary=excluded.practice_summary,
-          technical_summary=excluded.technical_summary,created_at=CURRENT_TIMESTAMP
+          technical_summary=excluded.technical_summary,action_positions_json=excluded.action_positions_json,
+          preserves_archive_relief=excluded.preserves_archive_relief,relief_mode=excluded.relief_mode,created_at=CURRENT_TIMESTAMP
         """,
         (run_id, entity_id, r.stance, r.confidence, r.rationale, r.evidence_count, r.supportive, r.adverse, r.max_similarity,
          int(r.requires_review), STANCE_VERSION, r.strongest_supportive_id, r.strongest_adverse_id, json.dumps(r.coverage),
-         json.dumps(r.review_reasons), r.practice_summary, r.technical_summary),
+         json.dumps(r.review_reasons), r.practice_summary, r.technical_summary, json.dumps(r.action_positions),
+         int(r.preserves_archive_relief), r.relief_mode),
     )

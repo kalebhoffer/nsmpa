@@ -28,7 +28,7 @@ TAGS: dict[str, re.Pattern[str]] = {k: re.compile(v, re.I) for k, v in {
     "remove": r"\b(?:remov(?:e|ed|es|al|ing)|delet(?:e|ed|es|ion|ing)|take(?:n)? down|takedowns?|withdraw(?:n|al)?)\b",
     "redact": r"\bredact(?:ed|ion|ing)?\b",
     "changed_circumstances": r"\bchang(?:e|ed|ing) (?:in )?circumstances?\b|\bcircumstances (?:have |had )?changed\b|\bnew information\b",
-    "dismissed_charges": r"\bcharges? (?:were |was |are |is |have been |had been |being )?(?:later )?(?:dismissed|dropped|withdrawn|reduced)\b|\bcase (?:was |is |were )?(?:later )?(?:dismissed|dropped)\b|\bnolle pros",
+    "dismissed_charges": r"\bcharges?\b(?:\s+(?!not\b)[\w.'-]+){0,5}?\s+(?:were |was |are |is |have been |had been |being )?(?:later |ultimately |eventually )?(?:dismissed|dropped|withdrawn|reduced)\b|\bcase (?:was |is |were )?(?:later )?(?:dismissed|dropped)\b|\bdismiss(?:ed|al of) (?:the |all )?charges?\b|\bnolle pros",
     "acquitted": r"\bacquitt(?:ed|al|als)\b|\bfound not guilty\b|\bnot guilty verdict\b",
     "exonerated": r"\bexonerat(?:ed|ion)\b|\bwrongful(?:ly)? convict",
     "vacated": r"\bvacat(?:e|ed|ing)\b(?:.{0,40}\bconvictions?\b)?|\bconvictions? (?:was |were )?(?:overturned|set aside|reversed)\b|\bset aside\b",
@@ -131,6 +131,14 @@ PRACTICE_SUPPORT = re.compile(
     r"\b(?:was|were|has been|have been|had been)\s+(?:quietly\s+)?(?:removed|unpublished|deleted|taken down|de-?indexed|anonymi[sz]ed|redacted)\b",
     re.I,
 )
+# Self-describing update notes on articles ("This story has been updated to remove the name...").
+PRACTICE_NOTE = re.compile(
+    r"\b(?:has|have|had|was|were) been (?:updated|edited|changed|revised|amended) to (?:remove|omit|withhold|anonymi[sz]e|no longer (?:name|identify|include))|"
+    r"\bnames? (?:has|have|had) been (?:removed|withheld|omitted|redacted)\b|"
+    r"\bno longer (?:names?|identif(?:y|ies)|includes? the names?)\b|"
+    r"\b(?:at the request of|upon request)\b.{0,80}\b(?:removed|withheld|updated|anonymi[sz]ed)\b",
+    re.I,
+)
 # Named-newsroom subject ("The Relief Daily removed ..."); deliberately case-sensitive on the name.
 PRACTICE_NAMED = re.compile(
     r"\b(?:The\s+)?(?:[A-Z][\w'&.-]+\s+){1,6}(?:has\s+|had\s+|have\s+)?(?:recently\s+|quietly\s+|ultimately\s+|later\s+)?"
@@ -170,6 +178,8 @@ STATEMENT_DIRECTION = {
     "practice_relief_granted": "supportive",
     "practice_relief_denied": "adverse",
     "practice_update": "neutral",
+    "technical_noindex": "supportive",
+    "technical_sitewide_noindex": "neutral",
     "mention": "neutral",
 }
 STATEMENT_RELEVANCE = {
@@ -177,6 +187,7 @@ STATEMENT_RELEVANCE = {
     "relief_rejected": 0.9, "relief_narrow_exceptions": 0.9, "practice_relief_granted": 0.9,
     "practice_relief_denied": 0.9, "case_by_case": 0.75, "archive_principle": 0.65, "update_remedy": 0.6,
     "practice_update": 0.6, "harm_consideration": 0.4, "mention": 0.1,
+    "technical_noindex": 0.85, "technical_sitewide_noindex": 0.2,
 }
 
 
@@ -276,6 +287,9 @@ def classify_statement(sentence: str, context: str = "") -> Statement:
     if PRACTICE_ADVERSE.search(sentence) and (has_object or request):
         cues.append("practice:denied")
         return done("practice_relief_denied", 0.75)
+    if PRACTICE_NOTE.search(sentence):
+        cues.append("practice:note")
+        return done("practice_relief_granted", 0.8)
     if (PRACTICE_SUPPORT.search(sentence) or PRACTICE_NAMED.search(sentence)) and (has_object or relief) and not prohibitive:
         cues.append("practice:granted")
         return done("practice_relief_granted", 0.75 if changed_ctx else 0.65)
@@ -320,6 +334,17 @@ def classify_statement(sentence: str, context: str = "") -> Statement:
     if (tags and set(tags) & {"reputational_harm", "search_engine", "digital_permanence", "right_to_be_forgotten", "minimize_harm"}
             and (has_object or request)):
         return done("harm_consideration", 0.5)
+    pos = action_positions(sentence)
+    relief_pos = {a: p for a, p in pos.items() if a != "update"}
+    if any(p == "rejected" for p in relief_pos.values()) and not any(p in {"permitted", "practiced"} for p in relief_pos.values()):
+        if pos.get("update") in {"permitted", "practiced"}:
+            cues.append("clause:update_instead_of_removal")
+            return done("update_remedy", 0.7)
+        cues.append("clause:relief_rejected")
+        return done("relief_rejected", 0.7)
+    if pos.get("update") in {"permitted", "practiced"} and (has_object or re.search(r"\bthem\b|\bit\b", sentence)):
+        cues.append("clause:update")
+        return done("changed_circumstance_update" if changed_ctx else "update_remedy", 0.65)
     return done("mention", 0.2)
 
 
@@ -371,3 +396,164 @@ def extract_evidence(text: str, *, entity_terms: list[str] | None = None, max_it
     # Most substantive first, so caps never drop policy statements in favour of mentions.
     out.sort(key=lambda e: (-STATEMENT_RELEVANCE[e.statement.statement_type], -e.statement.confidence))
     return out[:max_items]
+
+
+
+# --------------------------------------------------------------------------- per-action positions
+
+ACTIONS = ("unpublish", "deindex", "anonymize", "update")
+_ACTION_PATTERNS: dict[str, re.Pattern[str]] = {
+    "anonymize": re.compile(r"\banonymi[sz]\w*|\bredact\w*|\binitials?\b|\bwithh[oe]ld\w* (?:the |a |their )?names?|"
+                            r"\b(?:remov|omit|replac|delet|chang|withh[oe]ld)\w* (?:[\w'’]+\s+){0,2}?(?:full\s+)?names?\b|"
+                            r"\bnames? (?:has|have|had|were|was|are|is|will be|may be|can be) (?:been )?(?:removed|withheld|omitted|redacted|changed)", re.I),
+    "deindex": re.compile(r"\bde-?\s?index\w*|\bno-?index\w*|\b(?:remov|hid|block|exclud|suppress)\w* (?:it |them |the (?:article|story) |(?:a |the |their |his |her )?names? )?from "
+                          r"(?:search|google|search engines?|search results?)|\bsearch engines? (?:will )?(?:not|no longer) (?:find|index|surface)|"
+                          r"\bnot (?:be )?(?:indexed|searchable)\b|\bright to be forgotten\b", re.I),
+    "unpublish": re.compile(r"\bunpublish\w*|\btake[sn]? down|\btaken down|\btaking down|\btakedowns?\b|"
+                            r"\b(?:remov|delet|withdr[ae]w)\w* (?:the |an? |our |old |that |this |such )?(?:\w+ )?(?:articles?|stor(?:y|ies)|content|posts?|pieces?|coverage|items?)\b|"
+                            r"\b(?:articles?|stor(?:y|ies)|content|posts?) (?:\w+ ){0,3}(?:removed|deleted|taken down|unpublished)\b", re.I),
+    "update": re.compile(r"\beditor'?s'? notes?\b|\bupdat\w*|\bappend\w*|\baddend\w*|\bfollow[- ]?up\b|\bcorrect(?:ion|ed|ing|ions)?\b|"
+                         r"\bclarif\w+|\b(?:outcome|disposition)\b", re.I),
+}
+_AFFIRM = re.compile(r"^\s*(?:we|editors?|the (?:paper|newspaper|newsroom|editors?|publication|staff)|our (?:policy|practice) is to)\s+"
+                     r"(?:will\s+|generally\s+|typically\s+|usually\s+|always\s+|instead\s+|also\s+)?" + _RELIEF_OR_UPDATE_VERB, re.I)
+_CLAUSE_SPLIT = re.compile(r",?\s+\bbut\b\s+|;\s*|\s+\bhowever\b,?\s+|,\s+\b(?:although|though|while)\b\s+|\s+\binstead\b,?\s+|"
+                           r"\s+\b(?:rather than)\b\s+|\.\s+", re.I)
+
+
+def action_positions(sentence: str) -> dict[str, str]:
+    """Position on each relief action, judged clause by clause.
+
+    Returns {action: "permitted" | "rejected" | "conditional" | "practiced" | "mentioned"}.
+    "We do not unpublish stories, but we may remove a name from search results" ->
+    {"unpublish": "rejected", "deindex": "permitted"}.
+    "rather than" introduces the rejected alternative ("we update rather than unpublish").
+    """
+    out: dict[str, str] = {}
+    rank = {"mentioned": 0, "conditional": 1, "permitted": 2, "practiced": 2, "rejected": 3}
+    parts = _CLAUSE_SPLIT.split(sentence)
+    rather = re.search(r"\b(?:rather than|instead of)\b\s+(.*)$", sentence, re.I)
+    practice = bool(PRACTICE_SUPPORT.search(sentence) or PRACTICE_NAMED.search(sentence) or PRACTICE_NOTE.search(sentence)
+                    or PRACTICE_UPDATE.search(sentence))
+    for clause in parts:
+        if not clause or not clause.strip():
+            continue
+        found = [a for a, pat in _ACTION_PATTERNS.items() if pat.search(clause)]
+        if "anonymize" in found and "unpublish" in found:
+            # "remove the name from the story": the object is the name, not the story.
+            if not re.search(r"\b(?:remov|delet|take|unpublish)\w*\s+(?:the |an? |our |old |that |this )?(?:\w+ )?(?:articles?|stor(?:y|ies)|content|posts?)\b", clause, re.I):
+                found.remove("unpublish")
+        if "deindex" in found and "anonymize" in found and re.search(r"\bnames?\s+from\s+(?:search|google)", clause, re.I):
+            found.remove("anonymize")  # "remove a name from search results" is de-indexing, not anonymizing the text
+        if not found:
+            continue
+        neg = PROHIBITIVE.search(clause)
+        perm = PERMISSIVE.search(clause)
+        proc = PROCESS.search(clause) or CASE_BY_CASE_CUE.search(clause)
+        narrow = NARROW_EXCEPTION.search(clause)
+        if neg and not perm:
+            pos = "rejected"
+        elif neg and perm:
+            pos = "conditional"
+        elif practice and not neg:
+            pos = "practiced"
+        elif perm:
+            pos = "permitted" if not narrow else "conditional"
+        elif proc:
+            pos = "conditional"
+        elif _AFFIRM.search(clause):
+            pos = "permitted"
+        else:
+            pos = "mentioned"
+        for a in found:
+            if rank[pos] >= rank.get(out.get(a, "mentioned"), 0) or a not in out:
+                out[a] = pos
+    if rather:
+        for a, pat in _ACTION_PATTERNS.items():
+            if pat.search(rather.group(1)):
+                out[a] = "rejected"
+    return out
+
+
+# --------------------------------------------------------------------------- attributed voices
+
+_NAME = r"(?:[A-Z][a-zA-Z'’.-]+(?:\s+(?:[A-Z]\.|[A-Z][a-zA-Z'’-]+)){1,3})"
+_SAY = r"(?:said|says|wrote|writes|argued|argues|explained|explains|noted|notes|added|adds|told|cautioned|warned|believes|contends)"
+_QUOTE = re.compile(r"[\"“]([^\"“”]{40,700})[\"”]")
+_ATTR_PATTERNS = [
+    re.compile(rf"^\s*,?\s*{_SAY}\s+(?P<name>{_NAME})(?:\s*,\s*(?P<role>[^,.;]{{3,120}}))?"),          # "...," said Jane Doe, editor of X
+    re.compile(rf"^\s*,?\s*(?P<name>{_NAME})\s+{_SAY}"),                                                # "...," Jane Doe said
+    re.compile(rf"^\s*,?\s*(?:according to)\s+(?P<name>{_NAME})(?:\s*,\s*(?P<role>[^,.;]{{3,120}}))?"),
+]
+_PRE_ATTR = re.compile(rf"(?P<name>{_NAME})(?:\s*,\s*(?P<role>[^,.;\"“]{{3,120}})\s*,)?\s+{_SAY}(?:\s+that)?\s*[:,]?\s*$")
+_NOT_PEOPLE = re.compile(r"^(?:The|This|That|These|Those|In|On|At|For|Editor|Editors|Staff|Associated Press|New York|Los Angeles|United States)\b")
+
+
+@dataclass
+class Voice:
+    person_name: str
+    role: str | None
+    quote: str
+    context: str
+    method: str
+    confidence: float
+    statement: Statement
+    actions: dict[str, str]
+
+
+def person_key(name: str) -> str:
+    return re.sub(r"[^a-z]+", "-", name.lower().replace(".", "")).strip("-")
+
+
+def extract_voices(text: str, *, author: str | None = None, author_role: str | None = None,
+                   relevant_only: bool = True) -> list[Voice]:
+    """Attributed opinions in a page: quoted statements with a named speaker, plus first-person
+    statements by the page's byline author. Heuristic; every voice needs human verification."""
+    out: list[Voice] = []
+    seen: set[str] = set()
+
+    def keep(quote: str) -> bool:
+        if not relevant_only:
+            return True
+        tags = set(tags_for(quote))
+        return bool(tags & {"unpublish", "deindex", "noindex", "anonymize", "remove", "changed_circumstances", "dismissed_charges",
+                            "acquitted", "expunged_sealed", "archive_integrity", "right_to_be_forgotten", "digital_permanence",
+                            "search_engine", "removal_request", "reputational_harm", "minimize_harm"}) or bool(RELIEF_ACTION.search(quote))
+
+    for m in _QUOTE.finditer(text):
+        quote = compact_ws(m.group(1)).strip(" ,")
+        if not keep(quote):
+            continue
+        after = text[m.end():m.end() + 200]
+        before = text[max(0, m.start() - 200):m.start()]
+        name = role = None
+        method = ""
+        for pat in _ATTR_PATTERNS:
+            am = pat.match(after)
+            if am:
+                name, role, method = am.group("name"), am.groupdict().get("role"), "quote_attribution_after"
+                break
+        if not name:
+            bm = _PRE_ATTR.search(before)
+            if bm:
+                name, role, method = bm.group("name"), bm.group("role"), "quote_attribution_before"
+        if not name or _NOT_PEOPLE.match(name):
+            continue
+        key = normalize_for_hash(quote)
+        if key in seen:
+            continue
+        seen.add(key)
+        st = classify_statement(quote)
+        out.append(Voice(name.strip(), (role or "").strip() or None, quote, compact_ws(before[-150:] + " " + quote + " " + after[:150]),
+                         method, 0.7 if role else 0.6, st, action_positions(quote)))
+    if author and not _NOT_PEOPLE.match(author):
+        for ev in extract_evidence(text, max_items=30):
+            if ev.statement.statement_type == "mention" or ev.statement.statement_type.startswith("practice_"):
+                continue
+            key = normalize_for_hash(ev.excerpt)
+            if key in seen or not re.search(r"\b(?:I|we|my|our|newsrooms?|editors?|journalists?)\b", ev.excerpt):
+                continue
+            seen.add(key)
+            out.append(Voice(author, author_role, ev.excerpt, ev.context, "byline_author", 0.5, ev.statement,
+                             action_positions(ev.excerpt)))
+    return out

@@ -87,3 +87,17 @@ def score_similarity(profile: CaseProfile, excerpt: str, context: str = "", *, c
             factors.append({"factor": name, "weight": weight, "matched": hit[:80], "basis": basis})
     score = round(100.0 * matched / total, 2) if total else 0.0
     return SimilarityResult(score, factors)
+
+
+def score_case_match(profile: CaseProfile, my_case, excerpt: str, context: str = "", *, cohort: str | None = None) -> SimilarityResult:
+    """Similarity restricted to the factors that are true of the requester's own case (my_case.yml).
+
+    Denominator = weights of *your* factors only, so a precedent that matches every element of your
+    situation scores 100 even if it says nothing about, e.g., vacated convictions you never had.
+    """
+    active = my_case.active_factors()
+    full = score_similarity(profile, excerpt, context, cohort=cohort)
+    total = sum(float(getattr(profile, attr, 0) or 0) for name, attr, _ in FACTORS if name in active)
+    matched = [f for f in full.factors if f["factor"] in active]
+    got = sum(f["weight"] for f in matched)
+    return SimilarityResult(round(100.0 * got / total, 2) if total else 0.0, matched)
