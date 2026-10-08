@@ -12,6 +12,10 @@
 
 Practice digging (`research_practice_dig: always`) adds **4 credits per newsroom** and ~23 page fetches (archive sample + baseline) at the polite per-host delay, roughly +35 s per newsroom. Set `auto` to dig only where no written policy is found, or `research_practice_queries: false` to keep the free archive sampling only.
 
+Wayback comparison adds ~1 archive.org request per sampled article (2–3 when the article changed), paced politely and serialized per host: roughly +15–30 s per newsroom. `wayback_max_checks_per_entity: 0` disables it.
+
+AI review cost scales with pages reviewed; start with `--max-calls 50`, check `nsmpa audit report` and the agreement rate, then decide whether to widen it. Cached pages are free.
+
 Ranges are estimates; `nsmpa query-stats` and the dashboard show actual spend. Re-runs cost nothing for previously cached queries.
 
 ## Staged national sequence

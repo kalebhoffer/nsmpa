@@ -81,3 +81,16 @@ Common options: `--quiet/-q` minimal output · `--verbose/-v` queries, URLs, dec
 | `add-expert` | `--name --role --affiliation [--note]` | Add a respected practitioner/scholar |
 | `voices` | `--person`, `--direction`, `--verify ID --status --note`, `--limit` | List attributed statements or verify one |
 | `packet` | `--run-id`, `--out-dir`, `--title` | Build Excel workbook + PowerPoint deck + summary |
+
+
+## Archive, AI and accuracy (v0.5)
+
+| Command | Options | Purpose |
+|---|---|---|
+| `wayback` | `--run-id` (required), `--entity-id`, `-q`, `-v` | Wayback Machine comparison over an existing research run; refreshes stances |
+| `ai-review` | `--run-id`, `--cohort`, `--max-calls`, `--limit`, `--model`, `--resume`, `-q`, `-v` | AI second opinion with verbatim-quote verification |
+| `audit sample` | `--n`, `--seed`, `--cohort`, `--description` | Draw a stratified, reproducible sample |
+| `audit export` | `--out`, `--audit-id`, `--show-machine` | CSV for Excel labeling (blind by default) |
+| `audit import` | `PATH`, `--labeler` | Import one person's labels |
+| `audit label` | `--labeler`, `--audit-id`, `--show-machine` | Terminal labeling (q to stop; progress saved) |
+| `audit report` | `--audit-id`, `--json` | Accuracy, confidence intervals, confusion matrix, kappa |
