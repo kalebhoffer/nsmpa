@@ -801,12 +801,16 @@ def my_case_cmd(init: bool = typer.Option(False, "--init", help="Create my_case.
 def packet_cmd(run_id: str | None = typer.Option(None, "--run-id"), out_dir: Path | None = typer.Option(None, "--out-dir"),
                title: str = typer.Option("Post-publication relief in U.S. journalism: the evidence", "--title"),
                ai_summaries: bool = typer.Option(False, "--ai-summaries", help="Add AI-drafted, citation-checked section summaries"),
+               redact_names: bool = typer.Option(False, "--redact-names", help="Withhold names of private individuals (use before sharing)"),
                config: Path | None = ConfigOpt) -> None:
     """Build the shareable case packet: Excel evidence workbook + PowerPoint deck + summary."""
     from .packet import build_packet
     db, settings = _db(config)
     try:
-        res = build_packet(db, settings, out_dir or settings.output_dir, run_id=run_id, title=title, ai_summaries_on=ai_summaries)
+        res = build_packet(db, settings, out_dir or settings.output_dir, run_id=run_id, title=title, ai_summaries_on=ai_summaries,
+                           redact=redact_names)
+        if not redact_names:
+            console.print("[yellow]Not redacted: excerpts may name private individuals. Use --redact-names before sharing.[/yellow]")
         console.print_json(json.dumps(res))
     finally:
         db.close()
@@ -1160,6 +1164,7 @@ def gui_cmd(port: int | None = typer.Option(None, "--port", help="Default from c
 
 @app.command("dashboard")
 def dashboard_cmd(out: Path | None = typer.Option(None, "--out", help="Default output/dashboard_<UTC>.html"),
+                  redact_names: bool = typer.Option(False, "--redact-names", help="Withhold names of private individuals"),
                   config: Path | None = ConfigOpt) -> None:
     """Write a shareable, offline, read-only HTML dashboard (one file, data embedded)."""
     from datetime import datetime, timezone
@@ -1167,7 +1172,9 @@ def dashboard_cmd(out: Path | None = typer.Option(None, "--out", help="Default o
     db, settings = _db(config)
     try:
         target = out or settings.output_dir / f"dashboard_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.html"
-        console.print(f"Dashboard written: {write_dashboard(db, settings, target)}")
+        console.print(f"Dashboard written: {write_dashboard(db, settings, target, redact=redact_names)}")
+        if not redact_names:
+            console.print("[yellow]Not redacted: use --redact-names before sharing outside your review team.[/yellow]")
     finally:
         db.close()
 
