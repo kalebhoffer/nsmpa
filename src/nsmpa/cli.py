@@ -1179,6 +1179,69 @@ def dashboard_cmd(out: Path | None = typer.Option(None, "--out", help="Default o
         db.close()
 
 
+@app.command("estimate")
+def estimate_cmd(cohort: str | None = typer.Option(None, "--cohort"), limit: int | None = typer.Option(None, "--limit"),
+                 entity_id: list[int] = typer.Option([], "--entity-id"), depth: str | None = typer.Option(None, "--depth"),
+                 institutions: int | None = typer.Option(None, "--institutions", help="Also estimate discovery for N institutions"),
+                 state: list[str] = typer.Option([], "--state"), as_json: bool = typer.Option(False, "--json"),
+                 config: Path | None = ConfigOpt) -> None:
+    """Predict credits, page requests, time and AI calls before running (cached queries counted as free)."""
+    from .estimate import estimate_all
+    db, settings = _db(config)
+    if depth:
+        settings.research_depth = depth  # type: ignore[assignment]
+    try:
+        res = estimate_all(db, settings, cohort=cohort, limit=limit, entity_ids=entity_id or None, institutions=institutions,
+                           states=state or None)
+        if as_json:
+            console.print_json(json.dumps(res))
+            return
+        t = Table(title=f"Estimate (depth={res['depth']}, practice digging={res['practice_dig']})")
+        for c in ("Stage", "Items", "Search credits", "Already cached", "Page requests", "Time (min)"):
+            t.add_column(c)
+        r = res["research"]
+        t.add_row("Research", str(r["entities"]), f"{r['credits_low']}–{r['credits_high']}", str(r["queries_already_cached"]),
+                  f"{r['page_requests_low']}–{r['page_requests_high']}", f"{r['minutes_low']}–{r['minutes_high']}")
+        if "discovery" in res:
+            d = res["discovery"]
+            t.add_row("Discovery", str(d["institutions"]), f"{d['credits_low']}–{d['credits_high']}", str(d["queries_already_cached"]),
+                      "–", f"{d['minutes_low']}–{d['minutes_high']}")
+        a = res["ai_review"]
+        t.add_row("AI review (optional)", f"{a['calls_low']}–{a['calls_high']} calls", "–", "–", "–",
+                  f"${a['usd_high']} max" if "usd_high" in a else "set ai_usd_per_million_* for $")
+        console.print(t)
+        console.print(f"Total search credits: {res['total_credits_low']}–{res['total_credits_high']}"
+                      + (f"  (${res['serper_usd_low']}–${res['serper_usd_high']})" if "serper_usd_low" in res else ""))
+    finally:
+        db.close()
+
+
+@app.command("pilot")
+def pilot_cmd(budget: int = typer.Option(25, "--budget", min=0, help="Total search credits for the whole pilot"),
+              ai_calls: int = typer.Option(10, "--ai-calls", min=0), support: int = typer.Option(1, "--support", min=0),
+              newsrooms: int = typer.Option(2, "--newsrooms", min=0), schools: int = typer.Option(2, "--schools", min=0),
+              unitid: list[str] = typer.Option([], "--unitid", help="Institutions for discovery (default EWU, WSU)"),
+              quiet: bool = QuietOpt, verbose: bool = VerboseOpt, config: Path | None = ConfigOpt) -> None:
+    """One capped end-to-end trial with a plain-language report (output/pilot_<UTC>/pilot_report.md)."""
+    from .pilot import run_pilot
+    db, settings = _db(config)
+    try:
+        rep = asyncio.run(run_pilot(db, settings, budget=budget, ai_calls=ai_calls, support=support, newsrooms=newsrooms,
+                                    schools=schools, unitids=unitid or None, quiet=quiet, verbose=verbose))
+        icon = {"ok": "[green]ok[/green]", "warning": "[yellow]warning[/yellow]", "failed": "[red]failed[/red]", "skipped": "[dim]skipped[/dim]"}
+        t = Table(title=f"Pilot complete — {rep['credits_spent']} of {budget} credits spent")
+        t.add_column("Step")
+        t.add_column("Result")
+        t.add_column("Detail")
+        for s in rep["steps"]:
+            t.add_row(s["step"], icon.get(s["status"], s["status"]), s["detail"])
+        console.print(t)
+        console.print(f"Report: {rep['out_dir']}/pilot_report.md")
+        run_finished(settings, "pilot", {"status": "completed", "completed": len(rep.get("stances", []))})
+    finally:
+        db.close()
+
+
 @app.command("watch")
 def watch_cmd(run_id: str | None = typer.Option(None, "--run-id", help="Run to follow (default: most recently active)"),
               interval: float = typer.Option(1.0, "--interval", min=0.2), config: Path | None = ConfigOpt) -> None:

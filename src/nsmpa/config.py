@@ -205,6 +205,10 @@ class Settings(BaseModel):
     ai_max_calls_per_run: int = Field(500, ge=1, le=1_000_000)
     # --- v0.6 operations -------------------------------------------------------------------
     notify_on_finish: bool = True
+    # optional prices for `nsmpa estimate` (left unset = credits/tokens only, no dollar figures)
+    serper_usd_per_credit: float | None = None
+    ai_usd_per_million_input: float | None = None
+    ai_usd_per_million_output: float | None = None
     outreach_sender_name: str = ""
     outreach_sender_email: str = ""
     outreach_affiliation: str = ""
