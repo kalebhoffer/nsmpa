@@ -62,7 +62,7 @@ RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 REDIRECT_STATUS = {301, 302, 303, 307, 308}
 # Content types whose bodies are never useful for policy research; we stop before reading them.
 TEXTUAL_TYPES = ("text/html", "application/xhtml+xml", "text/plain", "application/xml", "text/xml",
-                 "application/rss+xml", "application/atom+xml")
+                 "application/rss+xml", "application/atom+xml", "application/json")
 
 
 def classify_status(status: int) -> str:

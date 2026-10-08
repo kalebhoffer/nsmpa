@@ -677,10 +677,114 @@ def migrate_v4(conn: sqlite3.Connection) -> None:
     _create_views(conn)
 
 
+V5_TABLES = r"""
+CREATE TABLE IF NOT EXISTS ai_cache (
+  cache_key TEXT PRIMARY KEY,
+  model TEXT NOT NULL,
+  prompt_version TEXT NOT NULL,
+  response_json TEXT NOT NULL,
+  input_tokens INTEGER,
+  output_tokens INTEGER,
+  stop_reason TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS ai_reviews (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL,
+  entity_id INTEGER REFERENCES research_entities(id) ON DELETE CASCADE,
+  page_id INTEGER REFERENCES research_pages(id) ON DELETE CASCADE,
+  model TEXT NOT NULL,
+  prompt_version TEXT NOT NULL,
+  cache_key TEXT NOT NULL,
+  was_cached INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL,
+  error TEXT,
+  findings_total INTEGER NOT NULL DEFAULT 0,
+  findings_verified INTEGER NOT NULL DEFAULT 0,
+  summary TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(run_id, page_id, prompt_version, model)
+);
+
+CREATE TABLE IF NOT EXISTS ai_findings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  review_id INTEGER NOT NULL REFERENCES ai_reviews(id) ON DELETE CASCADE,
+  entity_id INTEGER,
+  page_id INTEGER,
+  quote TEXT NOT NULL,
+  quote_verified INTEGER NOT NULL,
+  kind TEXT,
+  action TEXT,
+  position TEXT,
+  direction TEXT,
+  conditions TEXT,
+  speaker TEXT,
+  speaker_role TEXT,
+  matched_evidence_id INTEGER REFERENCES evidence_items(id) ON DELETE SET NULL,
+  agreement TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_ai_findings_entity ON ai_findings(entity_id, agreement);
+
+CREATE TABLE IF NOT EXISTS wayback_checks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL,
+  entity_id INTEGER NOT NULL REFERENCES research_entities(id) ON DELETE CASCADE,
+  page_id INTEGER REFERENCES research_pages(id) ON DELETE SET NULL,
+  url TEXT NOT NULL,
+  status TEXT NOT NULL,
+  snapshots INTEGER NOT NULL DEFAULT 0,
+  earliest_ts TEXT,
+  compared_ts TEXT,
+  archive_url TEXT,
+  observations_json TEXT NOT NULL DEFAULT '[]',
+  error TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(run_id, entity_id, url)
+);
+
+CREATE TABLE IF NOT EXISTS audits (
+  id TEXT PRIMARY KEY,
+  description TEXT,
+  sample_size INTEGER NOT NULL,
+  seed INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS audit_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  audit_id TEXT NOT NULL REFERENCES audits(id) ON DELETE CASCADE,
+  evidence_id INTEGER NOT NULL REFERENCES evidence_items(id) ON DELETE CASCADE,
+  stratum TEXT NOT NULL,
+  UNIQUE(audit_id, evidence_id)
+);
+
+CREATE TABLE IF NOT EXISTS audit_labels (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  audit_item_id INTEGER NOT NULL REFERENCES audit_items(id) ON DELETE CASCADE,
+  labeler TEXT NOT NULL,
+  relevant INTEGER,
+  direction TEXT,
+  statement_type TEXT,
+  note TEXT,
+  labeled_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(audit_item_id, labeler)
+);
+"""
+
+
+def migrate_v5(conn: sqlite3.Connection) -> None:
+    """v0.5: AI second-opinion review, Wayback Machine comparisons, accuracy audits."""
+    run_script(conn, V5_TABLES)
+    _create_views(conn)
+
+
 MIGRATIONS: list[tuple[int, str, Callable[[sqlite3.Connection], None]]] = [
     (2, "baseline v0.1/v0.2 schema", migrate_v2),
     (3, "v0.3 checkpoints, unique evidence, review queue, provenance, views", migrate_v3),
     (4, "v0.4 action positions, case match, expert voices, precedent seeds", migrate_v4),
+    (5, "v0.5 AI review, Wayback comparisons, accuracy audits", migrate_v5),
 ]
 
 LATEST_VERSION = MIGRATIONS[-1][0]

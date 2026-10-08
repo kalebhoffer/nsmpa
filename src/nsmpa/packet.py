@@ -90,7 +90,7 @@ def gather(db: Database, settings: Settings, run_id: str | None = None) -> dict:
         da = [a.get(k, {}) for k in ("deindex", "anonymize")]
         if any(x.get("policy") in {"permitted", "conditional", "mixed"} for x in da):
             c["deindex_or_anonymize_policy"] += 1
-        if any(x.get("practice") == "granted" or x.get("technical") == "noindex_observed" for x in da):
+        if any(x.get("practice") == "granted" or x.get("technical", "none") != "none" for x in da):
             c["deindex_or_anonymize_practice"] += 1
         if a.get("unpublish", {}).get("policy") == "rejected":
             c["unpublish_rejected"] += 1
@@ -140,13 +140,49 @@ def gather(db: Database, settings: Settings, run_id: str | None = None) -> dict:
                       p.snapshot_path, p.meta_robots, p.x_robots_tag, p.noindex, p.run_id
                FROM research_pages p JOIN research_entities re ON re.id=p.entity_id
                WHERE p.run_id NOT IN (SELECT id FROM research_runs WHERE status='excluded') ORDER BY re.cohort, re.name, p.id LIMIT ?""", (lim,))],
+        "wayback": [dict(r) for r in db.execute(
+            """SELECT re.cohort, re.name AS entity, w.url, w.status, w.snapshots, w.earliest_ts, w.compared_ts, w.archive_url,
+                      w.observations_json, w.run_id
+               FROM wayback_checks w JOIN research_entities re ON re.id=w.entity_id
+               WHERE w.run_id NOT IN (SELECT id FROM research_runs WHERE status='excluded')
+               ORDER BY CASE w.status WHEN 'changed' THEN 0 ELSE 1 END, re.name LIMIT ?""", (lim,))],
+        "ai": [dict(r) for r in db.execute(
+            """SELECT re.cohort, re.name AS entity, f.agreement, f.kind, f.action, f.position, f.direction, f.conditions,
+                      f.speaker, f.speaker_role, f.quote, p.final_url AS source_url, f.matched_evidence_id, r.model, r.prompt_version,
+                      r.run_id AS ai_run_id
+               FROM ai_findings f JOIN ai_reviews r ON r.id=f.review_id JOIN research_entities re ON re.id=f.entity_id
+               LEFT JOIN research_pages p ON p.id=f.page_id
+               WHERE f.quote_verified=1
+               ORDER BY CASE f.agreement WHEN 'disagree' THEN 0 WHEN 'ai_only' THEN 1 ELSE 2 END, re.name LIMIT ?""", (lim,))],
         "ledger": [dict(r) for r in db.execute(
             """SELECT q.id AS query_id, q.created_at, q.run_id, re.name AS entity, q.purpose, q.query, q.status, q.was_cached,
                       q.credits_estimated, q.result_count, q.produced_evidence
                FROM search_queries q LEFT JOIN research_entities re ON re.id=q.entity_id
                WHERE q.run_id NOT IN (SELECT id FROM research_runs WHERE status='excluded') ORDER BY q.id LIMIT ?""", (lim,))],
     }
+    from .audit import summary_for_packet
+    data["audit"] = summary_for_packet(db)
     return data
+
+
+def _obs_text(js: str | None) -> str:
+    try:
+        obs = json.loads(js or "[]")
+    except ValueError:
+        return ""
+    parts = []
+    for o in obs:
+        if o["type"] == "names_removed":
+            parts.append(f"{o['count']} name(s) removed (names withheld)")
+        elif o["type"] == "noindex_added":
+            parts.append("noindex added")
+        elif o["type"] == "unpublished":
+            parts.append(f"now HTTP {o['current_status']}")
+        elif o["type"] == "content_altered":
+            parts.append(f"text changed (similarity {o['text_similarity']})")
+        elif o["type"] == "title_changed":
+            parts.append("headline changed")
+    return "; ".join(parts)
 
 
 def _fmt_actions(js: str | None) -> str:
@@ -231,7 +267,8 @@ def build_workbook(data: dict, path: Path) -> None:
         ("", False),
         ("Sheets", True),
         ("Summary · Closest to My Case · De-index vs Unpublish · Named Precedents · Professional Guidance · Expert Voices · "
-         "Documented Practice · Opposing Evidence · Entities · All Evidence · Sources · Search Ledger", False),
+         "Documented Practice · Opposing Evidence · Archive Changes · AI Second Opinion · Accuracy · Entities · All Evidence · "
+         "Sources · Search Ledger", False),
     ]
     ws.column_dimensions["A"].width = 130
     for i, (t, bold) in enumerate(lines, start=1):
@@ -315,6 +352,40 @@ def build_workbook(data: dict, path: Path) -> None:
           note="What newsrooms actually did: editor's notes, name removals, noindex on archived crime articles, documented refusals.")
     sheet("Opposing Evidence", data["opposing"], ev_cols,
           note="Policies and statements against removal or de-indexing. Included deliberately; a credible case answers these.")
+    wb_rows = [dict(r, observations=_obs_text(r["observations_json"])) for r in data["wayback"]]
+    sheet("Archive Changes", wb_rows, [
+        ("cohort", "Group", 16), ("entity", "Organization", 26), ("status", "Result", 16), ("observations", "What changed", 50),
+        ("earliest_ts", "Earliest capture", 16), ("snapshots", "Distinct captures", 10), ("url", "Current URL", 50),
+        ("archive_url", "Archived copy", 50), ("run_id", "Run", 16)],
+        note="Wayback Machine comparisons of archived crime/arrest articles. Names of people are never recorded; "
+             "the archived copy may still show them.")
+    sheet("AI Second Opinion", data["ai"], [
+        ("cohort", "Group", 16), ("entity", "Organization", 26), ("agreement", "vs. rule-based classifier", 16),
+        ("kind", "Kind", 11), ("action", "Action", 11), ("position", "Position", 12), ("direction", "Direction", 11),
+        ("quote", "Verbatim quote (verified in page text)", 80), ("conditions", "Conditions", 30), ("speaker", "Speaker", 18),
+        ("speaker_role", "Role", 20), ("source_url", "Source", 40), ("model", "Model", 16), ("prompt_version", "Prompt", 12)],
+        note="Independent AI reading of the same pages. Only quotes found word-for-word in the saved page are listed. "
+             "Disagreements are review items, not findings.")
+    audit = data.get("audit")
+    acc_rows = []
+    if audit:
+        def w(x):
+            return "–" if not x else f"{x[0]:.0%} (95% CI {x[1]:.0%}–{x[2]:.0%})"
+        acc_rows = [{"metric": "Items hand-checked", "value": f"{audit['labeled_items']} of {audit['sample_size']}"},
+                    {"metric": "Relevance precision", "value": w(audit.get("relevance_precision"))},
+                    {"metric": "Direction accuracy", "value": w(audit.get("direction_accuracy"))}]
+        acc_rows += [{"metric": f"Accuracy when machine said '{d}'", "value": w(x)}
+                     for d, x in (audit.get("direction_accuracy_by_machine_label") or {}).items()]
+        if audit.get("inter_rater"):
+            ir = audit["inter_rater"]
+            acc_rows.append({"metric": f"Agreement between {ir['labelers'][0]} and {ir['labelers'][1]} (Cohen's kappa)",
+                             "value": f"{ir['cohen_kappa_direction']} over {ir['items']} items"})
+        if audit.get("ai_direction_accuracy"):
+            acc_rows.append({"metric": "AI second-opinion direction accuracy", "value": w(audit["ai_direction_accuracy"])})
+    else:
+        acc_rows = [{"metric": "Accuracy audit", "value": "Not yet measured — run `nsmpa audit sample` and label the sample"}]
+    sheet("Accuracy", acc_rows, [("metric", "Measure", 60), ("value", "Result", 50)],
+          note="Measured by people hand-checking a random, stratified sample of the tool's classifications.")
     sheet("Entities", data["entities"], [
         ("entity_id", "ID", 7), ("cohort", "Group", 16), ("name", "Organization", 28), ("parent_name", "Institution", 26),
         ("state", "State", 7), ("homepage_url", "Website", 32), ("stance", "Written-policy stance", 24), ("confidence", "Confidence", 10),
@@ -577,6 +648,24 @@ def build_deck(data: dict, path: Path, *, title: str, max_precedent_slides: int)
         f"published; {rej} organization(s) explicitly reject unpublishing.",
         "De-indexing and anonymization leave the published record in place."], size=16, color=INK_2)
     footer(s, f"All {len(data['opposing'])} opposing excerpts: workbook sheet 'Opposing Evidence'.")
+
+    # Accuracy
+    s = new("How accurate is the automated classification?", "Measured, not assumed")
+    audit = data.get("audit")
+    if audit and audit.get("direction_accuracy"):
+        da, rp = audit["direction_accuracy"], audit.get("relevance_precision")
+        lines = [f"{audit['labeled_items']} randomly sampled items were checked by hand.",
+                 f"Direction correct: {da[0]:.0%} (95% confidence interval {da[1]:.0%}–{da[2]:.0%})."]
+        if rp:
+            lines.append(f"Items that were genuine evidence: {rp[0]:.0%} (95% CI {rp[1]:.0%}–{rp[2]:.0%}).")
+        if audit.get("inter_rater"):
+            ir = audit["inter_rater"]
+            lines.append(f"Two independent reviewers agreed with Cohen's kappa = {ir['cohen_kappa_direction']} ({ir['items']} items).")
+        text(s, 0.6, 1.9, 12.1, 4.6, lines, size=22)
+    else:
+        text(s, 0.6, 1.9, 12.1, 2, "Not yet measured. Run `nsmpa audit sample`, label the sample, and rebuild the packet.",
+             size=20, color=INK_2)
+    footer(s, "Workbook sheet 'Accuracy'.")
 
     # Limitations
     s = new("Limits of this evidence", "Read before relying on it")
