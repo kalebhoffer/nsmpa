@@ -551,7 +551,13 @@ def export_directory(db: Database, template: Path, out: Path) -> dict:
                         (ent["id"],)).fetchone()
         home = db.execute("""SELECT access_class, fetched_at FROM research_pages WHERE entity_id=? AND page_kind='homepage'
                              ORDER BY id DESC LIMIT 1""", (ent["id"],)).fetchone()
-        if home:
+        meta = json.loads(ent["metadata_json"] or "{}")
+        ident = (meta.get("website_identity") or {}).get("status")
+        if meta.get("recovered"):
+            row["Operating status"] = f"Moved: now at {meta['recovered']['to']} (directory URL {meta['recovered']['from']})"
+        elif ident == "mismatch":
+            row["Operating status"] = "Website repurposed or parked - no longer this publication; current site unknown"
+        elif home:
             row["Operating status"] = ACCESS_TEXT.get(home["access_class"], home["access_class"])
             row["Website verification"] = f"Automated check: {home['access_class']}"
             row["Verified on"] = (home["fetched_at"] or "")[:10]

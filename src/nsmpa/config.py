@@ -183,6 +183,7 @@ class Settings(BaseModel):
     peer_groups: dict[str, PeerGroup] = Field(default_factory=default_peer_groups)
     # --- v0.4 deep practice digging -------------------------------------------------------
     research_practice_dig: Literal["never", "auto", "always"] = "always"
+    research_recover_stale_sites: bool = True
     research_crime_article_sample: int = Field(20, ge=0, le=200)
     research_baseline_article_sample: int = Field(3, ge=0, le=20)
     research_practice_queries: bool = True

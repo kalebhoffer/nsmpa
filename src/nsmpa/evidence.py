@@ -89,6 +89,9 @@ PERMISSIVE = re.compile(
     r"\bopen to\b",
     re.I,
 )
+# Website data-privacy language ("we will delete your personal information") is not about published journalism.
+PERSONAL_DATA = re.compile(r"\b(?:personal(?:ly identifiable)? (?:information|data)|user data|cookies?|your (?:data|account|profile|"
+                           r"email|information)|email address(?:es)?|ip address(?:es)?|our servers|third[- ]party (?:services|vendors))\b", re.I)
 # Codes of ethics are written as imperatives ("Consider ...", "Provide updated information ...").
 IMPERATIVE = re.compile(
     r"^\s*(?:consider|provide|update|remove|avoid|weigh|explain|recognize|show|seek|balance|ensure|correct|add|use|treat|"
@@ -298,6 +301,9 @@ def classify_statement(sentence: str, context: str = "") -> Statement:
         return Statement(sentence, tags, stype, STATEMENT_DIRECTION[stype], cues, round(conf, 3))
 
     if looks_like_chrome(sentence):
+        return done("mention", 0.1)
+    if PERSONAL_DATA.search(sentence) and not re.search(r"\b(?:articles?|stor(?:y|ies)|coverage|archive|published)\b", sentence, re.I):
+        cues.append("personal_data_not_journalism")
         return done("mention", 0.1)
 
     # Documented practice (past tense, what actually happened) takes precedence.
