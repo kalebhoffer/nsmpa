@@ -146,13 +146,14 @@ def discover_cmd(
 @app.command("promote")
 def promote_cmd(
     threshold: float | None = typer.Option(None, "--threshold", min=0, max=1),
+    use_ai: bool = typer.Option(False, "--use-ai", help="Let confident `ai-discovery` picks break ties (all queued for review)"),
     config: Path | None = ConfigOpt,
 ) -> None:
     """Promote best verified candidates to publications (keeps human/manual verifications)."""
     db, settings = _db(config)
     try:
         stats = promote_candidates(db, threshold if threshold is not None else settings.publication_confidence_threshold,
-                                   settings.publication_ambiguity_margin)
+                                   settings.publication_ambiguity_margin, use_ai=use_ai)
         console.print_json(json.dumps(stats))
     finally:
         db.close()
@@ -822,6 +823,22 @@ def wayback_cmd(run_id: str = typer.Option(..., "--run-id", help="Research run w
         res = asyncio.run(run_wayback(db, settings, run_id, quiet=quiet, verbose=verbose, entity_ids=entity_id or None))
         console.print_json(json.dumps(res))
         run_finished(settings, "Wayback comparison", res)
+    finally:
+        db.close()
+
+
+@app.command("ai-discovery")
+def ai_discovery_cmd(max_calls: int = typer.Option(100, "--max-calls", min=0), limit: int | None = typer.Option(None, "--limit"),
+                     unitid: list[str] = typer.Option([], "--unitid"), config: Path | None = ConfigOpt) -> None:
+    """AI picks the student paper among already-found candidates for uncertain institutions (then `promote --use-ai`)."""
+    from .ai_discovery import run_ai_discovery
+    from .ai_review import AIUnavailable
+    db, settings = _db(config)
+    try:
+        console.print_json(json.dumps(run_ai_discovery(db, settings, max_calls=max_calls, limit=limit, unitids=unitid or None)))
+    except AIUnavailable as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
     finally:
         db.close()
 
