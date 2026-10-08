@@ -63,7 +63,9 @@ CONTENT_OBJECT = re.compile(
     r"\b(?:articles?|stor(?:y|ies)|content|archives?|archived|coverage|reports?|reporting|posts?|"
     r"names?|photos?|photographs?|images?|mug ?shots?|pieces?|headlines?|urls?|links?|items?|"
     r"published (?:work|material|information)|material|blotter|crime logs?|police logs?|columns?|"
-    r"editorials?|news (?:items?|reports?|stories)|our (?:site|website|pages)|information about|publications?|information)\b",
+    r"editorials?(?!\s+(?:board|committee|selection|staff|team|discretion|polic\w*|standards?|judg\w*|independence|"
+    r"decisions?|direction|integrity|control|process|guidelines|council|leaders?|management|values|mission|reasons?))|"
+    r"news (?:items?|reports?|stories)|our (?:site|website|pages)|information about|publications?|information)\b",
     re.I,
 )
 RELIEF_ACTION = re.compile(
@@ -140,7 +142,8 @@ NEG_NOT_RELIEF = re.compile(
 # "people wish they could hide", "journalists sometimes ask the publications to take down these pieces".
 REQUESTER_WISH = re.compile(
     r"\b(?:subjects?|people|someone|anyone|readers?|sources?|individuals?|persons?|they|he|she|students?|journalists?|alumni|"
-    r"famil(?:y|ies)|parents?|former \w+|plaintiffs?|lawyers?|attorneys?)\b(?:\W+\w+){0,3}?\W+(?:may\W+|might\W+|could\W+|"
+    r"famil(?:y|ies)|parents?|former \w+|plaintiffs?|lawyers?|attorneys?|parties|complainants?|requesters?|petitioners?|"
+    r"users?|citizens?)\b(?:\W+\w+){0,3}?\W+(?:may\W+|might\W+|could\W+|"
     r"often\W+|sometimes\W+|frequently\W+|will\W+|then\W+|also\W+)*(?:demand\w*|ask(?:s|ed|ing)?|request\w*|want\w*|wish\w*|seek\w*|petition\w*|plead\w*|beg\w*|urg\w*)\b"
     r"(?:\W+\w+){0,8}?\W+(?:remov\w*|take\s*down|takedowns?|unpublish\w*|hide|delet\w*|de-?index\w*|anonymi\w*|scrub\w*|"
     r"pull\w*|erase\w*)", re.I)
@@ -189,7 +192,7 @@ HUMANE_GROUNDS = re.compile(r"\b(?:harm\w*|fresh start|privacy|dismiss\w*|acquit
                             r"not guilty|never charged|charges (?:were )?dropped|minor (?:crimes?|offen[cs]es)|juvenile|"
                             r"years? (?:old|ago|later)|old(?:er)? (?:stories|articles|coverage)|outdated|newsworth\w*|"
                             r"public interest|rehabilitat\w*|second chance|right to be forgotten)\b", re.I)
-RELIEF_TOPIC = re.compile(r"\b(?:remov\w*|unpublish\w*|takedowns?|take\s*down|delet\w*|de-?index\w*|anonymi\w*|archiv\w*|online|"
+RELIEF_TOPIC = re.compile(r"\b(?:remov\w*|unpublish\w*|takedowns?|take[\s-]*downs?|fresh start|right to be forgotten|delet\w*|de-?index\w*|anonymi\w*|archiv\w*|online|"
                           r"search engines?|google|redact\w*|scrub\w*|pull\w*\s+(?:down|content|stories|articles))\b", re.I)
 UNPUBLISHED_ADJ = re.compile(r"\bunpublished\s+(?:writers?|authors?|poets?|works?|manuscripts?|poems?|novels?|stories by|"
                              r"research|data|papers?|songs?|music|photographs? by|material from)\b", re.I)
@@ -414,6 +417,53 @@ class _Signals:
         return cues
 
 
+# People removed from roles ("an Editor is removed", "the member could be removed", "removed from office").
+_PERSON_REMOVAL = re.compile(
+    r"\bremov\w*\s+(?:an?|the|any)\s+(?:editors?|members?|officers?|directors?|advisers?|advisors?|chairs?|"
+    r"board members?|volunteers?|moderators?|judges?|panelists?|employees?)\b|"
+    r"\b(?:editors?|members?|officers?|president|director|employees?|staff(?:ers)?|advisers?|advisors?|chairs?|"
+    r"board members?|volunteers?|moderators?|judges?|panelists?)\b(?:\W+[\w'’]+){0,6}?\W+(?:is|are|was|were|be|been|being)\s+"
+    r"(?:\w+\s+)?removed\b|\bremoved\s+from\s+(?:office|the board|(?:his|her|their) (?:post|position|role|job)\b(?!-)|"
+    r"the (?:position|role|job)\b|"
+    r"the publication for cause|membership)", re.I)
+# Reporters' never-published material: "unpublished information/notes/photos".
+_UNPUBLISHED_MATERIAL = re.compile(r"\bunpublished\s+(?:information|notes?|material|materials|photos?|photographs?|footage|"
+                                   r"drafts?|records?|sources?|work\s+product|reporting\s+materials?)\b", re.I)
+# "Historical record" / records that are not a newsroom's archive.
+_NON_JOURNALISM_RECORD = re.compile(
+    r"\b(?:emails?|documents?|electronic records|government records|public records|presidential records|files|data|"
+    r"(?:court|law enforcement|police|criminal|arrest|conviction)\s+records?)\b"
+    r"[^.]{0,40}\b(?:delet\w*|destroy\w*|remov\w*|retain\w*)|historical record[^.]{0,60}\b(?:america|nation|country|"
+    r"history|museum|monuments?|government|president|federal)|\b(?:remov\w*|delet\w*|seal\w*|destroy\w*|expung\w*)\b"
+    r"[^.]{0,60}\b(?:court|law enforcement|police|criminal|arrest|conviction|public)\s+records?\b", re.I)
+# Conduct codes and abuse-report handling.
+_NON_JOURNALISM_OBJECT = re.compile(
+    r"\b(?:remov\w*|redact\w*|delet\w*)\b(?:[\s\"“”'’-]+\w+){0,3}?[\s\"“”'’-]+(?:criteria|criterion|requirements?|fees?|urls|"
+    r"portfolio|resumes?|applications?|fields?|categor(?:y|ies)|options?|features?|buttons?|cookies?|passwords?|"
+    r"skills|tech)\b|\bconsider redacting\b", re.I)
+# Courts, clerks and legislatures acting on court or legal records (sealing, redacting, expunging) are not newsrooms.
+_LEGAL_ACTOR_ON_RECORDS = re.compile(
+    r"\b(?:the court|courts|judges?|clerks?|legislature|legislation|statute|the act|code of judicial|judicial administration|"
+    r"rule \d)\b[^.]{0,200}\b(?:court|legal|juvenile|criminal|public|arrest)\s+records?\b|"
+    r"\b(?:court|legal|juvenile|criminal|public|arrest)\s+records?\b[^.]{0,200}\b(?:the court|judges?|clerks?|legislature|"
+    r"statute)\b", re.I)
+_NEWSROOM_UNIT = re.compile(r"\b(?:articles?|stor(?:y|ies)|news(?:paper|room)?s?|publications?|reporters?|coverage|"
+                            r"our (?:site|website|archive))\b", re.I)
+_CONDUCT = re.compile(r"\b(?:code of conduct|conduct violation|strictly prohibited|prohibited behaviou?r|"
+                      r"reports? intended to|abuse reports?|spam reports?)\b", re.I)
+# Removal named as a topic, not a position ("challenges related to unpublishing").
+_TOPIC_MENTION = re.compile(
+    r"\b(?:unpublishing|de-?indexing|takedowns?|removal requests?)\s+(?:is|are|remains?|has become)\s+(?:not\s+)?"
+    r"(?:an?\s+|the\s+)?(?:\w+\s+)?(?:issue|challenge|problem|question|topic|dilemma|debate)\b|"
+    r"\b(?:challenges?|dilemmas?|debates?|questions?|issues?|conversations?|discussions?|problems?)\s+(?:related to|about|"
+    r"around|of|surrounding|regarding)\s+(?:the\s+)?(?:unpublish\w*|de-?index\w*|takedowns?|removal|anonymi\w*)\b", re.I)
+# Anonymity of sources, contributors or credits is a different topic from anonymizing a story's subject.
+_SOURCE_ANONYMITY = re.compile(
+    r"\banonym\w*\b[^.]{0,40}\b(?:contributors?|credits?|crediting|bylines?|authors?|tipsters?)\b|"
+    r"\b(?:contributors?|credits?|crediting|bylines?|authors?)\b[^.]{0,40}\banonym\w*|"
+    r"\b(?:anonymous|confidential)\s+sources?\b", re.I)
+_SUBJECT_NAME = re.compile(r"\b(?:names?|identif\w+|subjects?|suspects?|defendants?|arrest\w*|charged|crime)\b", re.I)
+
 _JOURNALISM_WORD = re.compile(r"\b(?:articles?|stor(?:y|ies)|coverage|archive|published)\b", re.I)
 _JOURNALISM_UNIT = re.compile(r"\b(?:stor(?:y|ies)|articles?|archives?|requests?|crimes?|coverage|names?|headlines?)\b", re.I)
 _MEDIA_EDIT_ACTION = re.compile(
@@ -446,6 +496,17 @@ _SCOPE_RULES: tuple[tuple[str | None, Callable[[_Signals], bool], object], ...] 
      ("mention", 0.2)),
     ("court_record_process_not_publication", lambda s: bool(COURT_PROCESS.search(s.sentence)) and not re.search(
         r"\b(?:articles?|stor(?:y|ies)|archives?|our (?:site|website))\b", s.sentence, re.I), ("mention", 0.2)),
+    ("person_removed_from_role", lambda s: bool(_PERSON_REMOVAL.search(s.sentence)), ("mention", 0.2)),
+    ("unpublished_material_not_relief", lambda s: bool(_UNPUBLISHED_MATERIAL.search(s.sentence)), ("mention", 0.2)),
+    ("record_not_journalism", lambda s: bool(_NON_JOURNALISM_RECORD.search(s.sentence)) and not re.search(
+        r"\b(?:articles?|stor(?:y|ies)|coverage|our archive|news archive)\b", s.sentence, re.I), ("mention", 0.2)),
+    ("conduct_code_not_relief", lambda s: bool(_CONDUCT.search(s.sentence)), ("mention", 0.2)),
+    ("court_records_not_newsroom", lambda s: bool(_LEGAL_ACTOR_ON_RECORDS.search(s.sentence)) and not _NEWSROOM_UNIT.search(
+        s.sentence), ("mention", 0.2)),
+    ("removal_of_non_journalism_item", lambda s: bool(_NON_JOURNALISM_OBJECT.search(s.sentence)), ("mention", 0.2)),
+    ("topic_not_position", lambda s: bool(_TOPIC_MENTION.search(s.sentence)), ("mention", 0.3)),
+    ("source_anonymity_not_relief", lambda s: bool(_SOURCE_ANONYMITY.search(s.sentence)) and not _SUBJECT_NAME.search(
+        s.sentence), ("mention", 0.2)),
     ("publisher_cooperates_with_search_engine",
      lambda s: bool(SEARCH_COOPERATION.search(s.sentence)) and not s.prohibitive, ("relief_permitted", 0.6)),
     ("publisher_requests_search_removal", lambda s: bool(SEARCH_REMOVAL_REQUEST.search(s.sentence)) and not s.prohibitive,
@@ -519,6 +580,9 @@ def _relief_policy(s: _Signals, cues: list[str]) -> tuple[str, float] | None:
     return None
 
 
+# "Takedown requests will be rarely granted": permitted in principle, restrictive in practice.
+_RARELY_GRANTED = re.compile(r"\b(?:rarely|seldom|infrequently|almost never)\b[^.]{0,25}\b(?:granted|approved|honou?red|"
+                             r"accepted|agreed to)\b|\b(?:granted|approved|honou?red)\s+(?:only\s+)?(?:rarely|seldom)\b", re.I)
 _HARM_TAGS = {"reputational_harm", "search_engine", "digital_permanence", "right_to_be_forgotten", "minimize_harm"}
 _RELIEF_ACTIONS = ("deindex", "anonymize", "unpublish")
 
@@ -560,10 +624,13 @@ def classify_statement(sentence: str, context: str = "") -> Statement:
     if s.relief and s.prohibitive and not _governs(s.prohibitive, s.relief, s.sentence):
         cues.append("negation_not_on_relief")
         s.prohibitive = None
+    if _RARELY_GRANTED.search(sentence) and (s.relief or RELIEF_TOPIC.search(sentence)):
+        cues.append("rarely_granted")
+        return done("relief_narrow_exceptions", 0.7)
     if (policy := _relief_policy(s, cues)) is not None:
         return done(*policy)
 
-    if s.case and (s.has_object or s.request):
+    if s.case and (s.has_object or s.request) and (s.relief or s.update or RELIEF_TOPIC.search(f"{sentence} {context}")):
         return done("case_by_case", 0.7)
     if s.update and (s.has_object or s.changed_ctx) and (
             s.changed_ctx or s.permissive or s.request or re.search(r"\b(?:we|our|editors?)\b", sentence, re.I)):
