@@ -17,7 +17,11 @@ from pathlib import Path
 from .config import Settings
 from .db import Database
 
-DEFAULT_SCHOOLS = ["235097", "236939"]  # Eastern Washington University, Washington State University
+DEFAULT_SCHOOLS = ["235097", "236939"]
+
+
+class _SkipDiscovery(Exception):
+    pass  # Eastern Washington University, Washington State University
 
 
 def _pick_entities(db: Database, cohort: str, n: int, prefer: list[str] | None = None) -> list[int]:
@@ -78,14 +82,19 @@ async def run_pilot(db: Database, settings: Settings, *, budget: int = 25, ai_ca
         school_ids = (unitids or DEFAULT_SCHOOLS)[:schools]
         step("seed_and_estimate", "failed", f"{type(exc).__name__}: {exc}")
 
-    # 3. discovery
+    # 3. discovery (skipped for institutions whose paper is already known, e.g. from the directory import)
     disc_budget = max(0, int(budget * 0.3))
     spent = 0
+    known = {r[0] for r in db.execute(f"SELECT unitid FROM publications WHERE is_primary=1 AND unitid IN ({','.join('?' * len(school_ids))})",
+                                       school_ids)} if school_ids else set()
+    to_discover = [u for u in school_ids if u not in known]
     try:
+        if not to_discover:
+            raise _SkipDiscovery()
         kw = {"provider": provider} if provider is not None else {}
         if fetcher_factory:
             kw["fetcher"] = fetcher_factory(settings)
-        d = await discover_all(db, settings, unitids=school_ids, run_id=f"pilot-discovery-{stamp}", quiet=quiet, verbose=verbose,
+        d = await discover_all(db, settings, unitids=to_discover, run_id=f"pilot-discovery-{stamp}", quiet=quiet, verbose=verbose,
                                max_searches=disc_budget, command="nsmpa pilot", **kw)
         spent += int(d.get("credits_estimated", 0))
         p = promote_candidates(db, settings.publication_confidence_threshold, settings.publication_ambiguity_margin)
@@ -95,6 +104,8 @@ async def run_pilot(db: Database, settings: Settings, *, budget: int = 25, ai_ca
                            school_ids).fetchall()
         step("discovery", "ok" if found else "warning", f"{len(found)}/{len(school_ids)} student publications identified",
              credits=d.get("credits_estimated"), publications=[dict(r) for r in found], promoted=p)
+    except _SkipDiscovery:
+        step("discovery", "ok", f"skipped: all {len(school_ids)} institution(s) already have a matched paper (no credits spent)")
     except Exception as exc:
         step("discovery", "failed", f"{type(exc).__name__}: {exc}")
 

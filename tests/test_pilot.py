@@ -66,3 +66,18 @@ async def test_pilot_budget_exhaustion_is_explained(tmp_path, db):
                           provider=tp.FakeSearch(tp.SEARCH_ROUTES), fetcher_factory=ff)
     research = next(x for x in rep["steps"] if x["step"] == "research")
     assert research["status"] == "warning" and "search budget" in research["detail"] and rep["credits_spent"] <= 8
+
+
+
+async def test_pilot_skips_discovery_for_known_papers(tmp_path, db):
+    s = make_settings(tmp_path)
+    tp.seed_newsrooms(tmp_path, db)
+    db.execute("INSERT INTO institutions(unitid,name,state,website,control,level,included) VALUES('900001','State University','WA','https://www.state.edu/',1,1,1)")
+    db.execute("INSERT INTO publications(unitid,name,homepage_url,domain,confidence,is_primary) VALUES('900001','The State Lantern','https://www.statelantern.com/','statelantern.com',0.85,1)")
+    db.conn.commit()
+    ff = lambda settings: HardenedFetcher(settings, transport=httpx.MockTransport(tp.handler), resolver=public_resolver)  # noqa: E731
+    provider = tp.FakeSearch(tp.SEARCH_ROUTES)
+    rep = await run_pilot(db, s, budget=60, ai_calls=0, support=0, newsrooms=1, schools=1, unitids=["900001"], quiet=True,
+                          provider=provider, fetcher_factory=ff)
+    disc = next(x for x in rep["steps"] if x["step"] == "discovery")
+    assert "skipped" in disc["detail"] and not any("student newspaper" in q for q in provider.calls)

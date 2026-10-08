@@ -612,8 +612,10 @@ def status_cmd(config: Path | None = ConfigOpt) -> None:
         rows += [
             ("Research", "v0.3 runs", q("SELECT COUNT(*) FROM research_runs WHERE engine_version!='0.2'")),
             ("Research", "legacy v0.2 runs (kept, excluded from reports)", q("SELECT COUNT(*) FROM research_runs WHERE engine_version='0.2'")),
-            ("Research", "entities with a v0.3 stance", q("SELECT COUNT(DISTINCT entity_id) FROM entity_stances WHERE stance_version='0.3'")),
-            ("Research", "unique substantive excerpts", q("SELECT COUNT(DISTINCT near_dup_key) FROM evidence_items WHERE statement_type!='mention'")),
+            ("Research", "entities with a v0.3 stance", q("SELECT COUNT(DISTINCT entity_id) FROM entity_stances WHERE stance_version='0.3' "
+                                                          "AND run_id NOT IN (SELECT id FROM research_runs WHERE status='excluded')")),
+            ("Research", "unique substantive excerpts", q("SELECT COUNT(DISTINCT near_dup_key) FROM evidence_items WHERE statement_type!='mention' "
+                                                          "AND run_id NOT IN (SELECT id FROM research_runs WHERE status='excluded')")),
             ("Search", "live queries (all time)", q("SELECT COUNT(*) FROM search_queries WHERE was_cached=0 AND status='completed'")),
             ("Search", "cache hits (all time)", q("SELECT COUNT(*) FROM search_queries WHERE was_cached=1")),
             ("Search", "estimated credits (all time)", q("SELECT SUM(credits_estimated) FROM search_queries")),
