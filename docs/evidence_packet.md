@@ -98,10 +98,10 @@ article has changed since its earliest capture, the two versions are compared:
 ## 7. AI second opinion (optional)
 
 ```bash
-nsmpa ai-review --run-id RUN --max-calls 50     # needs ANTHROPIC_API_KEY or an `ant auth login` profile
+nsmpa ai-review --run-id RUN --max-calls 50     # needs GEMINI_API_KEY in ./.env
 ```
 
-An independent reading of the same pages by Claude (`ai_model`, default `claude-opus-5-5`). Every quote it returns
+An independent reading of the same pages by Google Gemini Flash (`ai_model`, default `gemini-3.8-flash`; set `ai_provider: anthropic` to use Claude instead). Requests use the stateless `generate_content` call, so pages are not stored as server-side interactions. Every quote it returns
 must appear word-for-word in the saved page or it is discarded. Each verified finding is compared with the rule-based
 classifier (`agree` / `disagree` / `ai_only`); disagreements and AI-only directional findings go to the review queue.
 AI output never changes a stance. The prompt asks only what the page says, in both directions, and never mentions

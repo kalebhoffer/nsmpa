@@ -71,7 +71,7 @@ stories are sampled for editor's notes, name removals and targeted noindex tags.
 
 ```bash
 nsmpa wayback --run-id RUN                  # archived vs. current crime articles (also runs inside `research`)
-nsmpa ai-review --run-id RUN --max-calls 50 # optional; needs ANTHROPIC_API_KEY
+nsmpa ai-review --run-id RUN --max-calls 50 # optional; needs GEMINI_API_KEY
 nsmpa audit sample --n 50 && nsmpa audit export --out audit.csv   # label in Excel, then `audit import`
 nsmpa audit report
 ```

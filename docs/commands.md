@@ -88,7 +88,7 @@ Common options: `--quiet/-q` minimal output · `--verbose/-v` queries, URLs, dec
 | Command | Options | Purpose |
 |---|---|---|
 | `wayback` | `--run-id` (required), `--entity-id`, `-q`, `-v` | Wayback Machine comparison over an existing research run; refreshes stances |
-| `ai-review` | `--run-id`, `--cohort`, `--max-calls`, `--limit`, `--model`, `--resume`, `-q`, `-v` | AI second opinion with verbatim-quote verification |
+| `ai-review` | `--run-id`, `--cohort`, `--max-calls`, `--limit`, `--provider gemini\|anthropic`, `--model`, `--resume`, `-q`, `-v` | AI second opinion with verbatim-quote verification |
 | `audit sample` | `--n`, `--seed`, `--cohort`, `--description` | Draw a stratified, reproducible sample |
 | `audit export` | `--out`, `--audit-id`, `--show-machine` | CSV for Excel labeling (blind by default) |
 | `audit import` | `PATH`, `--labeler` | Import one person's labels |
