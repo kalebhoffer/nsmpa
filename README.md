@@ -55,6 +55,13 @@ The default terminal mode is a live dashboard. `--verbose` adds queries, URLs, s
 
 Ctrl+C once: finish in-flight items, checkpoint, print the resume command. Ctrl+C twice: cancel immediately (completed items are already saved). `nsmpa resume` continues the most recent interrupted or budget-stopped run; cached searches are never paid for twice.
 
+## First live test
+
+```bash
+nsmpa estimate --cohort support_org          # credits, page requests, time and AI calls before you spend anything
+nsmpa pilot --budget 25 --ai-calls 10        # capped end-to-end trial; report in output/pilot_<UTC>/pilot_report.md
+```
+
 ## Watching it run
 
 ```bash
@@ -69,7 +76,7 @@ nsmpa dashboard    # one offline HTML file to share
 nsmpa my-case --init                      # describe your situation (gitignored)
 nsmpa verify-precedents --max-searches 15 # named programs: find sources (you verify)
 nsmpa research-experts --max-searches 15  # attributed opinions, both directions
-nsmpa packet                              # output/packet_<UTC>/NSMPA_evidence.xlsx + NSMPA_presentation.pptx
+nsmpa packet --redact-names               # output/packet_<UTC>/NSMPA_evidence.xlsx + NSMPA_presentation.pptx
 ```
 
 See `docs/evidence_packet.md`. Newsrooms without written policies are still examined: their archived crime

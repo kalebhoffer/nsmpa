@@ -117,3 +117,13 @@ Common options: `--quiet/-q` minimal output · `--verbose/-v` queries, URLs, dec
 | `legal` | `--key --status --note` | List leads / record human verification |
 | `recheck` | `--limit`, `-q`, `-v` | Re-fetch known policy pages; record changes |
 | `schedule` | `--install`, `--uninstall`, `--weekday`, `--hour` | Weekly launchd `recheck` job (prints by default) |
+
+
+## Pilot, estimate, redaction, verification (v0.6.1)
+
+| Command | Options | Purpose |
+|---|---|---|
+| `estimate` | `--cohort`, `--limit`, `--entity-id`, `--depth`, `--institutions`, `--state`, `--json` | Credits (cached queries free), page requests, time, AI calls; dollars only if prices set in config |
+| `pilot` | `--budget`, `--ai-calls`, `--support`, `--newsrooms`, `--schools`, `--unitid`, `-q`, `-v` | Capped end-to-end trial with a plain-language report |
+| `packet` / `dashboard` | `--redact-names` (new) | Withhold names of private individuals in shared files |
+| `gui` → Verify tab | keys V / R / D / S / O | Source verification with the saved copy side by side |

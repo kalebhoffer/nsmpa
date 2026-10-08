@@ -87,6 +87,10 @@ ai_concurrency: 4
 notify_on_finish: true              # macOS notification when long runs end
 heartbeat_seconds: 2.0              # how often running jobs report progress to the GUI / `nsmpa watch`
 gui_port: 8765
+# optional prices for `nsmpa estimate` dollar figures (leave unset to see credits/tokens only)
+# serper_usd_per_credit: 0.0
+# ai_usd_per_million_input: 0.0
+# ai_usd_per_million_output: 0.0
 outreach_sender_name: ""            # required before `nsmpa outreach draft` (honest identification)
 outreach_sender_email: ""
 outreach_affiliation: ""

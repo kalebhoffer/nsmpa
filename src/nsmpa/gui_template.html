@@ -68,6 +68,7 @@ button.act.ok { border-color: var(--good); color: var(--good); } button.act.no {
 #detail { position: fixed; right: 0; top: 0; bottom: 0; width: min(560px, 100%); background: var(--surface); border-left: 1px solid var(--border); padding: 18px; overflow: auto; transform: translateX(100%); transition: transform .2s; z-index: 5; }
 #detail.on { transform: none; }
 .banner { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; margin-bottom: 14px; color: var(--ink-2); }
+@media (max-width: 900px) { #v-grid { grid-template-columns: 1fr !important; } }
 @media (max-width: 640px) { main { padding: 12px 16px; } header { padding: 10px 16px; } }
 </style>
 </head>
@@ -79,6 +80,7 @@ button.act.ok { border-color: var(--good); color: var(--good); } button.act.no {
     <button data-tab="results">Results</button>
     <button data-tab="evidence">Evidence</button>
     <button data-tab="review">Review</button>
+    <button data-tab="verify" id="verify-tab">Verify</button>
     <button data-tab="insights">Archive · AI · Accuracy</button>
     <button data-tab="ops">Operations</button>
   </nav>
@@ -106,6 +108,20 @@ button.act.ok { border-color: var(--good); color: var(--good); } button.act.no {
       <select id="f-sort"><option value="match">Closest to my case</option><option value="authority">Authority</option><option value="recent">Most recent</option></select>
     </div>
     <div class="card"><div id="ev-count" class="muted"></div><div id="ev-table"></div></div>
+  </section>
+
+  <section id="verify">
+    <div class="filters">
+      <select id="v-kind"><option value="evidence">Evidence excerpts</option><option value="voice">Expert voices</option></select>
+      <span class="muted" id="v-progress"></span>
+    </div>
+    <div class="bar" style="max-width:520px"><i id="v-bar" style="width:0%"></i></div>
+    <div style="display:grid;grid-template-columns:minmax(320px,2fr) 3fr;gap:14px;margin-top:12px" id="v-grid">
+      <div class="card" id="v-item"></div>
+      <div class="card" style="padding:0;overflow:hidden"><iframe id="v-frame" title="Saved copy" style="width:100%;height:70vh;border:0;background:var(--surface)"></iframe></div>
+    </div>
+    <p class="muted" style="font-size:12px">Keys: <b>V</b> verified · <b>R</b> rejected · <b>D</b> disputed · <b>S</b> skip · <b>O</b> open live source.
+      Right pane: the exact text NSMPA analysed, with the excerpt highlighted. Verify against the live page too when it still exists.</p>
   </section>
 
   <section id="review"><div class="card"><h2>Human review queue (highest priority first)</h2><div id="rv"></div></div></section>
@@ -284,7 +300,45 @@ async function loadOps() {
     <div class="card" style="grid-column:1/-1"><h2>Failed items</h2>${tbl(d.failed_items, [["run_id","Run"],["item_type","Type"],["item_key","Key"],["error","Error"]])}</div>`;
 }
 
-const loaders = {live: loadLive, results: loadResults, evidence: loadEvidence, review: loadReview, insights: loadInsights, ops: loadOps};
+let vQueue = [], vIdx = 0;
+async function loadVerify() {
+  const kind = $("#v-kind").value;
+  const r = await api(`/api/verify?kind=${kind}&limit=60`);
+  vQueue = r.items; vIdx = 0;
+  const c = r.counts, done = (c.verified || 0) + (c.rejected || 0) + (c.disputed || 0), total = done + (c.unverified || 0);
+  $("#v-progress").textContent = `${done.toLocaleString()} of ${total.toLocaleString()} checked · ${(c.verified || 0)} verified · ${(c.rejected || 0)} rejected · ${(c.disputed || 0)} disputed`;
+  $("#v-bar").style.width = total ? `${Math.round(100 * done / total)}%` : "0%";
+  showVerifyItem();
+}
+function showVerifyItem() {
+  const it = vQueue[vIdx], kind = $("#v-kind").value;
+  if (!it) { $("#v-item").innerHTML = `<div class="empty">Nothing left to verify here.</div>`; $("#v-frame").removeAttribute("src"); return; }
+  $("#v-item").innerHTML = `
+    <div class="muted" style="font-size:12px">${vIdx + 1} of ${vQueue.length} in this batch${it.drives_stance ? ' · <b>drives a stance</b>' : ""}</div>
+    <h3 style="margin:6px 0">${esc(it.entity)}${it.role ? ` <span class="muted" style="font-weight:400">— ${esc(it.role)}</span>` : ""}</h3>
+    <div class="muted">${esc(it.cohort || "")} ${esc(it.evidence_class)} · ${esc(it.statement_type)} · <span class="pill dir-${esc(it.direction)}">${esc(it.direction)}</span></div>
+    <p style="font-size:16px;line-height:1.55;margin:12px 0" class="dir-${esc(it.direction)}">${esc(it.excerpt)}</p>
+    <div class="kv"><span>Source</span><span>${link(it.source_url)}</span><span>Fetched</span><span>${esc(it.fetched_at || "")}</span>
+      <span>ID</span><span>${kind === "voice" ? "voice" : "E"}${esc(it.id)}</span>${it.attribution_method ? `<span>Attributed by</span><span>${esc(it.attribution_method)}</span>` : ""}</div>
+    <input id="v-note" placeholder="Note (optional)" style="width:100%;margin:12px 0 8px">
+    <div style="display:flex;gap:6px;flex-wrap:wrap">
+      <button class="act ok" data-v="verified">Verified (V)</button><button class="act no" data-v="rejected">Rejected (R)</button>
+      <button class="act" data-v="disputed">Disputed (D)</button><button class="act" data-v="skip">Skip (S)</button>
+      <button class="act" data-v="open">Open source (O)</button></div>`;
+  $("#v-frame").src = `/snapshot/${kind}/${it.id}#hit`;
+}
+async function verifyAction(action) {
+  const it = vQueue[vIdx]; if (!it) return;
+  if (action === "open") { if (it.source_url && /^https?:/.test(it.source_url)) window.open(it.source_url, "_blank", "noopener"); return; }
+  if (action !== "skip") {
+    const res = await post(`/api/verify/${$("#v-kind").value}/${it.id}`, {status: action, note: ($("#v-note") || {}).value || ""});
+    if (res.error) { alert(res.error); return; }
+  }
+  vIdx += 1;
+  if (vIdx >= vQueue.length) return loadVerify();
+  showVerifyItem();
+}
+const loaders = {live: loadLive, results: loadResults, evidence: loadEvidence, review: loadReview, verify: loadVerify, insights: loadInsights, ops: loadOps};
 let current = "live";
 async function show(tab) {
   current = tab;
@@ -294,12 +348,21 @@ async function show(tab) {
 }
 document.getElementById("tabs").addEventListener("click", e => { if (e.target.dataset.tab) { try { history.replaceState(null, "", "#" + e.target.dataset.tab); } catch (_) {} show(e.target.dataset.tab); } });
 ["#f-q", "#f-cohort", "#f-direction", "#f-klass", "#f-sort"].forEach(s => $(s).addEventListener(s === "#f-q" ? "input" : "change", () => loadEvidence()));
+$("#v-kind").addEventListener("change", () => loadVerify());
+document.addEventListener("keydown", e => {
+  if (current !== "verify" || CFG.static || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)) return;
+  const map = {v: "verified", r: "rejected", d: "disputed", s: "skip", o: "open"};
+  const a = map[e.key.toLowerCase()]; if (a) { e.preventDefault(); verifyAction(a); }
+});
 document.addEventListener("click", async e => {
+  const vb = e.target.closest("button[data-v]"); if (vb) { verifyAction(vb.dataset.v); return; }
   const tr = e.target.closest("tr[data-ev]"); if (tr) showEvidence(JSON.parse(tr.dataset.ev));
   const b = e.target.closest("button[data-decide]");
   if (b) { const id = b.dataset.decide, note = (document.querySelector(`[data-note="${id}"]`) || {}).value || "";
     const res = await post(`/api/review/${id}`, {decision: b.dataset.d, note}); if (res.error) alert(res.error); loadReview(); }
 });
+if (CFG.static) { $("#verify-tab").hidden = true; }
 if (CFG.static) { $("#static-banner").hidden = false; $("#snap-time").textContent = DATA.overview.generated + (DATA.redacted ? ". Names of private individuals withheld (automated redaction)" : ""); }
 show(loaders[location.hash.slice(1)] ? location.hash.slice(1) : "live");
 if (!CFG.static) setInterval(() => { if (current === "live") loadLive(); }, 2000);

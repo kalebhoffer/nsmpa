@@ -154,7 +154,15 @@ verify before citing (`nsmpa legal --key K --status human_verified`).
 `nsmpa recheck` re-fetches every captured policy page and records changes (similarity and relief statements added/
 removed), queuing changed organizations for review. `nsmpa schedule --install` runs it weekly via launchd.
 
-## 13. Build the packet
+## 13. Before you share: redact names
+
+`nsmpa packet --redact-names` and `nsmpa dashboard --redact-names` replace names of private individuals with
+"[name withheld]". Kept: organizations, institutions, cited experts and quoted speakers (in their own quotes), precedent
+organizations. URLs whose path contains a redacted name, archived-copy links and snapshot paths are withheld. The private
+database keeps everything for verification ("available on request by evidence ID"). It is automated and errs toward
+withholding (some place names may be withheld; unusual names can be missed), so skim the shared copy once.
+
+## 14. Build the packet
 
 ```bash
 nsmpa packet                     # output/packet_<UTC>/

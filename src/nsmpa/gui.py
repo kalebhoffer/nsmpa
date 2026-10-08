@@ -174,6 +174,83 @@ def api_entity(db: Database, entity_id: int) -> dict:
                         (entity_id,))}
 
 
+VERIFY_STATUSES = {"verified", "rejected", "disputed"}
+
+
+def api_verify(db: Database, params: dict) -> dict:
+    """Unverified items in priority order: the excerpts that drive determinate stances first, then closest to your case."""
+    kind = params.get("kind", "evidence")
+    limit = min(int(params.get("limit", 40) or 40), 200)
+    if kind == "voice":
+        rows = _q(db, f"""SELECT v.id, v.person_name AS entity, COALESCE(x.role, v.role) AS role, v.direction, v.statement_type,
+                                'voice' AS evidence_class, v.quote AS excerpt, v.context, v.source_url, v.created_at AS fetched_at,
+                                NULL AS page_sha256, v.attribution_method, v.page_id
+                         FROM voices v LEFT JOIN experts x ON x.id=v.expert_id
+                         WHERE v.verification_status='unverified' AND (v.run_id IS NULL OR v.run_id NOT IN {EXCL})
+                         ORDER BY v.expert_id IS NULL, v.case_match_score DESC, v.id LIMIT ?""", (limit,))
+        counts = _q(db, "SELECT verification_status AS status, COUNT(*) n FROM voices GROUP BY 1")
+    else:
+        rows = _q(db, f"""SELECT e.id, re.name AS entity, e.cohort, e.direction, e.statement_type, e.evidence_class, e.excerpt,
+                                e.context, e.source_url, e.fetched_at, e.page_sha256, e.case_match_score, e.page_id,
+                                (SELECT p.text_sha256 IS NOT NULL FROM research_pages p WHERE p.id=e.page_id) AS has_snapshot,
+                                EXISTS (SELECT 1 FROM entity_stances s WHERE s.strongest_supportive_id=e.id OR s.strongest_adverse_id=e.id)
+                                  AS drives_stance
+                         FROM evidence_items e JOIN research_entities re ON re.id=e.entity_id
+                         WHERE e.verification_status='unverified' AND e.duplicate_of IS NULL
+                           AND e.statement_type NOT IN ('mention','technical_sitewide_noindex') AND e.run_id NOT IN {EXCL}
+                         ORDER BY drives_stance DESC, e.case_match_score DESC, e.authority_score DESC, e.id LIMIT ?""", (limit,))
+        counts = _q(db, f"""SELECT verification_status AS status, COUNT(*) n FROM evidence_items
+                            WHERE duplicate_of IS NULL AND statement_type NOT IN ('mention','technical_sitewide_noindex')
+                              AND run_id NOT IN {EXCL} GROUP BY 1""")
+    return {"kind": kind, "items": rows, "counts": {c["status"]: c["n"] for c in counts}}
+
+
+def snapshot_html(db: Database, kind: str, item_id: int) -> str:
+    """The saved, analysed page text with the excerpt highlighted (anchor #hit). No scripts."""
+    import html as _html
+    if kind == "voice":
+        row = db.execute("SELECT quote AS excerpt, page_id, source_url FROM voices WHERE id=?", (item_id,)).fetchone()
+    else:
+        row = db.execute("SELECT excerpt, page_id, source_url, evidence_class FROM evidence_items WHERE id=?", (item_id,)).fetchone()
+    style = ("<style>body{font:15px/1.6 -apple-system,Arial,sans-serif;margin:16px;color:#222;background:#fff}"
+             "mark{background:#ffe08a;padding:2px 0}.meta{color:#666;font-size:12px;margin-bottom:12px}"
+             "@media (prefers-color-scheme:dark){body{background:#1a1a19;color:#ddd}.meta{color:#999}mark{background:#6b5300;color:#fff}}</style>")
+    if not row:
+        return f"<!doctype html><meta charset=utf-8>{style}<p>Not found.</p>"
+    page = db.execute("SELECT * FROM research_pages WHERE id=?", (row["page_id"],)).fetchone() if row["page_id"] else None
+    text = None
+    if page and page["text_sha256"]:
+        path = db.scalar("SELECT path FROM snapshots WHERE sha256=? AND kind='text'", (page["text_sha256"],), None)
+        if path and Path(path).exists():
+            text = Path(path).read_text(encoding="utf-8", errors="replace")
+    meta = (f"<div class=meta>Saved copy analysed by NSMPA · fetched {_html.escape(str(page['fetched_at'] if page else '–'))} · "
+            f"page SHA-256 {_html.escape(str(page['content_sha256'] if page else '–'))}</div>")
+    if kind != "voice" and row["evidence_class"] == "technical":
+        directives = (f"meta robots = <b>{_html.escape(str(page['meta_robots'] or 'none'))}</b> · "
+                      f"X-Robots-Tag = <b>{_html.escape(str(page['x_robots_tag'] or 'none'))}</b>") if page else "page record missing"
+        box = ("<div style='border:1px solid #888;border-radius:6px;padding:10px;margin-bottom:12px'><b>Technical observation, not a "
+               "quote.</b> Confirm it from what NSMPA recorded for this page: " + directives + ". For Wayback items, compare the "
+               "archived copy with the live page.</div>")
+        return f"<!doctype html><meta charset=utf-8>{style}{meta}{box}<div style='white-space:pre-wrap'>{_html.escape(text or '')}</div>"
+    if not text:
+        note = ("This item is a technical observation (e.g. noindex or Wayback comparison); there is no quoted text. "
+                "Use the live source link to check it.") if (kind != "voice" and row["evidence_class"] == "technical") else             "No saved text snapshot for this item; check the live source."
+        return f"<!doctype html><meta charset=utf-8>{style}{meta}<p>{_html.escape(note)}</p>"
+    ex = row["excerpt"] or ""
+    i = text.find(ex)
+    if i < 0:
+        i = text.lower().find(ex.lower()[:120])
+        n = len(ex[:120]) if i >= 0 else 0
+    else:
+        n = len(ex)
+    if i < 0:
+        body = "<p class=meta>(Excerpt text not found verbatim in the saved copy — mark as disputed if it cannot be confirmed.)</p>" \
+               + _html.escape(text)
+    else:
+        body = _html.escape(text[:i]) + f"<mark id=hit>{_html.escape(text[i:i + n])}</mark>" + _html.escape(text[i + n:])
+    return f"<!doctype html><meta charset=utf-8>{style}{meta}<div style='white-space:pre-wrap'>{body}</div>"
+
+
 def snapshot_payload(db: Database, settings: Settings) -> dict:
     """Everything the UI needs, for the offline dashboard file."""
     return {"overview": api_overview(db, settings), "results": api_results(db, settings),
@@ -230,16 +307,20 @@ class _Handler(BaseHTTPRequestHandler):
         host = (self.headers.get("Host") or "").lower()
         return host in {f"127.0.0.1:{self.port}", f"localhost:{self.port}"}
 
-    def _send(self, status: int, body: bytes, ctype: str) -> None:
+    def _send(self, status: int, body: bytes, ctype: str, *, frameable: bool = False) -> None:
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("X-Frame-Options", "DENY")
-        self.send_header("Content-Security-Policy",
-                         "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
-                         "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'")
+        if frameable:  # saved-copy pages: framed only by our own UI, and never run scripts
+            self.send_header("X-Frame-Options", "SAMEORIGIN")
+            self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'self'")
+        else:
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Content-Security-Policy",
+                             "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+                             "img-src 'self' data:; connect-src 'self'; frame-src 'self'; frame-ancestors 'none'")
         self.end_headers()
         self.wfile.write(body)
 
@@ -256,6 +337,16 @@ class _Handler(BaseHTTPRequestHandler):
         params = {k: v[0] for k, v in parse_qs(url.query).items()}
         if url.path in {"/", "/index.html"}:
             return self._send(200, render_page(self.token).encode(), "text/html; charset=utf-8")
+        if url.path.startswith("/snapshot/"):
+            parts = url.path.strip("/").split("/")
+            if len(parts) != 3 or parts[1] not in {"evidence", "voice"} or not parts[2].isdigit():
+                return self._send(404, b"not found", "text/plain")
+            db = self._db()
+            try:
+                return self._send(200, snapshot_html(db, parts[1], int(parts[2])).encode(), "text/html; charset=utf-8",
+                                  frameable=True)
+            finally:
+                db.close()
         routes = {
             "/api/overview": lambda db: api_overview(db, self.settings),
             "/api/results": lambda db: api_results(db, self.settings),
@@ -263,6 +354,7 @@ class _Handler(BaseHTTPRequestHandler):
             "/api/review": api_review,
             "/api/ops": api_ops,
             "/api/insights": api_insights,
+            "/api/verify": lambda db: api_verify(db, params),
         }
         if url.path.startswith("/api/entity/"):
             try:
@@ -302,6 +394,20 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": True})
             except (ValueError, sqlite3.Error) as exc:
                 return self._json({"error": str(exc)}, 400)
+            finally:
+                db.close()
+        if url.path.startswith("/api/verify/"):
+            parts = url.path.strip("/").split("/")
+            status = str(body.get("status", ""))
+            if len(parts) != 4 or parts[2] not in {"evidence", "voice"} or not parts[3].isdigit() or status not in VERIFY_STATUSES:
+                return self._json({"error": "bad request"}, 400)
+            db = self._db()
+            try:
+                table = "evidence_items" if parts[2] == "evidence" else "voices"
+                n = db.execute(f"UPDATE {table} SET verification_status=?, reviewer_note=? WHERE id=?",
+                               (status, str(body.get("note", ""))[:2000] or None, int(parts[3]))).rowcount
+                db.conn.commit()
+                return self._json({"ok": bool(n)})
             finally:
                 db.close()
         return self._json({"error": "not found"}, 404)
