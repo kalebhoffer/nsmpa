@@ -42,7 +42,7 @@ class SearchBudgetExceeded(RuntimeError):
 
 def _redact(text: str) -> str:
     """Strip any configured API key from text before it is stored or displayed."""
-    for var in ("SERPER_API_KEY", "BRAVE_SEARCH_API_KEY"):
+    for var in ("SERPER_API_KEY", "BRAVE_SEARCH_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "ANTHROPIC_API_KEY"):
         key = os.getenv(var)
         if key and len(key) >= 8:
             text = text.replace(key, "***redacted***")

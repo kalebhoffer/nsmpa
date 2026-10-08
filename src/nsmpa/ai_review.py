@@ -1,4 +1,8 @@
-"""AI second opinion on fetched pages (Claude API). Off unless you run `nsmpa ai-review`.
+"""AI second opinion on fetched pages. Off unless you run `nsmpa ai-review`.
+
+Providers: Google Gemini (default, ``ai_model: gemini-3.8-flash``, via ``google-genai`` ``generate_content``, which
+is stateless: unlike the Interactions API it does not store each request server-side by default) or Anthropic
+Claude (``ai_provider: anthropic``).
 
 Guardrails:
 - The rules-based classifier stays the baseline. AI output lives in ``ai_reviews`` / ``ai_findings``
@@ -15,12 +19,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import random
+import time
 from pathlib import Path
 from typing import Any
 
 from .config import Settings
 from .db import Database
 from .progress import RunDashboard
+from .search import _redact
 from .runs import StopController, create_or_resume_run, done_keys, finish_run, mark_item, register_items
 from .utils import normalize_for_hash, sha256_text
 
@@ -76,7 +84,19 @@ class AIUnavailable(RuntimeError):
     pass
 
 
-def make_client():
+GEMINI_BLOCK_REASONS = {"SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", "RECITATION", "IMAGE_SAFETY", "OTHER", "LANGUAGE"}
+RETRYABLE_CODES = {429, 500, 502, 503, 504}
+
+
+def make_client(settings: Settings):
+    if settings.ai_provider == "gemini":
+        if not (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")):
+            raise AIUnavailable("Set GEMINI_API_KEY (or GOOGLE_API_KEY) in your environment or ./.env to use Gemini")
+        try:
+            from google import genai
+        except ImportError as exc:  # pragma: no cover
+            raise AIUnavailable("The 'google-genai' package is not installed (pip install -e '.[ai]')") from exc
+        return genai.Client()  # reads GEMINI_API_KEY / GOOGLE_API_KEY
     try:
         import anthropic
     except ImportError as exc:  # pragma: no cover
@@ -84,14 +104,58 @@ def make_client():
     return anthropic.Anthropic()  # resolves ANTHROPIC_API_KEY / ant auth profile
 
 
-def call_model(client, settings: Settings, page_text: str, entity_name: str) -> tuple[dict, dict]:
-    """One structured-output request. Returns (parsed JSON, usage/meta). Raises on refusal or API error."""
+def _user_text(page_text: str, entity_name: str) -> str:
+    return f"Organization: {entity_name}\n\nPage text:\n<page>\n{page_text}\n</page>"
+
+
+def _call_gemini(client, settings: Settings, page_text: str, entity_name: str) -> tuple[dict, dict]:
+    from google.genai import types
+    config = types.GenerateContentConfig(
+        system_instruction=SYSTEM,
+        response_mime_type="application/json",
+        response_json_schema=SCHEMA,
+        max_output_tokens=16000,
+    )
+    last: Exception | None = None
+    for attempt in range(settings.ai_max_retries + 1):
+        try:
+            response = client.models.generate_content(model=settings.ai_model, contents=_user_text(page_text, entity_name),
+                                                      config=config)
+            break
+        except Exception as exc:  # google.genai.errors.APIError carries .code
+            last = exc
+            if getattr(exc, "code", None) in RETRYABLE_CODES and attempt < settings.ai_max_retries:
+                time.sleep(min(30.0, 2.0 * (2 ** attempt)) * (0.75 + random.random() * 0.5))
+                continue
+            raise
+    else:  # pragma: no cover
+        raise last  # type: ignore[misc]
+    fb = getattr(response, "prompt_feedback", None)
+    if fb is not None and getattr(fb, "block_reason", None):
+        raise AIUnavailable(f"Gemini blocked this page ({getattr(fb.block_reason, 'name', fb.block_reason)})")
+    cands = getattr(response, "candidates", None) or []
+    finish = getattr(getattr(cands[0], "finish_reason", None), "name", None) if cands else None
+    usage = getattr(response, "usage_metadata", None)
+    meta = {"stop_reason": finish, "model": settings.ai_model,
+            "input_tokens": getattr(usage, "prompt_token_count", None),
+            "output_tokens": getattr(usage, "candidates_token_count", None)}
+    if finish == "MAX_TOKENS":
+        raise AIUnavailable("response truncated at max_output_tokens")
+    if finish in GEMINI_BLOCK_REASONS:
+        raise AIUnavailable(f"Gemini declined this page (finish_reason={finish})")
+    text = response.text or ""
+    if not text.strip():
+        raise AIUnavailable("Gemini returned an empty response")
+    return json.loads(text), meta
+
+
+def _call_anthropic(client, settings: Settings, page_text: str, entity_name: str) -> tuple[dict, dict]:
     kwargs: dict[str, Any] = dict(
         model=settings.ai_model,
         max_tokens=16000,
         system=SYSTEM,
         output_config={"effort": settings.ai_effort, "format": {"type": "json_schema", "schema": SCHEMA}},
-        messages=[{"role": "user", "content": f"Organization: {entity_name}\n\nPage text:\n<page>\n{page_text}\n</page>"}],
+        messages=[{"role": "user", "content": _user_text(page_text, entity_name)}],
     )
     if settings.ai_refusal_fallback:
         response = client.beta.messages.create(betas=["server-side-fallback-2026-07-01"], fallbacks="default", **kwargs)
@@ -106,6 +170,13 @@ def call_model(client, settings: Settings, page_text: str, entity_name: str) -> 
         raise AIUnavailable("response truncated at max_tokens")
     text = next((b.text for b in response.content if getattr(b, "type", "") == "text"), "")
     return json.loads(text), meta
+
+
+def call_model(client, settings: Settings, page_text: str, entity_name: str) -> tuple[dict, dict]:
+    """One structured-output request. Returns (parsed JSON, usage/meta). Raises AIUnavailable on blocks/refusals."""
+    if settings.ai_provider == "gemini":
+        return _call_gemini(client, settings, page_text, entity_name)
+    return _call_anthropic(client, settings, page_text, entity_name)
 
 
 def verify_quote(quote: str, page_text_norm: str) -> bool:
@@ -174,7 +245,7 @@ async def run_ai_review(db: Database, settings: Settings, *, run_id: str | None 
                         command: str | None = None) -> dict:
     pages = candidate_pages(db, run_id, cohort, limit)
     rid, _ = create_or_resume_run(db, settings, "ai_review", review_run_id,
-                                  params={"scope_run": run_id, "cohort": cohort, "model": settings.ai_model,
+                                  params={"scope_run": run_id, "cohort": cohort, "provider": settings.ai_provider, "model": settings.ai_model,
                                           "prompt_version": PROMPT_VERSION}, command=command)
     register_items(db, rid, "page", [str(p["id"]) for p in pages])
     done = done_keys(db, rid, "page")
@@ -185,9 +256,9 @@ async def run_ai_review(db: Database, settings: Settings, *, run_id: str | None 
              "findings": 0, "verified": 0, "unverified_discarded": 0, "disagreements": 0, "ai_only": 0}
     status, reason = "completed", None
     dash = RunDashboard("NSMPA AI second opinion", len(pages), quiet=quiet, verbose=verbose,
-                        universe=f"{settings.ai_model} · {PROMPT_VERSION}")
+                        universe=f"{settings.ai_provider}:{settings.ai_model} · {PROMPT_VERSION}")
     if client is None and todo:
-        client = make_client()
+        client = make_client(settings)
     sem = asyncio.Semaphore(settings.ai_concurrency)
     with dash:
         dash.update(completed=len(done), skipped_done=len(done))
@@ -205,7 +276,7 @@ async def run_ai_review(db: Database, settings: Settings, *, run_id: str | None 
                 dash.increment(completed=1)
                 return
             text = text[: settings.ai_max_page_chars]
-            cache_key = sha256_text(f"{settings.ai_model}|{PROMPT_VERSION}|{p['text_sha256']}|{settings.ai_max_page_chars}")
+            cache_key = sha256_text(f"{settings.ai_provider}|{settings.ai_model}|{PROMPT_VERSION}|{p['text_sha256']}|{settings.ai_max_page_chars}")
             cached = db.execute("SELECT * FROM ai_cache WHERE cache_key=?", (cache_key,)).fetchone()
             mark_item(db, rid, "page", key, "running")
             dash.update(current=f"{p['entity_name']}: {(p['title'] or p['final_url'] or '')[:60]}", phase="AI review")
@@ -260,15 +331,16 @@ async def run_ai_review(db: Database, settings: Settings, *, run_id: str | None 
                 db.conn.commit()
             except Exception as exc:  # one bad page never stops the run; auth errors stop it
                 stats["failed"] += 1
-                mark_item(db, rid, "page", key, "failed", error=f"{type(exc).__name__}: {exc}"[:500])
+                err = _redact(f"{type(exc).__name__}: {exc}")[:500]
+                mark_item(db, rid, "page", key, "failed", error=err)
                 db.execute("""INSERT INTO ai_reviews(run_id,entity_id,page_id,model,prompt_version,cache_key,status,error)
                               VALUES(?,?,?,?,?,?,'failed',?) ON CONFLICT(run_id,page_id,prompt_version,model)
                               DO UPDATE SET status='failed',error=excluded.error""",
-                           (rid, p["entity_id"], p["id"], settings.ai_model, PROMPT_VERSION, cache_key, f"{type(exc).__name__}: {exc}"[:500]))
+                           (rid, p["entity_id"], p["id"], settings.ai_model, PROMPT_VERSION, cache_key, err))
                 db.conn.commit()
                 dash.increment(errors=1)
-                if type(exc).__name__ in {"AuthenticationError", "PermissionDeniedError"}:
-                    status, reason = "failed", f"AI auth error: {exc}"
+                if type(exc).__name__ in {"AuthenticationError", "PermissionDeniedError"} or getattr(exc, "code", None) in (401, 403):
+                    status, reason = "failed", f"AI auth error: {err}"
                     stop.stop_requested = True
             finally:
                 dash.increment(completed=1)
@@ -285,7 +357,8 @@ async def run_ai_review(db: Database, settings: Settings, *, run_id: str | None 
     if stop.stop_requested and status == "completed":
         status, reason = "interrupted", stop.reason
     finish_run(db, rid, status, reason)
-    stats.update(run_id=rid, status=status, stop_reason=reason, model=settings.ai_model, prompt_version=PROMPT_VERSION,
+    stats.update(run_id=rid, status=status, stop_reason=reason, provider=settings.ai_provider, model=settings.ai_model,
+                 prompt_version=PROMPT_VERSION,
                  remaining=len(pages) - len(done_keys(db, rid, "page")))
     return stats
 

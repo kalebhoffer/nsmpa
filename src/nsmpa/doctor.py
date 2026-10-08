@@ -108,11 +108,19 @@ def run_doctor(console: Console, config: Path | None, *, network: bool = True, c
             "not set: export it or add it to ./.env (gitignored); discovery/research will run without search")
     if brave:
         row("BRAVE_SEARCH_API_KEY", True, "set (value hidden)")
-    if os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN"):
+    if settings.ai_provider == "gemini":
+        if os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"):
+            row("Gemini credentials (ai-review)", True, f"set (value hidden); model {settings.ai_model}")
+        else:
+            row("Gemini credentials (ai-review)", None, "GEMINI_API_KEY not set (optional; needed only for `nsmpa ai-review`)")
+        try:
+            importlib.import_module("google.genai")
+        except ImportError:
+            row("optional google-genai", None, "not installed: pip install -e '.[ai]'")
+    elif os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN"):
         row("Anthropic credentials (ai-review)", True, f"set (value hidden); model {settings.ai_model}")
     else:
-        row("Anthropic credentials (ai-review)", None,
-            "ANTHROPIC_API_KEY not set (optional; needed only for `nsmpa ai-review`; an `ant auth login` profile also works)")
+        row("Anthropic credentials (ai-review)", None, "ANTHROPIC_API_KEY not set (optional; an `ant auth login` profile also works)")
     cached = 0
     try:
         conn = sqlite3.connect(str(settings.database_path))

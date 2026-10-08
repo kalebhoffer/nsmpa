@@ -825,13 +825,20 @@ def ai_review_cmd(
     cohort: str | None = typer.Option(None, "--cohort"),
     max_calls: int | None = typer.Option(None, "--max-calls", min=0, help="Max live AI calls this invocation"),
     limit: int | None = typer.Option(None, "--limit", min=1, help="Max pages to consider"),
-    model: str | None = typer.Option(None, "--model", help="Override ai_model (default claude-opus-5-5)"),
+    provider: str | None = typer.Option(None, "--provider", help="gemini (default) | anthropic"),
+    model: str | None = typer.Option(None, "--model", help="Override ai_model (default gemini-3.8-flash)"),
     resume_id: str | None = typer.Option(None, "--resume", help="Resume an earlier ai-review run id"),
     quiet: bool = QuietOpt, verbose: bool = VerboseOpt, config: Path | None = ConfigOpt,
 ) -> None:
     """AI second opinion on fetched pages. Quotes are verified verbatim; never changes a stance on its own."""
     from .ai_review import AIUnavailable, run_ai_review
     db, settings = _db(config)
+    if provider:
+        if provider not in {"gemini", "anthropic"}:
+            raise typer.BadParameter("provider must be gemini or anthropic")
+        settings.ai_provider = provider  # type: ignore[assignment]
+        if not model and provider == "anthropic":
+            settings.ai_model = "claude-opus-5-5"
     if model:
         settings.ai_model = model
     try:

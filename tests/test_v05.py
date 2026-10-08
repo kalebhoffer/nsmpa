@@ -87,8 +87,47 @@ async def test_wayback_in_research_records_archive_practice(tmp_path, db):
 
 # ============================================================================ AI second opinion
 
+def canned_findings(page: str) -> list[dict]:
+    findings = []
+    if "We do not remove stories" in page:
+        findings = [
+            dict(quote="We do not remove stories from our archive.", kind="policy", action="unpublish",
+                 position="rejected", direction="adverse", conditions="", speaker="", speaker_role=""),
+            dict(quote="We happily delete any story on request.", kind="policy", action="unpublish",  # fabricated
+                 position="permitted", direction="supportive", conditions="", speaker="", speaker_role=""),
+        ]
+    if "served the valley since 1901" in page:
+        findings = [dict(quote="The Strict Times has served the valley since 1901", kind="other", action="none",
+                         position="mentioned", direction="adverse", conditions="", speaker="", speaker_role="")]
+    return findings
+
+
 class FakeAI:
-    """Stands in for anthropic.Anthropic(); returns canned structured output keyed by page content."""
+    """Stands in for google.genai.Client(): client.models.generate_content(model, contents, config)."""
+    def __init__(self, finish: str = "STOP", block: str | None = None, fail_codes: list[int] | None = None):
+        self.calls = 0
+        self.finish, self.block, self.fail_codes = finish, block, list(fail_codes or [])
+        self.models = SimpleNamespace(generate_content=self.generate_content)
+
+    def generate_content(self, *, model, contents, config):
+        self.calls += 1
+        if self.fail_codes:
+            err = RuntimeError("transient")
+            err.code = self.fail_codes.pop(0)
+            raise err
+        assert config.response_mime_type == "application/json" and config.response_json_schema["type"] == "object"
+        assert "my case" not in config.system_instruction.lower()  # neutral prompt: requester's goal never sent
+        findings = canned_findings(contents)
+        from google.genai import types
+        return SimpleNamespace(
+            text=json.dumps({"relevant": bool(findings), "summary": "s", "findings": findings}),
+            prompt_feedback=SimpleNamespace(block_reason=self.block) if self.block else None,
+            candidates=[SimpleNamespace(finish_reason=getattr(types.FinishReason, self.finish))],
+            usage_metadata=SimpleNamespace(prompt_token_count=100, candidates_token_count=50))
+
+
+class FakeClaude:
+    """Stands in for anthropic.Anthropic() when ai_provider='anthropic'."""
     def __init__(self):
         self.calls = 0
         self.beta = SimpleNamespace(messages=SimpleNamespace(create=self.create))
@@ -96,19 +135,7 @@ class FakeAI:
 
     def create(self, **kw):
         self.calls += 1
-        page = kw["messages"][0]["content"]
-        findings = []
-        if "We do not remove stories" in page:
-            findings = [
-                dict(quote="We do not remove stories from our archive.", kind="policy", action="unpublish",
-                     position="rejected", direction="adverse", conditions="", speaker="", speaker_role=""),
-                dict(quote="We happily delete any story on request.", kind="policy", action="unpublish",  # fabricated
-                     position="permitted", direction="supportive", conditions="", speaker="", speaker_role=""),
-            ]
-        if "served the valley since 1901" in page:
-            findings = [dict(quote="The Strict Times has served the valley since 1901", kind="other", action="none",
-                             position="mentioned", direction="adverse", conditions="", speaker="", speaker_role="")]
-        assert "my case" not in kw["system"].lower()  # neutral prompt: requester's goal never sent
+        findings = canned_findings(kw["messages"][0]["content"])
         return SimpleNamespace(stop_reason="end_turn", model=kw["model"], usage=SimpleNamespace(input_tokens=100, output_tokens=50),
                                content=[SimpleNamespace(type="text", text=json.dumps({"relevant": bool(findings), "summary": "s",
                                                                                      "findings": findings}))])
@@ -141,6 +168,47 @@ async def test_ai_review_call_cap(tmp_path, db):
     ai = FakeAI()
     res = await run_ai_review(db, s, run_id=rid, quiet=True, client=ai, max_calls=1)
     assert ai.calls <= 1 and res["status"] == "budget_exhausted" and res["remaining"] > 0
+
+
+async def test_gemini_blocks_and_truncation_are_failures_not_findings(tmp_path, db):
+    s = make_settings(tmp_path)
+    tp.seed_newsrooms(tmp_path, db)
+    rid, _ = await tp.run_research(db, s, tp.FakeSearch(tp.SEARCH_ROUTES))
+    for fake in (FakeAI(finish="SAFETY"), FakeAI(finish="MAX_TOKENS"), FakeAI(block="PROHIBITED_CONTENT")):
+        db.execute("DELETE FROM ai_cache")
+        res = await run_ai_review(db, s, run_id=rid, quiet=True, client=fake)
+        assert res["reviewed"] == 0 and res["failed"] > 0
+    assert db.scalar("SELECT COUNT(*) FROM ai_findings") == 0
+
+
+async def test_gemini_retries_transient_errors(tmp_path, db):
+    s = make_settings(tmp_path, ai_max_retries=2)
+    tp.seed_newsrooms(tmp_path, db)
+    rid, _ = await tp.run_research(db, s, tp.FakeSearch(tp.SEARCH_ROUTES))
+    import nsmpa.ai_review as air
+    air.time.sleep = lambda *_: None  # no real backoff in tests
+    fake = FakeAI(fail_codes=[503, 429])
+    res = await run_ai_review(db, s, run_id=rid, quiet=True, client=fake, limit=1)
+    assert res["reviewed"] == 1 and fake.calls == 3
+
+
+async def test_anthropic_provider_still_supported(tmp_path, db):
+    s = make_settings(tmp_path, ai_provider="anthropic", ai_model="claude-opus-5-5")
+    tp.seed_newsrooms(tmp_path, db)
+    rid, _ = await tp.run_research(db, s, tp.FakeSearch(tp.SEARCH_ROUTES))
+    res = await run_ai_review(db, s, run_id=rid, quiet=True, client=FakeClaude())
+    assert res["status"] == "completed" and res["provider"] == "anthropic" and res["verified"] >= 1
+
+
+def test_missing_gemini_key_is_a_clear_error(tmp_path, monkeypatch):
+    from nsmpa.ai_review import AIUnavailable, make_client
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    try:
+        make_client(make_settings(tmp_path))
+        raise AssertionError("expected AIUnavailable")
+    except AIUnavailable as exc:
+        assert "GEMINI_API_KEY" in str(exc)
 
 
 def test_verify_quote_is_strict_but_whitespace_tolerant():
