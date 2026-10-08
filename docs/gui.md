@@ -16,6 +16,7 @@ Run it in its own terminal (or leave it open all day); start jobs in another ter
 | Evidence | Searchable, filterable excerpts (group, direction, evidence class), sorted by match to your case; click a row for source URL, page hash, classifier cues |
 | Review | Prioritized human-review queue with Accept / Reject / Skip and a note |
 | Verify | Source verification, one item at a time: excerpt and details on the left, the exact saved text NSMPA analysed on the right with the excerpt highlighted. Keys: **V** verified, **R** rejected, **D** disputed, **S** skip, **O** open the live page. Excerpts that drive a stance come first. Switch to "Expert voices" to verify quotes. Technical observations (noindex, Wayback) show the recorded directives instead of a quote. (Live GUI only.) |
+| Capture | Sites that block automated access: a queue of blocked organizations with AI-search leads, a form to record text you copied by hand (organization search, page URL, pasted text, your initials), the AI leads table and your captures. See `docs/blocked_sites.md`. (Live GUI only.) |
 | Archive · AI · Accuracy | Wayback results and changes, AI agreement/disagreements, accuracy audit, expert voices, precedents, legal context, policy changes, outreach |
 | Operations | Page access results, errors, search usage by purpose, recent searches, failed items |
 
@@ -23,7 +24,7 @@ Tabs are linkable (`#results`, `#evidence`, ...). Dark mode follows your system 
 
 **Security:** binds to 127.0.0.1 only; requests whose Host header is not `127.0.0.1:PORT`/`localhost:PORT` are refused
 (defends against DNS rebinding); review decisions require a per-launch token sent in a custom header (defends against
-cross-site requests); a strict Content-Security-Policy; read-only queries for everything except review decisions. Each
+cross-site requests); a strict Content-Security-Policy; read-only queries for everything except review decisions, verification marks and captures. Each
 request opens its own database connection, so the GUI never blocks a running job.
 
 ## How it sees running jobs

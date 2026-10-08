@@ -152,11 +152,13 @@ Every run records its configuration, engine version and git commit in `research_
 - Search snippets are discovery aids only; findings come from fetched text, with snapshots and hashes.
 - Absence from Google is not evidence of de-indexing.
 - Reports withhold cohort percentages until validation gates pass (`docs/validation.md`).
+- Sites that block robots are never bypassed: archived copies, search snippets (leads only), AI search (quotes confirmed
+  word for word) and researcher captures, each labelled with how it was obtained (`docs/blocked_sites.md`).
 - Every finding intended for external use should be human-verified against the live page and snapshot.
 
 ## Documentation
 
-`docs/methodology.md` · `docs/architecture.md` · `docs/classification_rubric.md` · `docs/validation.md` · `docs/schema.md` · `docs/query_strategy.md` · `docs/scale_runbook.md` · `docs/commands.md` · `docs/professional_universe.md` · `CHANGELOG.md`
+`docs/methodology.md` · `docs/architecture.md` · `docs/classification_rubric.md` · `docs/validation.md` · `docs/schema.md` · `docs/query_strategy.md` · `docs/scale_runbook.md` · `docs/commands.md` · `docs/blocked_sites.md` · `docs/evidence_index.md` · `docs/professional_universe.md` · `CHANGELOG.md`
 
 ## Tests
 

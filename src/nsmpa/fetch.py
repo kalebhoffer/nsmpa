@@ -290,6 +290,8 @@ class HardenedFetcher:
     # ------------------------------------------------------------------ pacing
     async def _pace(self, host: str, url: str) -> None:
         delay = self.settings.per_host_delay_seconds
+        if host.endswith("archive.org"):
+            delay = max(delay, self.settings.archive_delay_seconds)
         crawl_delay = self.robots.cached_crawl_delay(url)
         if crawl_delay:
             delay = max(delay, crawl_delay)
