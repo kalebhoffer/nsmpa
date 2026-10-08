@@ -33,6 +33,7 @@ def make_settings(tmp_path: Path, **overrides) -> Settings:
         research_snapshot_dir=tmp_path / "rsnap",
         per_host_delay_seconds=0.0,
         archive_delay_seconds=0.0,
+        ai_gate_enabled=False,          # tests that exercise the AI veto opt in
         retry_backoff_seconds=0.0,
         max_retries=2,
     )

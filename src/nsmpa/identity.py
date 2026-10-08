@@ -79,7 +79,22 @@ def _newsy(text: str, page) -> bool:
     return structure >= 3 or vocab >= 3
 
 
+# Directories and aggregators that list many newspapers: never a newspaper's own homepage.
+DIRECTORY_SITES = {"thepaperboy.com", "newspapers.com", "usnpl.com", "onlinenewspapers.com", "mondotimes.com", "newslink.org",
+                   "pressreader.com", "issuu.com", "newspaperarchive.com", "newsbank.com", "worldnewspapers.com",
+                   "abyznewslinks.com", "50states.com"}
+
+
 def check_identity(entity, metadata: dict, access_class: str, page=None) -> Identity:
+    from .utils import is_blocked_social_or_aggregator, registrableish_domain
+    try:
+        home = entity["homepage_url"] or ""
+    except (KeyError, IndexError):
+        home = ""
+    dom = registrableish_domain(home)
+    if dom in DIRECTORY_SITES or (home and is_blocked_social_or_aggregator(home)):
+        return Identity("mismatch", f"the listed homepage ({dom}) is a directory or aggregator site, not the publication's "
+                                    "own website", {"homepage_domain": dom})
     if access_class in BLOCKED:
         return Identity("blocked", "the website blocks automated access", {"access": access_class})
     if access_class != "ok" or page is None:

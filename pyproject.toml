@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "nsmpa"
-version = "0.7.4"
+version = "0.8.0"
 description = "Evidence engine for how U.S. newsrooms handle requests to unpublish, de-index or anonymize old reporting."
 readme = "README.md"
 requires-python = ">=3.12"

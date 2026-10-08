@@ -64,7 +64,8 @@ This is an early snapshot, not a national result. As of 8 October 2026:
    each labelled with how it was obtained.
 4. **Classify**: sentence-level rules separate written policy, documented practice, technical signals (noindex tags,
    Wayback Machine changes) and professional guidance, and record the position on each action (de-index, anonymize,
-   unpublish, update).
+   unpublish, update). Before a position is accepted, an AI check reviews the excerpts that decide it and can
+   only veto: anything that is not the organization's own policy, practice or guidance stops counting.
 5. **Review and publish**: a human review queue, an accuracy audit with confidence intervals, and a packet whose
    shared copy withholds private individuals' names.
 

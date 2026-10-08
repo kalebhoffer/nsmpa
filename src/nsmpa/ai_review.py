@@ -213,7 +213,7 @@ def ai_cache_get(db: Database, key: str) -> dict | None:
 
 def ai_cache_put(db: Database, key: str, prompt_version: str, data: dict, meta: dict) -> None:
     db.execute("INSERT OR REPLACE INTO ai_cache(cache_key,model,prompt_version,response_json,input_tokens,output_tokens,stop_reason) "
-               "VALUES(?,?,?,?,?,?,?)", (key, meta.get("model"), prompt_version, json.dumps(data), meta.get("input_tokens"),
+               "VALUES(?,?,?,?,?,?,?)", (key, meta.get("model") or "unknown", prompt_version, json.dumps(data), meta.get("input_tokens"),
                                          meta.get("output_tokens"), meta.get("stop_reason")))
     db.conn.commit()
 

@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.8.0 — AI veto on decisive excerpts; Stage 2 batch 1 fixes
+
+- AI check (`ai_gate.py`, `nsmpa ai-gate`, on by default in research): before a position is accepted, the excerpts
+  that decide it are shown to the AI with one question: is this the organization's own policy, practice or guidance
+  about removing, de-indexing, anonymizing or updating its published journalism? Veto only: rejected excerpts stop
+  counting (kept, labelled with the reason), the position is re-decided, newly decisive excerpts are checked (up to 3
+  rounds). The AI never adds, upgrades or redirects a finding; errors leave excerpts unchecked; verdicts are cached
+  and recorded in `ai_gate_checks`. Live test: all 9 Stage 2 batch-1 positions were false and all 9 were vetoed
+  (including two traced to a directory site, thepaperboy.com, listed as the papers' homepage); the 10 recall-test
+  newsrooms kept their positions; every one of 136 verdicts reviewed by hand.
+- Directory/aggregator sites (thepaperboy.com, newspapers.com, issuu.com, ...) are never accepted as a homepage.
+- Attribution ("who is speaking") shared by research and `reclassify`: bylines, letter writers and quoted sources
+  are not the newsroom; dated or article addresses are stories; policy-named undated pages are policy; editor's
+  columns and first-person policy statements count; precedent sources exempt.
+- "Update only" requires a stated policy offered where removal is at issue, not routine correction notes.
+- A site that blocks robots is never "no relevant guidance", on every path including `reclassify`.
+- Fetcher circuit breaker reopens after a cooldown (it had disabled the Internet Archive for the rest of a run).
+- `reclassify` re-decides every organization in a run. Schema v9.
+
 ## 0.7.4 — classifier fixes from the Stage 1 national run
 
 Stage 1 (all 50 standards and support organizations, 361 credits) showed removal language used about things other than
