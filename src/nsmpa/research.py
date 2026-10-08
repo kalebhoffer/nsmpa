@@ -202,8 +202,12 @@ def is_first_party(entity, url: str) -> bool:
 def entity_terms(entity) -> list[str]:
     name = (entity["name"] or "").strip()
     terms = [name]
-    if name.lower().startswith("the "):
-        terms.append(name[4:])
+    for part in [name, *re.split(r"\s+/\s+", name)]:
+        part = part.strip()
+        terms.append(part)
+        if part.lower().startswith("the "):
+            terms.append(part[4:])
+    terms = list(dict.fromkeys(terms))
     if entity["domain"]:
         terms.append(entity["domain"])
     return [t for t in terms if len(t) >= 4]
@@ -238,8 +242,73 @@ def page_kind(url: str, title: str, is_pdf: bool, is_listing: bool) -> str:
 POLICY_URL_PATH = re.compile(r"/(?:about(?:-us)?|policies|policy|standards|ethics|corrections|help|faq|contact|"
                              r"who-we-are|editorial-(?:policy|standards|guidelines)|guidelines|principles|hc/)", re.I)
 # The newsroom speaking for itself inside a story: first person, an editor's note, or "this story/article was ...".
-NEWSROOM_VOICE = re.compile(r"\b(?:we|our|us)\b|editor'?s'? note|\bthis (?:story|article|report|post) (?:has been|was|is)\b|"
-                            r"\bupdated to (?:remove|reflect|include|correct)\b", re.I)
+NEWSROOM_VOICE = re.compile(r"editor'?s'? note|\bthis (?:story|article|report|post) (?:has been|was|is)\b|"
+                            r"\bupdated to (?:remove|reflect|include|correct)\b|"
+                            # "we" only with an action on published content ("we have removed the document"); a bare
+                            # "we/our" in a story is often a letter writer, columnist or quoted source.
+                            r"\bwe\s+(?:have\s+|had\s+|\'ve\s+)?(?:removed|updated|deleted|unpublished|redacted|withheld|"
+                            r"corrected|changed|taken down|de-?indexed|anonymi[sz]ed)\b|"
+                            # ...or a stated policy about the paper's own content ("we do not remove stories").
+                            r"\bwe\s+(?:do\s+not|don'?t|will\s+not|won'?t|never|may|will|can|generally|typically|rarely|"
+                            r"do|also|only)?\s*(?:\w+\s+)?(?:remov\w*|unpublish\w*|delet\w*|tak\w* down|de-?index\w*|"
+                            r"anonymi[sz]\w*|updat\w*|correct\w*|alter\w*|chang\w*)\s+(?:\w+\s+){0,2}(?:stor(?:y|ies)|"
+                            r"articles?|archives?|names?|content|coverage|posts?)\b",
+                            re.I)
+# Pages where the newsroom speaks in the first person by design.
+EDITOR_COLUMN = re.compile(r"\b(?:from the editor|editor'?s'? (?:note|column|letter|desk|corner)|letter from the editor|"
+                           r"note to (?:our )?readers|to our readers|publisher'?s'? (?:note|column)|our policy)\b", re.I)
+# Article-style URLs: /2024/05/..., /stories/..., /news/..., /article..., numeric story ids.
+ARTICLE_URL = re.compile(r"/(?:19|20)\d\d/|/stor(?:y|ies)/|/news/|/articles?[/_-]|/\d{5,}|,\d{5,}$|/opinion/|/sports/|"
+                         r"/documents?/|/letters?[/-]|"
+                         r"/local/|/business/|/obituar", re.I)
+_SUBJECT_VERB = (r"(?:\s+\w+){0,2}?\s+(?:has|have|had|will|may|can|does|did|is|reviews?|considers?|decided|removed|"
+                 r"unpublishe[sd]|agreed|declined|grants?|denies|policy|editors?)\b")
+
+
+_POLICY_NAMED = re.compile(r"(?:standards|principles|polic(?:y|ies)|ethics|guidelines|removal|unpublish|takedown|"
+                           r"right-to-be-forgotten|fresh-start|corrections|faq)", re.I)
+
+
+def is_news_story(kind: str, url: str, published: str | None, author: str | None, title: str = "") -> bool:
+    """A dated, bylined or article-addressed page that is not a policy/about page.
+
+    A page whose address or title names a policy ("…-news-standards-and-publishing-principles/3069505/") is a policy
+    page even when it lives under /news/ with a numeric id."""
+    path = urlsplit(url).path
+    if re.search(r"/(?:19|20)\d\d/", path):
+        return True  # a dated address is a story, whatever its slug says ("…-on-removal-of-…-from-ballot")
+    if POLICY_URL_PATH.search(path) or _POLICY_NAMED.search(path) or _POLICY_NAMED.search(title or ""):
+        return False
+    if kind in {"article", "crime_article", "baseline_article"}:
+        return True
+    if kind in {"policy", "about", "homepage", "legal_boilerplate"}:
+        return False
+    return bool(published or author or ARTICLE_URL.search(urlsplit(url).path))
+
+
+def speaks_for_newsroom(entity, excerpt: str, title: str = "") -> bool:
+    """First person, an editor's note, or the newsroom's own name as the subject of a verb ("The Bangor Daily News
+    reviews…"). A byline or masthead that merely contains the name ("By Luke Caputo, Island Review") does not count."""
+    if NEWSROOM_VOICE.search(excerpt) or (EDITOR_COLUMN.search(title or "") and re.search(r"\b(?:we|our)\b", excerpt, re.I)):
+        return True
+    return any(len(t) >= 6 and re.search(rf"\b{re.escape(t)}{_SUBJECT_VERB}", excerpt, re.I) for t in entity_terms(entity))
+
+
+def attribute_statement(entity, *, first: bool, kind: str, url: str, published: str | None, author: str | None,
+                        statement_type: str, excerpt: str, context: str, title: str = "") -> tuple[bool, str]:
+    """(about_entity, evidence_class) for one extracted statement. Shared by research and ``nsmpa reclassify``."""
+    about = first or any(t.lower() in context.lower() for t in entity_terms(entity))
+    if (first and statement_type != "mention" and entity["cohort"] not in SEED_COHORTS
+            and is_news_story(kind, url, published, author, title) and not speaks_for_newsroom(entity, excerpt, title)):
+        # A news story *about* someone else's removal (Emory renaming buildings, a school removing DEI pages)
+        # is not this newsroom's policy or practice.
+        about = False
+    ev_class = evidence_class_for(entity["cohort"], first, about and not first, kind, statement_type)
+    if first and not about:
+        ev_class = "secondary_report"
+    if ev_class == "secondary_report" and entity["cohort"] in GUIDANCE_COHORTS and first:
+        about = False  # a guidance org describing another newsroom's decision
+    return about, ev_class
 
 
 def evidence_class_for(cohort: str, first_party: bool, about_entity: bool, kind: str, statement_type: str) -> str:
@@ -488,6 +557,7 @@ class EntityResearcher:
         self.run_id, self.dash, self.stop = run_id, dash, stop
         self.snapshot_root = settings.research_snapshot_dir
         self.ai_fallback_calls = 0
+        self._gate = None
 
     # ---------------------------------------------------------------- targets
     def _store_target(self, entity, url: str, title: str, snippet: str, rank: int, spec: QuerySpec | None,
@@ -719,9 +789,6 @@ class EntityResearcher:
 
     def _store_evidence(self, entity, page, page_id: int, query_id: int | None, topic: str, first: bool, kind: str,
                         raw_sha: str | None, text_sha: str | None, *, substantive_only: bool = False) -> int:
-        policy_path = bool(POLICY_URL_PATH.search(urlsplit(page.url).path))
-        news_story = kind in {"article", "crime_article", "baseline_article"} or (
-            not policy_path and bool(getattr(page, "published", None) or getattr(page, "author", None)))
         items = extract_evidence(page.main_text, entity_terms=entity_terms(entity),
                                  max_items=self.settings.research_max_evidence_per_page,
                                  require_entity_mention=not first)
@@ -730,19 +797,10 @@ class EntityResearcher:
             st = it.statement
             if substantive_only and st.statement_type in {"mention", "harm_consideration"}:
                 continue  # archived crime stories: keep only what the newsroom said or did, not the crime narrative
-            low = it.context.lower()
-            about = first or any(t.lower() in low for t in entity_terms(entity))
-            own_voice = NEWSROOM_VOICE.search(it.excerpt) or any(
-                t.lower() in it.excerpt.lower() for t in entity_terms(entity) if len(t) >= 6)  # "The Bangor Daily News reviews…"
-            if first and news_story and st.statement_type != "mention" and not own_voice:
-                # A news story *about* someone else's removal (Emory renaming buildings, a school removing DEI pages)
-                # is not this newsroom's policy or practice.
-                about = False
-            ev_class = evidence_class_for(entity["cohort"], first, about and not first, kind, st.statement_type)
-            if first and not about:
-                ev_class = "secondary_report"
-            if ev_class == "secondary_report" and entity["cohort"] in GUIDANCE_COHORTS and first:
-                about = False  # a guidance org describing another newsroom's decision
+            about, ev_class = attribute_statement(
+                entity, first=first, kind=kind, url=page.url, published=getattr(page, "published", None),
+                author=getattr(page, "author", None), statement_type=st.statement_type, excerpt=it.excerpt,
+                context=it.context, title=getattr(page, "title", "") or "")
             new_id = self._insert_item(
                 entity, page=page, page_id=page_id, query_id=query_id, topic=topic, first=first, about=about, ev_class=ev_class,
                 statement_type=st.statement_type, direction=st.direction, excerpt=it.excerpt, context=it.context,
@@ -936,6 +994,21 @@ class EntityResearcher:
         self.dash.add_recent(f"↪ {entity['name']}: moved to {trial['domain']}" + ("" if confirmed else " (site blocks robots; unverified)"))
         return self.db.execute("SELECT * FROM research_entities WHERE id=?", (entity["id"],)).fetchone()
 
+    async def _decide(self, entity):
+        """Classify the entity; when the stance is determinate, let the AI veto check its decisive excerpts first."""
+        from .stance import DETERMINATE
+        result = classify_entity(self.db, self.settings, self.run_id, entity)
+        if not self.settings.ai_gate_enabled or result.stance not in DETERMINATE or (self.stop and self.stop.force):
+            return result
+        if self._gate is None:
+            from .ai_gate import Gate
+            self._gate = Gate(self.db, self.settings)
+        self.dash.update(phase="AI check of decisive excerpts")
+        out = await self._gate.check_entity(self.run_id, entity)
+        if out["rejected"]:
+            self.dash.add_recent(f"· AI check vetoed {out['rejected']} excerpt(s) for {entity['name']}")
+        return out["result"]
+
     async def _research_blocked(self, entity, ident, budget: int) -> dict:
         """The live site refuses robots: archived copies, snippets, AI search (confirmed) and other sources instead."""
         from .fallback import BlockedSiteFallback
@@ -945,7 +1018,7 @@ class EntityResearcher:
             from .identity import Identity
             return self._stop_for_identity(entity, Identity("mismatch", out["reason"], {"source": "archive"}))
         self.dash.update(phase="classifying")
-        result = classify_entity(self.db, self.settings, self.run_id, entity)
+        result = await self._decide(entity)
         result.coverage.update({"live_site": "blocks_automated_access", "fallback": {k: v for k, v in out.items() if k != "guidance"}})
         result.review_reasons.append("site_blocks_robots_evidence_from_archive_or_leads")
         if not out.get("archived_pages") and result.stance not in {"UNDETERMINED"}:
@@ -1017,7 +1090,7 @@ class EntityResearcher:
             await wayback_for_entity(self, entity)
         step()
         self.dash.update(phase="classifying")
-        result = classify_entity(self.db, self.settings, self.run_id, entity)
+        result = await self._decide(entity)
         store_stance(self.db, self.run_id, eid, result)
         enqueue_entity_review(self.db, self.run_id, entity, result)
         self.db.conn.commit()

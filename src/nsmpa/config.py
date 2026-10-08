@@ -132,6 +132,7 @@ class Settings(BaseModel):
     max_redirects: int = Field(8, ge=1, le=20)
     allowed_ports: list[int] = Field(default_factory=lambda: [80, 443, 8080, 8443])
     host_failure_threshold: int = Field(6, ge=1, le=100)
+    host_circuit_cooldown_seconds: float = Field(300, ge=0, le=86_400)   # retry a failing host after this pause
     max_response_bytes: int = Field(10_000_000, ge=100_000, le=100_000_000)
     per_host_delay_seconds: float = Field(1.5, ge=0.0, le=30)
     archive_delay_seconds: float = Field(4.0, ge=0.0, le=60)   # web.archive.org rate-limits bursts (HTTP 429)
@@ -214,6 +215,11 @@ class Settings(BaseModel):
     ai_max_retries: int = Field(3, ge=0, le=10)
     ai_max_page_chars: int = Field(60_000, ge=2_000, le=600_000)
     ai_max_calls_per_run: int = Field(500, ge=1, le=1_000_000)
+    # AI veto on the excerpts that decide a stance (see ai_gate.py). Veto only: never adds or upgrades findings.
+    ai_gate_enabled: bool = True
+    ai_gate_items_per_round: int = Field(4, ge=1, le=20)
+    ai_gate_max_rounds: int = Field(3, ge=1, le=10)
+    ai_gate_max_calls_per_run: int = Field(5000, ge=0, le=1_000_000)
     # --- v0.6 operations -------------------------------------------------------------------
     notify_on_finish: bool = True
     # optional prices for `nsmpa estimate` (left unset = credits/tokens only, no dollar figures)

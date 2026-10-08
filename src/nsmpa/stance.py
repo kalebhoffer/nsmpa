@@ -15,6 +15,7 @@ the policy stance is flagged for human review rather than merged into it.
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 
@@ -167,12 +168,19 @@ def coverage_for(db: Database, run_id: str, entity_id: int) -> dict:
     }
 
 
+_RELIEF_CONTEXT = re.compile(
+    r"\b(?:remov\w*|unpublish\w*|take[\s-]*downs?|delet\w*|de-?index\w*|anonymi\w*|fresh start|right to be forgotten|"
+    r"old (?:stories|articles|coverage)|outcomes?|dismiss\w*|acquit\w*|expung\w*|charges|instead of|rather than|"
+    r"requests? to)\b", re.I)
+
+
 def classify_entity(db: Database, settings: Settings, run_id: str, entity) -> StanceResult:
     entity_id = int(entity["id"])
     items = db.execute(
         # Search snippets are leads (truncated, unread pages): they never drive a stance on their own.
+        # Excerpts the AI veto rejected (ai_gate.py) are kept for review but never decide a stance.
         "SELECT * FROM evidence_items WHERE run_id=? AND entity_id=? AND duplicate_of IS NULL "
-        "AND COALESCE(acquisition,'live')!='snippet'", (run_id, entity_id)
+        "AND COALESCE(acquisition,'live')!='snippet' AND COALESCE(ai_gate,'')!='rejected'", (run_id, entity_id)
     ).fetchall()
     cov = coverage_for(db, run_id, entity_id)
     acq = {r[0]: r[1] for r in db.execute("SELECT COALESCE(acquisition,'live'), COUNT(*) FROM evidence_items WHERE run_id=? "
@@ -189,6 +197,13 @@ def classify_entity(db: Database, settings: Settings, run_id: str, entity) -> St
     t_reject = _distinct(policy, {"relief_rejected", "relief_narrow_exceptions"})
     t_archive = _distinct(policy, {"archive_principle"})
     t_update = _distinct(policy, {"update_remedy", "changed_circumstance_update"})
+    # Without an explicit refusal, "update only" must come from a policy page or professional guidance: a paper that
+    # prints "Editor's note: this story has been updated" has said nothing about removal.
+    # ...and it must be offered where removal is at issue (outcomes, requests, "instead of removing"); an ordinary
+    # corrections policy ("correct errors immediately") says nothing about removal.
+    t_update_stated = _distinct([e for e in policy if e["evidence_class"] in {"written_policy", "professional_guidance"}
+                                 and _RELIEF_CONTEXT.search(f"{e['excerpt']} {e['context'] or ''}")],
+                                {"update_remedy", "changed_circumstance_update"})
     supportive = t_changed + t_relief + t_case
     adverse = t_reject + t_archive
 
@@ -228,10 +243,11 @@ def classify_entity(db: Database, settings: Settings, run_id: str, entity) -> St
         stance = "STRICT_ARCHIVE"
         confidence = conf(0.78, len(t_reject))
         rationale = f"{len(t_reject)} statement(s) reject removal/unpublishing (narrow exceptions only)"
-    elif t_update:
+    elif t_update_stated:
         stance = "UPDATE_ONLY"
-        confidence = conf(0.62, len(t_update))
-        rationale = f"{len(t_update)} statement(s) describe updates/corrections as the post-publication remedy; removal not addressed"
+        confidence = conf(0.62, len(t_update_stated))
+        rationale = (f"{len(t_update_stated)} policy statement(s) describe updates/corrections as the post-publication "
+                     "remedy; removal not addressed")
         reasons.append("update_only_without_explicit_removal_language")
     elif t_archive:
         stance = "STRICT_ARCHIVE"
@@ -263,6 +279,20 @@ def classify_entity(db: Database, settings: Settings, run_id: str, entity) -> St
             elif cov["tier1_completed"] < cov["tier1_queries"]:
                 missing.append("core searches incomplete")
             rationale = "Insufficient inspection for a no-guidance finding: " + ("; ".join(missing) or "coverage threshold not met")
+
+    # A site that refused NSMPA cannot be "no relevant guidance": copies, snippets and AI search are not an inspection.
+    # Enforced here so every path (research, blocked-site fallback, reclassify) applies it.
+    blocked_live = db.scalar(
+        "SELECT COUNT(*) FROM research_pages WHERE run_id=? AND entity_id=? AND page_kind='homepage' "
+        "AND COALESCE(acquisition,'live')='live' AND access_class IN ('blocked','robots_disallowed','rate_limited')",
+        (run_id, entity_id))
+    if blocked_live:
+        cov["live_site"] = "blocks_automated_access"
+        reasons.append("site_blocks_robots_evidence_from_archive_or_leads")
+        if stance == "NO_RELEVANT_GUIDANCE":
+            stance, confidence = "UNDETERMINED", 0.0
+            rationale = ("Site blocks automated access; archived copies, search snippets and AI search found no confirmed "
+                         "policy text. " + rationale)
 
     # ---- practice vs policy ------------------------------------------------------------
     pc = Counter(e["statement_type"] for e in practice)

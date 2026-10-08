@@ -14,27 +14,44 @@ from pathlib import Path
 from .config import Settings
 from .db import Database
 from .evidence import STATEMENT_DIRECTION, action_positions, classify_statement
+from .research import attribute_statement
 from .review import enqueue_entity_review
 from .stance import classify_entity, store_stance
 
 
 def reclassify_run(db: Database, settings: Settings, run_id: str, *, out_dir: Path | None = None) -> dict:
-    rows = db.execute("SELECT * FROM evidence_items WHERE run_id=? AND evidence_class!='technical'", (run_id,)).fetchall()
+    rows = db.execute(
+        """SELECT e.*, p.page_kind, p.final_url, p.published_date, p.author, p.title AS page_title FROM evidence_items e
+           LEFT JOIN research_pages p ON p.id=e.page_id WHERE e.run_id=? AND e.evidence_class!='technical'""",
+        (run_id,)).fetchall()
+    entities = {r["id"]: r for r in db.execute(
+        "SELECT * FROM research_entities WHERE id IN (SELECT DISTINCT entity_id FROM evidence_items WHERE run_id=?)", (run_id,))}
     changes = []
     for r in rows:
         ctx = (r["context"] or "")
         st = classify_statement(r["excerpt"], ctx.replace(r["excerpt"], " "))
         actions = json.dumps(action_positions(r["excerpt"]), sort_keys=True)
-        if st.statement_type == r["statement_type"] and actions == (r["actions_json"] or "{}"):
+        about, ev_class = bool(r["about_entity"]), r["evidence_class"]
+        ent = entities.get(r["entity_id"])
+        if ent is not None and r["page_id"] and r["acquisition"] != "snippet" and r["evidence_class"] != "unattributable_site":
+            about, ev_class = attribute_statement(
+                ent, first=bool(r["first_party"]), kind=r["page_kind"] or "unknown", url=r["final_url"] or r["source_url"],
+                published=r["published_date"], author=r["author"], statement_type=st.statement_type, excerpt=r["excerpt"],
+                context=r["context"] or "", title=r["page_title"] or "")
+        if (st.statement_type == r["statement_type"] and actions == (r["actions_json"] or "{}")
+                and about == bool(r["about_entity"]) and ev_class == r["evidence_class"]):
             continue
         changes.append({"evidence_id": r["id"], "entity_id": r["entity_id"], "from": r["statement_type"],
                         "to": st.statement_type, "direction_from": r["direction"], "direction_to": st.direction,
                         "excerpt": r["excerpt"][:300]})
+        db.execute("UPDATE evidence_items SET about_entity=?, evidence_class=? WHERE id=?", (int(about), ev_class, r["id"]))
         db.execute("UPDATE evidence_items SET statement_type=?, direction=?, actions_json=?, rationale=?, extraction_confidence=? "
                    "WHERE id=?", (st.statement_type, STATEMENT_DIRECTION[st.statement_type],
                                   actions, "; ".join(st.cues)[:500],
                                   st.confidence, r["id"]))
-    touched = sorted({c["entity_id"] for c in changes})
+    # Re-decide every organization in the run: the decision rules can change even when no excerpt does.
+    touched = sorted({r["entity_id"] for r in db.execute("SELECT DISTINCT entity_id FROM entity_stances WHERE run_id=?",
+                                                          (run_id,))} | {c["entity_id"] for c in changes})
     for eid in touched:
         if not db.scalar("SELECT 1 FROM entity_stances WHERE run_id=? AND entity_id=?", (run_id, eid)):
             continue  # precedent/expert runs have no stance rows

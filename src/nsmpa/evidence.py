@@ -156,6 +156,7 @@ PHYSICAL_COPIES = re.compile(r"\b(?:stolen|theft|thie(?:f|ves)|newsstands?|news 
                              r"print (?:run|copies|edition)s?|copies (?:were|of the))\b", re.I)
 CONTACT_INFO = re.compile(r"@|\[email\s*protected\]|\bcontact:|\bphone:|\bemail:", re.I)
 COMMENT_MODERATION = re.compile(r"\b(?:comments?|commenters?|hate speech|profanity|spam|inflammatory|off-topic|"
+                                r"letters? policy|letter writers?|help writers|submitted letters?|rude|obscene|vulgar|"
                                 r"your posts?|social media (?:posts?|pages?|accounts?|guidelines)|"
                                 r"leave a (?:comment|reply)|reader (?:comments?|submissions?))\b", re.I)
 # Passive removals count as the publication's practice only when the thing removed is journalism or a name in it
@@ -419,7 +420,8 @@ class _Signals:
 
 # People removed from roles ("an Editor is removed", "the member could be removed", "removed from office").
 _PERSON_REMOVAL = re.compile(
-    r"\bremov\w*\s+(?:an?|the|any)\s+(?:editors?|members?|officers?|directors?|advisers?|advisors?|chairs?|"
+    r"\bremov\w*\s+(?:an?|the|any)\s+(?:editors?|reporters?|journalists?|writers?|staff(?:ers)?|members?|officers?|"
+    r"directors?|advisers?|advisors?|chairs?|"
     r"board members?|volunteers?|moderators?|judges?|panelists?|employees?)\b|"
     r"\b(?:editors?|members?|officers?|president|director|employees?|staff(?:ers)?|advisers?|advisors?|chairs?|"
     r"board members?|volunteers?|moderators?|judges?|panelists?)\b(?:\W+[\w'’]+){0,6}?\W+(?:is|are|was|were|be|been|being)\s+"
@@ -433,7 +435,7 @@ _UNPUBLISHED_MATERIAL = re.compile(r"\bunpublished\s+(?:information|notes?|mater
 _NON_JOURNALISM_RECORD = re.compile(
     r"\b(?:emails?|documents?|electronic records|government records|public records|presidential records|files|data|"
     r"(?:court|law enforcement|police|criminal|arrest|conviction)\s+records?)\b"
-    r"[^.]{0,40}\b(?:delet\w*|destroy\w*|remov\w*|retain\w*)|historical record[^.]{0,60}\b(?:america|nation|country|"
+    r"[^.]{0,40}\b(?:delet\w*|destroy\w*|remov\w*|retain\w*|redact\w*)|historical record[^.]{0,60}\b(?:america|nation|country|"
     r"history|museum|monuments?|government|president|federal)|\b(?:remov\w*|delet\w*|seal\w*|destroy\w*|expung\w*)\b"
     r"[^.]{0,60}\b(?:court|law enforcement|police|criminal|arrest|conviction|public)\s+records?\b", re.I)
 # Conduct codes and abuse-report handling.
@@ -449,6 +451,8 @@ _LEGAL_ACTOR_ON_RECORDS = re.compile(
     r"statute)\b", re.I)
 _NEWSROOM_UNIT = re.compile(r"\b(?:articles?|stor(?:y|ies)|news(?:paper|room)?s?|publications?|reporters?|coverage|"
                             r"our (?:site|website|archive))\b", re.I)
+_REPORTING_ETHICS = re.compile(r"\b(?:suppress\w*|withhold\w*|conceal\w*)\s+(?:essential\s+|relevant\s+|the\s+|any\s+)?"
+                               r"(?:information|facts|news|truth)\b|\bfalsif\w+", re.I)
 _CONDUCT = re.compile(r"\b(?:code of conduct|conduct violation|strictly prohibited|prohibited behaviou?r|"
                       r"reports? intended to|abuse reports?|spam reports?)\b", re.I)
 # Removal named as a topic, not a position ("challenges related to unpublishing").
@@ -501,6 +505,9 @@ _SCOPE_RULES: tuple[tuple[str | None, Callable[[_Signals], bool], object], ...] 
     ("record_not_journalism", lambda s: bool(_NON_JOURNALISM_RECORD.search(s.sentence)) and not re.search(
         r"\b(?:articles?|stor(?:y|ies)|coverage|our archive|news archive)\b", s.sentence, re.I), ("mention", 0.2)),
     ("conduct_code_not_relief", lambda s: bool(_CONDUCT.search(s.sentence)), ("mention", 0.2)),
+    ("reporting_ethics_not_archive", lambda s: bool(_REPORTING_ETHICS.search(s.sentence)) and not re.search(
+        r"\b(?:archives?|old (?:stories|articles)|published (?:stories|articles)|after publication)\b", s.sentence, re.I),
+     ("mention", 0.2)),
     ("court_records_not_newsroom", lambda s: bool(_LEGAL_ACTOR_ON_RECORDS.search(s.sentence)) and not _NEWSROOM_UNIT.search(
         s.sentence), ("mention", 0.2)),
     ("removal_of_non_journalism_item", lambda s: bool(_NON_JOURNALISM_OBJECT.search(s.sentence)), ("mention", 0.2)),

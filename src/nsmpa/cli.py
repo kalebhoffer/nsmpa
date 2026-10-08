@@ -1228,6 +1228,33 @@ def exclude_run_cmd(run_id: str = typer.Argument(...), reason: str = typer.Optio
         db.close()
 
 
+@app.command("ai-gate")
+def ai_gate_cmd(run_id: list[str] = typer.Option(..., "--run-id", help="Repeatable"),
+                max_calls: int | None = typer.Option(None, "--max-calls", help="Cap on AI calls (cached verdicts are free)"),
+                report: Path | None = typer.Option(None, "--report", help="Write every verdict to this CSV"),
+                config: Path | None = ConfigOpt) -> None:
+    """AI veto on the excerpts that decide each organization's position (veto only; needs GEMINI_API_KEY)."""
+    import csv
+
+    from .ai_gate import gate_report, gate_run
+    db, settings = _db(config)
+    try:
+        for rid in run_id:
+            res = asyncio.run(gate_run(db, settings, rid, max_calls=max_calls))
+            console.print_json(json.dumps(res, default=str))
+            if report:
+                rows = gate_report(db, rid)
+                if rows:
+                    path = report if len(run_id) == 1 else report.with_name(f"{report.stem}_{rid}{report.suffix}")
+                    with path.open("w", newline="", encoding="utf-8") as fh:
+                        w = csv.DictWriter(fh, fieldnames=list(rows[0]))
+                        w.writeheader()
+                        w.writerows(rows)
+                    console.print(f"Verdicts written to {path}")
+    finally:
+        db.close()
+
+
 @app.command("reclassify")
 def reclassify_cmd(run_id: list[str] = typer.Option(..., "--run-id", help="Repeatable"),
                    config: Path | None = ConfigOpt) -> None:
