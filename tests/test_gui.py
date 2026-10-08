@@ -79,3 +79,41 @@ async def test_offline_dashboard_file(gui, tmp_path):
     assert '"static": true' in html and "Strict Times" in html
     assert not re.search(r"<(?:script|link)[^>]+(?:src|href)=[\"']https?:", html)   # no external loads
     assert "</script><script" not in html.split("const DATA =")[1][:200]
+
+
+async def test_verify_queue_snapshot_and_decision(gui):
+    s, port, token, db, rid = gui
+    q = json.loads(req(port, "/api/verify?kind=evidence")[1])
+    assert q["items"] and q["counts"].get("unverified", 0) >= len(q["items"])
+    first = q["items"][0]
+    assert first["drives_stance"] == 1  # stance-driving excerpts come first
+    st, html, hdr = req(port, f"/snapshot/evidence/{first['id']}")
+    assert st == 200 and "<mark id=hit>" in html and "<script" not in html.lower()
+    assert hdr["X-Frame-Options"] == "SAMEORIGIN" and "default-src 'none'" in hdr["Content-Security-Policy"]
+    assert req(port, f"/api/verify/evidence/{first['id']}", method="POST", body={"status": "verified"})[0] == 403  # token required
+    assert req(port, f"/api/verify/evidence/{first['id']}", method="POST", body={"status": "approved"},
+               headers={"X-NSMPA-Token": token})[0] == 400  # only verified|rejected|disputed
+    st, body, _ = req(port, f"/api/verify/evidence/{first['id']}", method="POST", body={"status": "verified", "note": "matches live page"},
+                      headers={"X-NSMPA-Token": token})
+    assert st == 200 and db.scalar("SELECT verification_status FROM evidence_items WHERE id=?", (first["id"],)) == "verified"
+    assert req(port, "/snapshot/evidence/notanumber")[0] == 404
+    assert req(port, "/snapshot/../etc/passwd")[0] == 404
+
+
+async def test_snapshot_escapes_hostile_page_text(gui):
+    s, port, token, db, rid = gui
+    eid = db.scalar("SELECT id FROM evidence_items WHERE page_id IS NOT NULL LIMIT 1")
+    db.execute("UPDATE evidence_items SET excerpt='<script>alert(1)</script>' WHERE id=?", (eid,))
+    db.conn.commit()
+    html = req(port, f"/snapshot/evidence/{eid}")[1]
+    assert "<script>alert(1)</script>" not in html
+
+
+
+async def test_technical_snapshot_explains_instead_of_suggesting_dispute(gui):
+    s, port, token, db, rid = gui
+    eid = db.scalar("SELECT id FROM evidence_items WHERE page_id IS NOT NULL LIMIT 1")
+    db.execute("UPDATE evidence_items SET evidence_class='technical' WHERE id=?", (eid,))
+    db.conn.commit()
+    html = req(port, f"/snapshot/evidence/{eid}")[1]
+    assert "Technical observation, not a quote" in html and "mark as disputed" not in html

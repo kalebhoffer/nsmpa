@@ -15,6 +15,7 @@ Run it in its own terminal (or leave it open all day); start jobs in another ter
 | Results | Per group: VALIDATED / PRELIMINARY badge, overall relief position and written-policy stance charts, validation gates |
 | Evidence | Searchable, filterable excerpts (group, direction, evidence class), sorted by match to your case; click a row for source URL, page hash, classifier cues |
 | Review | Prioritized human-review queue with Accept / Reject / Skip and a note |
+| Verify | Source verification, one item at a time: excerpt and details on the left, the exact saved text NSMPA analysed on the right with the excerpt highlighted. Keys: **V** verified, **R** rejected, **D** disputed, **S** skip, **O** open the live page. Excerpts that drive a stance come first. Switch to "Expert voices" to verify quotes. Technical observations (noindex, Wayback) show the recorded directives instead of a quote. (Live GUI only.) |
 | Archive · AI · Accuracy | Wayback results and changes, AI agreement/disagreements, accuracy audit, expert voices, precedents, legal context, policy changes, outreach |
 | Operations | Page access results, errors, search usage by purpose, recent searches, failed items |
 
@@ -48,7 +49,7 @@ changed policy pages. Turn off with `notify_on_finish: false`.
 ## `nsmpa dashboard` — shareable offline file
 
 ```bash
-nsmpa dashboard --out output/dashboard.html
+nsmpa dashboard --out output/dashboard.html --redact-names
 ```
 
 One self-contained HTML file (data embedded, no network requests, read-only) with the same tabs. Suitable for emailing
