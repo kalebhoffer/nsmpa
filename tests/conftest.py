@@ -11,6 +11,8 @@ from nsmpa.db import Database
 # Automated tests must never spend live search credits.
 os.environ.pop("SERPER_API_KEY", None)
 os.environ.pop("BRAVE_SEARCH_API_KEY", None)
+for _var in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "ANTHROPIC_API_KEY"):
+    os.environ.pop(_var, None)
 
 
 def public_resolver(host: str) -> list[str]:

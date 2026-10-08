@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.1
+
+- AI second opinion now uses Google Gemini Flash by default (`ai_provider: gemini`, `ai_model: gemini-3.8-flash`,
+  `google-genai` `generate_content` with JSON-schema structured output; stateless, retries on 429/5xx, blocked or
+  truncated responses recorded as failures, never as findings). Claude remains available (`ai_provider: anthropic`).
+  `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) read from the environment or `./.env`; keys redacted from all stored errors.
+
 ## 0.5.0 — archive evidence, AI second opinion, measured accuracy
 
 - Wayback Machine comparison (`wayback.py`, runs inside `research` and as `nsmpa wayback`): archived vs. current
