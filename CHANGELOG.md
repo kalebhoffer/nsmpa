@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.6.0 — GUI, monitoring, outreach, legal context, re-checks
+
+- Local GUI (`nsmpa gui`): localhost-only stdlib server; live job monitor from persisted heartbeats; results, evidence
+  browser, review actions, archive/AI/accuracy and operations panels. Host-header and token guards, strict CSP.
+- Offline shareable dashboard (`nsmpa dashboard`): same UI in one read-only HTML file.
+- Heartbeats for every long command; per-organization step bar; `nsmpa watch`; macOS finish notifications.
+- AI: verified AI attributions feed Expert Voices; `nsmpa ai-discovery` + `promote --use-ai` (model picks among numbered
+  candidates only; confident "none" blocks promotion; all AI-assisted promotions reviewed); `packet --ai-summaries`
+  (every sentence must cite provided evidence IDs and state no new numbers, else dropped).
+- Outreach (`nsmpa outreach harvest|add-contact|dnc|draft|sent|response|status`): own-domain contacts only, neutral
+  honestly-identified survey drafts as `.eml` (never auto-sent), replies stored as first-party `direct_response` evidence
+  that refreshes the stance.
+- Legal context (`nsmpa legal-research`, `nsmpa legal`): EU erasure law, Google Spain, Martin v. Hearst, Washington
+  vacation statutes, Clean Slate and mugshot-site leads, one lead per state; never self-verified; packet sheet/slide.
+- Policy re-checks (`nsmpa recheck`) with change detection and review items; weekly launchd job (`nsmpa schedule`).
+- Fixes: GUI server startup stalled ~35 s on reverse DNS (bind override); GUI counts exclude excluded runs; restored a
+  missing import found by new CLI smoke tests. Schema v6 (additive).
+
 ## 0.5.1
 
 - AI second opinion now uses Google Gemini Flash by default (`ai_provider: gemini`, `ai_model: gemini-3.8-flash`,
