@@ -236,6 +236,7 @@ class HardenedFetcher:
         self.host_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self.last_request: dict[str, float] = {}
         self.host_failures: defaultdict[str, int] = defaultdict(int)
+        self.host_open_since: dict[str, float] = {}  # when each host's circuit opened
         self.robots = RobotsCache(self)
         self.stats = FetchStats()
 
@@ -329,7 +330,12 @@ class HardenedFetcher:
             raise InvalidURL(f"Invalid or disallowed URL: {url[:200]!r}")
         host = (urlsplit(clean).hostname or "").lower()
         if self.host_failures[host] >= self.settings.host_failure_threshold:
-            raise HostCircuitOpen(f"Host {host} skipped after {self.host_failures[host]} consecutive failures")
+            opened = self.host_open_since.setdefault(host, time.monotonic())
+            if time.monotonic() - opened < self.settings.host_circuit_cooldown_seconds:
+                raise HostCircuitOpen(f"Host {host} skipped after {self.host_failures[host]} consecutive failures")
+            # Cooldown over: let one request through (half-open). Success closes the circuit; failure re-opens it.
+            self.host_failures[host] = self.settings.host_failure_threshold - 1
+            self.host_open_since.pop(host, None)
         try:
             result = await self._fetch_http(clean, check_robots=True, max_bytes=self.settings.max_response_bytes)
         except (UnsafeDestination, InvalidURL, TooLarge):

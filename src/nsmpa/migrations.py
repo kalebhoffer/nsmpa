@@ -931,6 +931,27 @@ def migrate_v8(conn: sqlite3.Connection) -> None:
     run_script(conn, "CREATE INDEX IF NOT EXISTS idx_precedent_index ON precedent_seeds(source_list, index_id);")
 
 
+def migrate_v9(conn: sqlite3.Connection) -> None:
+    """v0.8: AI veto on decisive excerpts (verdict on the excerpt + audit table)."""
+    _add_column(conn, "evidence_items", "ai_gate", "TEXT")          # accepted | rejected | NULL (unchecked)
+    _add_column(conn, "evidence_items", "ai_gate_reason", "TEXT")
+    run_script(conn, """
+CREATE TABLE IF NOT EXISTS ai_gate_checks (
+  id INTEGER PRIMARY KEY,
+  evidence_id INTEGER NOT NULL REFERENCES evidence_items(id) ON DELETE CASCADE,
+  run_id TEXT NOT NULL,
+  entity_id INTEGER NOT NULL,
+  model TEXT,
+  verdict TEXT NOT NULL,            -- accepted | rejected | error
+  ai_direction TEXT,
+  reason TEXT,
+  cached INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_ai_gate_checks_run ON ai_gate_checks(run_id, entity_id);
+""")
+
+
 MIGRATIONS: list[tuple[int, str, Callable[[sqlite3.Connection], None]]] = [
     (2, "baseline v0.1/v0.2 schema", migrate_v2),
     (3, "v0.3 checkpoints, unique evidence, review queue, provenance, views", migrate_v3),
@@ -939,6 +960,7 @@ MIGRATIONS: list[tuple[int, str, Callable[[sqlite3.Connection], None]]] = [
     (6, "v0.6 heartbeats, outreach, legal context, policy re-checks", migrate_v6),
     (7, "v0.7 acquisition provenance, researcher captures, AI-search leads", migrate_v7),
     (8, "v0.7.1 evidence-index precedents", migrate_v8),
+    (9, "v0.8 AI veto on decisive excerpts", migrate_v9),
 ]
 
 LATEST_VERSION = MIGRATIONS[-1][0]
