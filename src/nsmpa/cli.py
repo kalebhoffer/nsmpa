@@ -957,6 +957,96 @@ def audit_report(audit_id: str | None = typer.Option(None, "--audit-id"), as_jso
         db.close()
 
 
+outreach_app = typer.Typer(help="Ask newsrooms directly (drafts only; you send) and record their replies as evidence")
+app.add_typer(outreach_app, name="outreach")
+
+
+@outreach_app.command("harvest")
+def outreach_harvest(config: Path | None = ConfigOpt) -> None:
+    """Collect contact addresses published on organizations' own sites (already-fetched pages only)."""
+    from .outreach import harvest_contacts
+    db, _ = _db(config)
+    try:
+        console.print_json(json.dumps(harvest_contacts(db)))
+    finally:
+        db.close()
+
+
+@outreach_app.command("add-contact")
+def outreach_add_contact(entity_id: int = typer.Option(..., "--entity-id"), email_addr: str = typer.Option(..., "--email"),
+                         name: str = typer.Option("", "--name"), role: str = typer.Option("", "--role"),
+                         config: Path | None = ConfigOpt) -> None:
+    """Add a contact you found yourself."""
+    from .outreach import add_contact
+    db, _ = _db(config)
+    try:
+        add_contact(db, entity_id, email_addr, name, role)
+        console.print(f"Added {email_addr} for entity {entity_id}")
+    finally:
+        db.close()
+
+
+@outreach_app.command("dnc")
+def outreach_dnc(email_addr: str = typer.Option(..., "--email"), config: Path | None = ConfigOpt) -> None:
+    """Mark an address do-not-contact (never drafted again)."""
+    from .outreach import do_not_contact
+    db, _ = _db(config)
+    try:
+        console.print(f"Marked {do_not_contact(db, email_addr)} contact(s) do-not-contact")
+    finally:
+        db.close()
+
+
+@outreach_app.command("draft")
+def outreach_draft(campaign: str = typer.Option(..., "--campaign"), cohort: str | None = typer.Option(None, "--cohort"),
+                   limit: int | None = typer.Option(None, "--limit"), config: Path | None = ConfigOpt) -> None:
+    """Write neutral survey drafts (.eml, open in Mail/Outlook to review and send) + mail_merge.csv. Never sends."""
+    from .outreach import draft_campaign
+    db, settings = _db(config)
+    try:
+        console.print_json(json.dumps(draft_campaign(db, settings, campaign, settings.output_dir / "outreach", cohort=cohort, limit=limit)))
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    finally:
+        db.close()
+
+
+@outreach_app.command("sent")
+def outreach_sent(campaign: str = typer.Option(..., "--campaign"), entity_id: int | None = typer.Option(None, "--entity-id"),
+                  config: Path | None = ConfigOpt) -> None:
+    """Record that you sent drafts (all in the campaign, or one organization)."""
+    from .outreach import mark_sent
+    db, _ = _db(config)
+    try:
+        console.print(f"Marked {mark_sent(db, campaign, entity_id)} message(s) sent")
+    finally:
+        db.close()
+
+
+@outreach_app.command("response")
+def outreach_response(entity_id: int = typer.Option(..., "--entity-id"), file: Path = typer.Option(..., "--file", exists=True),
+                      campaign: str = typer.Option("default", "--campaign"), config: Path | None = ConfigOpt) -> None:
+    """Store a reply (.eml/.txt/.pdf/.html) as first-party evidence and refresh that organization's stance."""
+    from .outreach import record_response
+    db, settings = _db(config)
+    try:
+        console.print_json(json.dumps(record_response(db, settings, entity_id, file, campaign=campaign)))
+    finally:
+        db.close()
+
+
+@outreach_app.command("status")
+def outreach_status(config: Path | None = ConfigOpt) -> None:
+    """Drafted / sent / responded counts per campaign."""
+    from .outreach import status
+    db, _ = _db(config)
+    try:
+        console.print_json(json.dumps(status(db)))
+    finally:
+        db.close()
+
+
 @app.command("exclude-run")
 def exclude_run_cmd(run_id: str = typer.Argument(...), reason: str = typer.Option(..., "--reason"),
                     undo: bool = typer.Option(False, "--undo", help="Restore the run to 'completed'"),
