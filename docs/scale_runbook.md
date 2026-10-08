@@ -10,6 +10,8 @@
 | Student media research (standard) | 3, or 7 on signal | ~2,000 publications | ~6,000–14,000 | 14,000 |
 | Deep research (tier 3 adds 40) | up to 47–49 (cap: `research_deep_max_searches_per_entity`, default 50) | per entity | — | — |
 
+Practice digging (`research_practice_dig: always`) adds **4 credits per newsroom** and ~23 page fetches (archive sample + baseline) at the polite per-host delay, roughly +35 s per newsroom. Set `auto` to dig only where no written policy is found, or `research_practice_queries: false` to keep the free archive sampling only.
+
 Ranges are estimates; `nsmpa query-stats` and the dashboard show actual spend. Re-runs cost nothing for previously cached queries.
 
 ## Staged national sequence

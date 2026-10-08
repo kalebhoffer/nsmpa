@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.0 — evidence packet
+
+- Per-action positions: clause-level analysis separates unpublish / de-index / anonymize / update; `relief_mode`
+  and `preserves_archive_relief` per organization (written policy, practice and technical kept separate).
+- Deep archive practice digging: 4 practice searches per newsroom plus free oldest-to-newest sampling of
+  crime/arrest articles from sitemaps; editor's notes, name-removal notes and targeted `noindex` (baseline-checked;
+  site-wide noindex excluded) recorded as documented practice / technical evidence.
+- Case profile (`my_case.yml`, gitignored) and per-excerpt `case_match_score` with matched facts.
+- Named-precedent leads with automatic source finding and human-only verification (`verify-precedents`, `precedent`).
+- Expert voices: attributed-quote extraction on every page, seeded experts, `research-experts`, `add-expert`, `voices`.
+- `nsmpa packet`: Excel evidence workbook (13 sheets, linked sources) + PowerPoint deck (native charts) + summary.
+- Classifier: imperative guidance ("Consider…", "Provide updated…"), should/must, "rather than" clauses,
+  editor's-note practice, broader dismissed-charge and name-removal patterns, less aggressive chrome filter.
+- Schema v4 (additive): voices, experts, precedent_seeds; new columns on evidence_items, entity_stances, research_pages.
+
 ## 0.3.0 — 2026-10-07
 
 Hardening and methodology release. Existing data preserved; schema migrated additively (v2 → v3) with automatic backup.
