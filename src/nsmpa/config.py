@@ -37,6 +37,41 @@ class CaseProfile(BaseModel):
     high_similarity_threshold: float = 45.0
 
 
+class MyCase(BaseModel):
+    """The requester's own fact pattern (my_case.yml, gitignored). Drives the case-match score.
+
+    Each boolean switches the matching similarity factor on; only factors that are true for
+    *your* case contribute to ``case_match_score``. Weights still come from ``case_profile``.
+    """
+    description: str = ""
+    student_or_university_setting: bool = True
+    criminal_allegation_or_arrest: bool = True
+    charges_dismissed_or_dropped: bool = True
+    acquittal_or_exoneration: bool = False
+    conviction_vacated_or_plea_withdrawn: bool = False
+    record_expunged_or_sealed: bool = False
+    substantial_time_passed: bool = True
+    private_individual_no_public_role: bool = True
+    search_engine_prominence: bool = True
+    reputational_consequences: bool = True
+    relief_sought: list[Literal["deindex", "anonymize", "unpublish", "update"]] = Field(default_factory=lambda: ["deindex"])
+    article_year: int | None = None
+    outcome_year: int | None = None
+    configured: bool = False  # set true once you have edited my_case.yml
+
+    def active_factors(self) -> set[str]:
+        f = {k for k in ("student_or_university_setting", "criminal_allegation_or_arrest", "charges_dismissed_or_dropped",
+                         "acquittal_or_exoneration", "conviction_vacated_or_plea_withdrawn", "record_expunged_or_sealed",
+                         "substantial_time_passed", "private_individual_no_public_role", "search_engine_prominence",
+                         "reputational_consequences") if getattr(self, k)}
+        relief_map = {"deindex": {"deindexing", "preserve_article_suppress_name_search"},
+                      "anonymize": {"anonymization_or_name_removal", "preserve_article_suppress_name_search"},
+                      "unpublish": set(), "update": {"updated_disposition"}}
+        for r in self.relief_sought:
+            f |= relief_map.get(r, set())
+        return f
+
+
 class PeerGroup(BaseModel):
     """A named comparison group. Filters are ANDed; ``unitids`` are always included."""
     label: str
@@ -146,6 +181,16 @@ class Settings(BaseModel):
     # --- v0.3 validation gates (reports refuse national percentages below these) ----------
     validation: "ValidationThresholds" = Field(default_factory=lambda: ValidationThresholds())
     peer_groups: dict[str, PeerGroup] = Field(default_factory=default_peer_groups)
+    # --- v0.4 deep practice digging -------------------------------------------------------
+    research_practice_dig: Literal["never", "auto", "always"] = "always"
+    research_crime_article_sample: int = Field(20, ge=0, le=200)
+    research_baseline_article_sample: int = Field(3, ge=0, le=20)
+    research_practice_queries: bool = True
+    expert_max_pages_per_person: int = Field(5, ge=0, le=50)
+    precedent_max_pages_per_seed: int = Field(4, ge=0, le=50)
+    packet_max_rows_per_sheet: int = Field(100_000, ge=100, le=1_000_000)
+    packet_precedent_slides: int = Field(8, ge=0, le=40)
+    my_case: MyCase = Field(default_factory=MyCase)
 
     @model_validator(mode="after")
     def normalize_paths(self) -> "Settings":
@@ -200,6 +245,10 @@ def load_settings(path: str | Path | None = None) -> Settings:
     if path:
         with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
+    case_file = Path(os.getenv("NSMPA_MY_CASE", "my_case.yml"))
+    if case_file.is_file() and "my_case" not in data:
+        with open(case_file, "r", encoding="utf-8") as f:
+            data["my_case"] = (yaml.safe_load(f) or {}).get("my_case", {})
     if os.getenv("NSMPA_USER_AGENT"):
         data["user_agent"] = os.environ["NSMPA_USER_AGENT"]
     settings = Settings.model_validate(data)

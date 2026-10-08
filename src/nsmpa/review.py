@@ -50,6 +50,8 @@ def entity_priority(entity, result) -> tuple[float, list[str]]:
         p += 10
     if "low_confidence" in reasons:
         p += 10
+    if "relief_practiced_without_written_policy" in reasons:
+        p += 20
     if meta.get("ambiguous"):
         p += 20
         reasons.append("ambiguous_publication_identification")

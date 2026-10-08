@@ -592,9 +592,95 @@ def _create_views(conn: sqlite3.Connection) -> None:
     run_script(conn, VIEWS)
 
 
+V4_TABLES = r"""
+CREATE TABLE IF NOT EXISTS voices (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  person_key TEXT NOT NULL,
+  person_name TEXT NOT NULL,
+  role TEXT,
+  affiliation TEXT,
+  expert_id INTEGER REFERENCES experts(id) ON DELETE SET NULL,
+  quote TEXT NOT NULL,
+  quote_sha256 TEXT NOT NULL,
+  context TEXT,
+  source_url TEXT NOT NULL,
+  source_title TEXT,
+  source_domain TEXT,
+  page_id INTEGER REFERENCES research_pages(id) ON DELETE SET NULL,
+  run_id TEXT,
+  entity_id INTEGER REFERENCES research_entities(id) ON DELETE SET NULL,
+  statement_type TEXT NOT NULL,
+  direction TEXT NOT NULL,
+  actions_json TEXT NOT NULL DEFAULT '{}',
+  attribution_method TEXT NOT NULL,
+  attribution_confidence REAL NOT NULL DEFAULT 0,
+  case_match_score REAL NOT NULL DEFAULT 0,
+  verification_status TEXT NOT NULL DEFAULT 'unverified',
+  reviewer_note TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(person_key, quote_sha256)
+);
+CREATE INDEX IF NOT EXISTS idx_voices_person ON voices(person_key);
+CREATE INDEX IF NOT EXISTS idx_voices_direction ON voices(direction, case_match_score DESC);
+
+CREATE TABLE IF NOT EXISTS experts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  person_key TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  role TEXT,
+  affiliation TEXT,
+  credential_note TEXT,
+  source TEXT NOT NULL DEFAULT 'builtin_seed',
+  entity_id INTEGER REFERENCES research_entities(id) ON DELETE SET NULL,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS precedent_seeds (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  seed_key TEXT NOT NULL UNIQUE,
+  organization TEXT NOT NULL,
+  title TEXT NOT NULL,
+  approx_year TEXT,
+  claim TEXT NOT NULL,
+  actions TEXT,
+  verification_query TEXT,
+  primary_url TEXT,
+  prior_confidence TEXT NOT NULL DEFAULT 'candidate',
+  entity_id INTEGER REFERENCES research_entities(id) ON DELETE SET NULL,
+  status TEXT NOT NULL DEFAULT 'unverified',
+  status_note TEXT,
+  last_checked_at TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+
+def migrate_v4(conn: sqlite3.Connection) -> None:
+    """v0.4: per-action positions, case-match scores, expert voices, precedent seeds, practice digging."""
+    run_script(conn, V4_TABLES)
+    for col, decl in [
+        ("actions_json", "TEXT NOT NULL DEFAULT '{}'"),
+        ("case_match_score", "REAL NOT NULL DEFAULT 0"),
+        ("case_match_factors_json", "TEXT NOT NULL DEFAULT '[]'"),
+    ]:
+        _add_column(conn, "evidence_items", col, decl)
+    for col, decl in [
+        ("action_positions_json", "TEXT NOT NULL DEFAULT '{}'"),
+        ("preserves_archive_relief", "INTEGER NOT NULL DEFAULT 0"),
+        ("relief_mode", "TEXT"),
+    ]:
+        _add_column(conn, "entity_stances", col, decl)
+    _add_column(conn, "research_pages", "author", "TEXT")
+    _add_column(conn, "research_pages", "published_date", "TEXT")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_evidence_items_casematch ON evidence_items(case_match_score DESC)")
+    _create_views(conn)
+
+
 MIGRATIONS: list[tuple[int, str, Callable[[sqlite3.Connection], None]]] = [
     (2, "baseline v0.1/v0.2 schema", migrate_v2),
     (3, "v0.3 checkpoints, unique evidence, review queue, provenance, views", migrate_v3),
+    (4, "v0.4 action positions, case match, expert voices, precedent seeds", migrate_v4),
 ]
 
 LATEST_VERSION = MIGRATIONS[-1][0]

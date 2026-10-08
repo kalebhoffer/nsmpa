@@ -44,6 +44,28 @@ class MainText:
     is_listing: bool = False
     is_pdf: bool = False
     parse_error: str | None = None
+    author: str | None = None
+    published: str | None = None
+
+
+def _meta(soup, *names: str) -> str | None:
+    for n in names:
+        tag = soup.find("meta", attrs={"name": n}) or soup.find("meta", attrs={"property": n})
+        if tag and tag.get("content"):
+            return compact_ws(str(tag.get("content")))[:200]
+    return None
+
+
+def _author(soup) -> str | None:
+    a = _meta(soup, "author", "article:author", "parsely-author", "sailthru.author", "dc.creator")
+    if a and not a.startswith("http"):
+        return a
+    by = soup.find(attrs={"class": re.compile(r"\b(?:byline|author-name|author)\b", re.I)}) or soup.find(attrs={"rel": "author"})
+    if by:
+        txt = re.sub(r"^\s*by\s+", "", compact_ws(by.get_text(" ", strip=True)), flags=re.I)
+        if 3 <= len(txt) <= 80:
+            return txt
+    return None
 
 
 def decode_html(content: bytes, content_type_header: str | None = None) -> str:
@@ -93,6 +115,11 @@ def extract_main_text(content: bytes, content_type: str, url: str, headers: dict
         robots_meta = soup.find_all("meta", attrs={"name": lambda v: v and str(v).lower() in {"robots", "googlebot", "bingbot"}})
         if robots_meta:
             meta_robots = "; ".join(compact_ws(str(m.get("content", ""))) for m in robots_meta if m.get("content")) or None
+        author = _author(soup)
+        published = _meta(soup, "article:published_time", "datePublished", "date", "pubdate", "dc.date")
+        if not published:
+            t = soup.find("time", attrs={"datetime": True})
+            published = str(t.get("datetime"))[:40] if t else None
         links: list[tuple[str, str]] = []
         for a in soup.find_all("a", href=True):
             href = prepare_request_url(str(a.get("href")), base=url)
@@ -108,7 +135,7 @@ def extract_main_text(content: bytes, content_type: str, url: str, headers: dict
             main_text = compact_ws(soup.body.get_text(" ", strip=True))
         noindex, nofollow = _directives(meta_robots, x_robots)
         return MainText(url, title, main_text, full_text, canonical, meta_robots, x_robots, noindex, nofollow,
-                        list(dict.fromkeys(links)), bool(LISTING_URL.search(url)))
+                        list(dict.fromkeys(links)), bool(LISTING_URL.search(url)), author=author, published=published)
     except Exception as exc:  # malformed markup must never terminate a run
         noindex, nofollow = _directives(None, x_robots)
         return MainText(url, "", "", "", None, None, x_robots, noindex, nofollow, [], False, False,
