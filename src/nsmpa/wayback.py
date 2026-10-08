@@ -220,7 +220,8 @@ async def run_wayback(db, settings, run_id: str, *, quiet: bool = False, verbose
         params += entity_ids
     entities = db.execute(sql, params).fetchall()
     stop = StopController()
-    dash = RunDashboard("NSMPA Wayback comparison", len(entities), quiet=quiet, verbose=verbose, universe=f"run {run_id}")
+    dash = RunDashboard("NSMPA Wayback comparison", len(entities), quiet=quiet, verbose=verbose, universe=f"run {run_id}",
+                        db=db, run_id=f"wayback:{run_id}", persist_seconds=settings.heartbeat_seconds)
     own = fetcher is None
     fetcher = fetcher or HardenedFetcher(settings, on_event=dash.log)
     broker = SearchBroker(db, settings, run_id, NullSearchProvider())

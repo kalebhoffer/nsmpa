@@ -182,7 +182,8 @@ async def run_seeds(db: Database, settings: Settings, kind: str, *, run_id: str 
     done = done_keys(db, rid, kind)
     stop = stop or StopController()
     dash = RunDashboard(f"NSMPA {'Precedent verification' if kind == 'precedents' else 'Expert voices'}", len(rows),
-                        quiet=quiet, verbose=verbose, universe="Seeded leads (to verify)")
+                        quiet=quiet, verbose=verbose, universe="Seeded leads (to verify)", db=db, run_id=rid,
+                        persist_seconds=settings.heartbeat_seconds)
     own = fetcher is None
     fetcher = fetcher or HardenedFetcher(settings, on_event=dash.log)
     status, reason, found = "completed", None, 0
