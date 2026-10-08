@@ -9,3 +9,6 @@ output/
 .ruff_cache/
 HD*.zip
 my_case.yml
+
+# personal research inputs (evidence indexes, case files)
+inputs/

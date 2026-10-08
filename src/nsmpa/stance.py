@@ -170,9 +170,15 @@ def coverage_for(db: Database, run_id: str, entity_id: int) -> dict:
 def classify_entity(db: Database, settings: Settings, run_id: str, entity) -> StanceResult:
     entity_id = int(entity["id"])
     items = db.execute(
-        "SELECT * FROM evidence_items WHERE run_id=? AND entity_id=? AND duplicate_of IS NULL", (run_id, entity_id)
+        # Search snippets are leads (truncated, unread pages): they never drive a stance on their own.
+        "SELECT * FROM evidence_items WHERE run_id=? AND entity_id=? AND duplicate_of IS NULL "
+        "AND COALESCE(acquisition,'live')!='snippet'", (run_id, entity_id)
     ).fetchall()
     cov = coverage_for(db, run_id, entity_id)
+    acq = {r[0]: r[1] for r in db.execute("SELECT COALESCE(acquisition,'live'), COUNT(*) FROM evidence_items WHERE run_id=? "
+                                          "AND entity_id=? AND duplicate_of IS NULL GROUP BY 1", (run_id, entity_id))}
+    if acq:
+        cov["evidence_by_acquisition"] = acq
     policy = [e for e in items if e["evidence_class"] in POLICY_CLASSES and e["about_entity"] and e["statement_type"] != "mention"
               and (e["extraction_confidence"] or 0) >= 0.5]
     practice = [e for e in items if e["evidence_class"] == "documented_practice" and e["about_entity"]]

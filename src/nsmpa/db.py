@@ -44,13 +44,17 @@ class Database:
         row = self.conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
         if row and str(row[0]).isdigit():
             legacy = int(row[0])
+            have = {int(r[0]) for r in self.conn.execute("SELECT version FROM schema_migrations")}
+            # Write only when something is missing: opening a database must not need the write lock, or every
+            # read-only command would wait on (and time out behind) a long-running job.
             for version, desc, _ in MIGRATIONS:
-                if version <= legacy:
+                if version <= legacy and version not in have:
                     self.conn.execute(
                         "INSERT OR IGNORE INTO schema_migrations(version,description) VALUES(?,?)",
                         (version, desc + " (pre-existing)"),
                     )
-        self.conn.commit()
+        if self.conn.in_transaction:
+            self.conn.commit()
 
     def applied_versions(self) -> set[int]:
         self._ensure_migration_table()
@@ -105,10 +109,17 @@ class Database:
                 self.conn.rollback()
                 raise
             applied.append(version)
-        # Views are cheap and may reference newly added columns; always refresh them.
-        if not pending:
-            from .migrations import _create_views
-            _create_views(self.conn)
+        # Views may reference newly added columns: refresh them when their definition changed (fingerprint in meta).
+        # Opening a database must stay write-free otherwise, so read-only commands never wait on a running job.
+        import hashlib
+        from .migrations import VIEWS, _create_views
+        digest = hashlib.sha256(VIEWS.encode()).hexdigest()[:16]
+        have = self.conn.execute("SELECT value FROM meta WHERE key='views_sha'").fetchone()
+        if not have or have[0] != digest:
+            if not pending:  # migrations already (re)created the views
+                _create_views(self.conn)
+            self.conn.execute("INSERT INTO meta(key,value) VALUES('views_sha',?) "
+                              "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (digest,))
             self.conn.commit()
         return applied
 

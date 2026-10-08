@@ -32,6 +32,7 @@ def make_settings(tmp_path: Path, **overrides) -> Settings:
         snapshot_dir=tmp_path / "snap",
         research_snapshot_dir=tmp_path / "rsnap",
         per_host_delay_seconds=0.0,
+        archive_delay_seconds=0.0,
         retry_backoff_seconds=0.0,
         max_retries=2,
     )

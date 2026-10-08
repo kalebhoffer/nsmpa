@@ -60,7 +60,19 @@ tr.click { cursor: pointer; } tr.click:hover td { background: var(--surface-2); 
 .filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
 input, select, textarea { background: var(--surface); color: var(--ink); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font: inherit; }
 button.act { border: 1px solid var(--border); background: var(--surface-2); color: var(--ink); border-radius: 6px; padding: 5px 10px; cursor: pointer; font: inherit; }
-button.act.ok { border-color: var(--good); color: var(--good); } button.act.no { border-color: var(--bad); color: var(--bad); }
+button.act.ok { border-color: var(--good); color: var(--good); }
+.capgrid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 14px; }
+@media (max-width: 900px) { .capgrid { grid-template-columns: 1fr; } }
+label.fl { display: block; font-size: 12px; color: var(--muted); margin: 8px 0 0; }
+label.fl input, label.fl textarea { display: block; width: 100%; box-sizing: border-box; margin-top: 3px; font-size: 14px; }
+label.fl textarea { resize: vertical; min-height: 160px; line-height: 1.45; }
+.caprow { display: grid; grid-template-columns: 1fr 1.4fr; gap: 10px; }
+@media (max-width: 520px) { .caprow { grid-template-columns: 1fr; } }
+.acq { display: inline-block; padding: 0 6px; border-radius: 8px; font-size: 10.5px; border: 1px solid var(--border); color: var(--ink-2); margin-left: 4px; white-space: nowrap; }
+.acq.archive { border-color: var(--s1); color: var(--s1); } .acq.capture { border-color: var(--s3); color: var(--s3); }
+.acq.snippet { border-color: var(--warn); color: var(--warn); }
+.lead { border-left: 3px solid var(--warn); padding: 6px 10px; margin: 6px 0; background: var(--surface-2); border-radius: 0 6px 6px 0; font-size: 13px; }
+.qrow { border-top: 1px solid var(--border); padding: 10px 0; } .qrow:first-child { border-top: 0; } button.act.no { border-color: var(--bad); color: var(--bad); }
 .excerpt { max-width: 640px; } a { color: var(--s1); }
 .muted { color: var(--muted); } .empty { color: var(--muted); padding: 18px 0; }
 .chart text { fill: var(--ink-2); font-size: 12px; } .chart .val { fill: var(--ink); font-weight: 600; }
@@ -81,6 +93,7 @@ button.act.ok { border-color: var(--good); color: var(--good); } button.act.no {
     <button data-tab="evidence">Evidence</button>
     <button data-tab="review">Review</button>
     <button data-tab="verify" id="verify-tab">Verify</button>
+    <button data-tab="capture" id="capture-tab">Capture</button>
     <button data-tab="insights">Archive · AI · Accuracy</button>
     <button data-tab="ops">Operations</button>
   </nav>
@@ -102,7 +115,7 @@ button.act.ok { border-color: var(--good); color: var(--good); } button.act.no {
   <section id="evidence">
     <div class="filters">
       <input id="f-q" placeholder="Search excerpt or organization" size="30">
-      <select id="f-cohort"><option value="">All groups</option><option>student_media</option><option>professional_newsroom</option><option>support_org</option><option>precedent_case</option><option>expert</option></select>
+      <select id="f-cohort"><option value="">All groups</option><option>student_media</option><option>professional_newsroom</option><option>broadcast_newsroom</option><option>support_org</option><option>precedent_case</option><option>expert</option></select>
       <select id="f-direction"><option value="">All directions</option><option>supportive</option><option>adverse</option><option>neutral</option></select>
       <select id="f-klass"><option value="">All evidence classes</option><option>written_policy</option><option>editorial_statement</option><option>professional_guidance</option><option>documented_practice</option><option>technical</option><option>secondary_report</option></select>
       <select id="f-sort"><option value="match">Closest to my case</option><option value="authority">Authority</option><option value="recent">Most recent</option></select>
@@ -124,6 +137,43 @@ button.act.ok { border-color: var(--good); color: var(--good); } button.act.no {
       Right pane: the exact text NSMPA analysed, with the excerpt highlighted. Verify against the live page too when it still exists.</p>
   </section>
 
+  <section id="capture">
+    <div class="capgrid">
+      <div class="card">
+        <h2>Blocked sites to capture</h2>
+        <p class="muted" style="margin-top:0">These sites refuse automated access. Open the page in your browser, copy the policy text, and record it on the right.
+          AI leads show what an AI search <i>says</i> the policy is. A lead only counts once its words are found in text NSMPA holds, such as your capture.</p>
+        <div id="cap-queue"></div>
+      </div>
+      <div class="card">
+        <h2>Record a capture</h2>
+        <form id="cap-form" autocomplete="off">
+          <label class="fl">Organization
+            <input id="cap-org" placeholder="Type 2+ letters of the name, school or website" list="cap-orgs" required>
+            <datalist id="cap-orgs"></datalist>
+          </label>
+          <div id="cap-org-picked" class="muted" style="font-size:12px;min-height:1.2em"></div>
+          <label class="fl">Page URL you copied from <input id="cap-url" type="url" placeholder="https://…" required></label>
+          <label class="fl">Page title (optional) <input id="cap-title"></label>
+          <label class="fl">Copied text
+            <textarea id="cap-text" rows="12" placeholder="Paste the policy text exactly as it appears on the page. Whole paragraphs are best; NSMPA finds the relevant sentences." required></textarea>
+          </label>
+          <div class="caprow">
+            <label class="fl">Captured by <input id="cap-by" placeholder="Your name or initials" required></label>
+            <label class="fl">Note (optional) <input id="cap-note" placeholder="e.g. copied from footer link 'Policies'"></label>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap">
+            <button class="act ok" type="submit">Save capture</button>
+            <span id="cap-count" class="muted" style="font-size:12px"></span>
+          </div>
+          <div id="cap-result" style="margin-top:10px"></div>
+        </form>
+      </div>
+    </div>
+    <div class="card" style="margin-top:14px"><h2>AI-search leads</h2><div id="cap-leads"></div></div>
+    <div class="card" style="margin-top:14px"><h2>Your captures</h2><div id="cap-list"></div></div>
+  </section>
+
   <section id="review"><div class="card"><h2>Human review queue (highest priority first)</h2><div id="rv"></div></div></section>
   <section id="insights"><div class="grid" id="ins"></div></section>
   <section id="ops"><div class="grid" id="opsg"></div></section>
@@ -138,6 +188,8 @@ const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt
 const fmt = n => (n === null || n === undefined) ? "–" : (typeof n === "number" ? n.toLocaleString() : esc(n));
 const hms = s => { if (s == null) return "calculating…"; s = Math.max(0, Math.round(s)); return [s/3600|0, (s%3600)/60|0, s%60].map(x => String(x).padStart(2,"0")).join(":"); };
 const link = u => u ? `<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(u.replace(/^https?:\/\//,"").slice(0,70))}</a>` : "";
+const ACQ_LABEL = {live: "", archive: "archived copy", snippet: "search snippet (lead)", capture: "researcher capture"};
+const acq = r => (r && r.acquisition && r.acquisition !== "live") ? `<span class="acq ${esc(r.acquisition)}" title="How NSMPA obtained this text">${esc(ACQ_LABEL[r.acquisition] || r.acquisition)}${r.archive_ts ? " " + esc(r.archive_ts.slice(0,4) + "-" + r.archive_ts.slice(4,6) + "-" + r.archive_ts.slice(6,8)) : ""}</span>` : "";
 const STANCE_LABEL = {SUPPORTS_RELIEF:"Supports relief",SUPPORTS_CHANGED_CIRCUMSTANCES:"Changed circumstances",CASE_BY_CASE:"Case by case",UPDATE_ONLY:"Update only",STRICT_ARCHIVE:"Strict archive",MIXED:"Mixed",NO_RELEVANT_GUIDANCE:"No guidance found",UNDETERMINED:"Undetermined"};
 const MODE_LABEL = {DEINDEX_OR_ANONYMIZE_PRESERVING_ARCHIVE:"De-index/anonymize, archive kept",UNPUBLISHING_PERMITTED:"Unpublishing permitted",UPDATE_ONLY:"Update / editor's note only",NO_RELIEF:"No relief",UNADDRESSED:"Not addressed"};
 
@@ -243,13 +295,14 @@ async function loadEvidence() {
   }
   $("#ev-count").textContent = `${total.toLocaleString()} matching excerpts${rows.length < total ? ` (showing ${rows.length})` : ""}`;
   $("#ev-table").innerHTML = rows.length ? `<table><tr><th>Organization</th><th>Direction</th><th>Type</th><th class="num">Match</th><th>Verified</th><th>Excerpt</th><th>Source</th></tr>` + rows.map(r =>
-    `<tr class="click dir-${esc(r.direction)}" data-ev='${esc(JSON.stringify(r))}'><td>${esc(r.entity)}<div class="muted">${esc(r.cohort)}</div></td><td>${esc(r.direction)}</td><td>${esc(r.statement_type)}</td><td class="num">${(r.case_match_score || 0).toFixed(0)}</td><td>${esc(r.verification_status)}</td><td class="excerpt">${esc(r.excerpt.slice(0, 280))}</td><td>${link(r.source_url)}</td></tr>`).join("") + `</table>` : `<div class="empty">No evidence matches.</div>`;
+    `<tr class="click dir-${esc(r.direction)}" data-ev='${esc(JSON.stringify(r))}'><td>${esc(r.entity)}<div class="muted">${esc(r.cohort)}</div></td><td>${esc(r.direction)}</td><td>${esc(r.statement_type)}</td><td class="num">${(r.case_match_score || 0).toFixed(0)}</td><td>${esc(r.verification_status)}</td><td class="excerpt">${esc(r.excerpt.slice(0, 280))}</td><td>${link(r.source_url)}${acq(r)}</td></tr>`).join("") + `</table>` : `<div class="empty">No evidence matches.</div>`;
 }
 function showEvidence(r) {
   $("#detail").innerHTML = `<button class="act" onclick="document.getElementById('detail').classList.remove('on')">Close</button>
     <h3 style="margin-top:14px">${esc(r.entity)}</h3><div class="muted">${esc(r.cohort)} · ${esc(r.evidence_class)} · ${esc(r.statement_type)} · ${esc(r.direction)}</div>
     <p style="font-size:15px;line-height:1.55" class="dir-${esc(r.direction)}">${esc(r.excerpt)}</p>
-    <div class="kv"><span>Source</span><span>${link(r.source_url)}</span><span>Fetched</span><span>${esc(r.fetched_at)}</span>
+    <div class="kv"><span>Source</span><span>${link(r.source_url)}${acq(r)}</span><span>Fetched</span><span>${esc(r.fetched_at)}</span>
+      ${r.archive_url ? `<span>Archived copy</span><span>${link(r.archive_url)}</span>` : ""}
       <span>Page SHA-256</span><span style="word-break:break-all">${esc(r.page_sha256 || "–")}</span><span>Positions</span><span>${esc(r.actions_json)}</span>
       <span>Classifier cues</span><span>${esc(r.rationale || "")}</span><span>Evidence ID</span><span>${esc(r.id)}</span></div>`;
   $("#detail").classList.add("on");
@@ -318,7 +371,8 @@ function showVerifyItem() {
     <h3 style="margin:6px 0">${esc(it.entity)}${it.role ? ` <span class="muted" style="font-weight:400">— ${esc(it.role)}</span>` : ""}</h3>
     <div class="muted">${esc(it.cohort || "")} ${esc(it.evidence_class)} · ${esc(it.statement_type)} · <span class="pill dir-${esc(it.direction)}">${esc(it.direction)}</span></div>
     <p style="font-size:16px;line-height:1.55;margin:12px 0" class="dir-${esc(it.direction)}">${esc(it.excerpt)}</p>
-    <div class="kv"><span>Source</span><span>${link(it.source_url)}</span><span>Fetched</span><span>${esc(it.fetched_at || "")}</span>
+    <div class="kv"><span>Source</span><span>${link(it.source_url)}${acq(it)}</span><span>Fetched</span><span>${esc(it.fetched_at || "")}</span>
+      ${it.archive_url ? `<span>Archived copy</span><span>${link(it.archive_url)}</span>` : ""}
       <span>ID</span><span>${kind === "voice" ? "voice" : "E"}${esc(it.id)}</span>${it.attribution_method ? `<span>Attributed by</span><span>${esc(it.attribution_method)}</span>` : ""}</div>
     <input id="v-note" placeholder="Note (optional)" style="width:100%;margin:12px 0 8px">
     <div style="display:flex;gap:6px;flex-wrap:wrap">
@@ -338,7 +392,60 @@ async function verifyAction(action) {
   if (vIdx >= vQueue.length) return loadVerify();
   showVerifyItem();
 }
-const loaders = {live: loadLive, results: loadResults, evidence: loadEvidence, review: loadReview, verify: loadVerify, insights: loadInsights, ops: loadOps};
+let capOrgs = {}, capPicked = null;
+function capRemember(k, v) { try { localStorage.setItem("nsmpa." + k, v); } catch (_) {} }
+function capRecall(k) { try { return localStorage.getItem("nsmpa." + k) || ""; } catch (_) { return ""; } }
+function capPick(id, name, url) {
+  capPicked = {id, name}; $("#cap-org").value = name;
+  $("#cap-org-picked").innerHTML = `Organization #${esc(id)}${url ? " · site " + link(url) : ""}`;
+}
+async function loadCapture() {
+  if (!$("#cap-by").value) $("#cap-by").value = capRecall("capturedBy");
+  const d = await api("/api/capture");
+  $("#cap-queue").innerHTML = d.queue.length ? d.queue.map(q => `<div class="qrow">
+      <b>${esc(q.name)}</b> <span class="muted">${esc(q.cohort)} · ${esc(STANCE_LABEL[q.stance] || q.stance)}${q.captures ? ` · ${q.captures} capture(s)` : ""}</span>
+      <div style="margin:4px 0">${link(q.homepage_url)}</div>
+      ${q.lead_quote ? `<div class="lead">AI lead (unconfirmed): “${esc(q.lead_quote.slice(0, 260))}${q.lead_quote.length > 260 ? "…" : ""}”${q.lead_url ? `<div>${link(q.lead_url)}</div>` : ""}</div>` : ""}
+      <button class="act" data-cap-pick="${esc(q.id)}" data-cap-name="${esc(q.name)}" data-cap-url="${esc(q.lead_url || q.homepage_url || "")}">Capture this</button>
+      ${q.lead_url || q.homepage_url ? `<button class="act" data-cap-open="${esc(q.lead_url || q.homepage_url)}">Open site</button>` : ""}
+    </div>`).join("") : `<div class="empty">No blocked sites waiting. Sites that block robots show up here after a research run.</div>`;
+  $("#cap-leads").innerHTML = d.leads.length ? `<table><tr><th>Organization</th><th>Status</th><th>What the AI says</th><th>URL</th></tr>` + d.leads.map(l =>
+    `<tr><td>${esc(l.entity)}</td><td>${l.status === "confirmed" ? `<span class="badge good">confirmed</span><div class="muted">via ${esc(l.confirmed_via || "")}</div>` : l.status === "no_policy_found" ? `<span class="badge">nothing found</span>` : `<span class="badge warn">unconfirmed</span>`}</td>
+     <td class="excerpt">${esc((l.quote || l.summary || "").slice(0, 400))}</td><td>${link(l.confirmed_url || l.claimed_url)}</td></tr>`).join("") + `</table>` : `<div class="empty">No AI-search leads yet.</div>`;
+  $("#cap-list").innerHTML = d.captures.length ? `<table><tr><th>When</th><th>Organization</th><th>Page</th><th class="num">Excerpts</th><th>By</th><th>Fingerprint</th></tr>` + d.captures.map(c =>
+    `<tr><td>${esc(c.captured_at)}</td><td>${esc(c.entity)}</td><td>${link(c.url)}${c.first_party ? "" : ' <span class="acq">not their own site</span>'}</td><td class="num">${c.evidence_count}</td><td>${esc(c.captured_by)}</td><td class="muted" title="${esc(c.text_sha256)}">${esc(c.text_sha256.slice(0, 12))}…</td></tr>`).join("") + `</table>` : `<div class="empty">No captures yet.</div>`;
+}
+let capTimer = null;
+$("#cap-org").addEventListener("input", e => {
+  const v = e.target.value.trim(); capPicked = null; $("#cap-org-picked").textContent = "";
+  if (capOrgs[v]) { const o = capOrgs[v]; capPick(o.id, o.name, o.homepage_url); return; }
+  clearTimeout(capTimer);
+  if (v.length < 2) return;
+  capTimer = setTimeout(async () => {
+    const r = await api(`/api/entities?q=${encodeURIComponent(v)}`);
+    capOrgs = {};
+    $("#cap-orgs").innerHTML = r.items.map(o => { const label = `${o.name} — ${o.parent_name || o.cohort} (#${o.id})`; capOrgs[label] = o; return `<option value="${esc(label)}"></option>`; }).join("");
+  }, 200);
+});
+$("#cap-text").addEventListener("input", e => { const n = e.target.value.length; $("#cap-count").textContent = n ? `${n.toLocaleString()} characters` : ""; });
+$("#cap-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  if (!capPicked) { $("#cap-result").innerHTML = `<div class="banner">Pick the organization from the suggestions list.</div>`; return; }
+  capRemember("capturedBy", $("#cap-by").value);
+  const btn = e.submitter; if (btn) btn.disabled = true;
+  try {
+    const res = await post("/api/capture", {entity_id: capPicked.id, url: $("#cap-url").value, title: $("#cap-title").value,
+      text: $("#cap-text").value, captured_by: $("#cap-by").value, note: $("#cap-note").value});
+    if (res.error) { $("#cap-result").innerHTML = `<div class="banner">${esc(res.error)}</div>`; return; }
+    $("#cap-result").innerHTML = res.duplicate ? `<div class="lead">Already captured (#${res.capture_id}). Nothing changed.</div>` :
+      `<div class="lead" style="border-color:var(--good)">Saved capture #${res.capture_id}: ${res.evidence} excerpt(s), ${res.substantive} substantive${res.first_party ? "" : " (not on the organization's own site)"}.
+       ${res.ai_leads_confirmed ? `${res.ai_leads_confirmed} AI lead(s) confirmed. ` : ""}Stance now <b>${esc(STANCE_LABEL[res.stance] || res.stance)}</b> (${esc(MODE_LABEL[res.relief_mode] || res.relief_mode)}).
+       <div class="muted">Fingerprint ${esc(res.fingerprint.slice(0, 16))}… · run ${esc(res.run_id)}</div></div>`;
+    if (!res.duplicate) { $("#cap-text").value = ""; $("#cap-title").value = ""; $("#cap-note").value = ""; $("#cap-count").textContent = ""; }
+    loadCapture();
+  } finally { if (btn) btn.disabled = false; }
+});
+const loaders = {live: loadLive, results: loadResults, evidence: loadEvidence, review: loadReview, verify: loadVerify, capture: loadCapture, insights: loadInsights, ops: loadOps};
 let current = "live";
 async function show(tab) {
   current = tab;
@@ -357,12 +464,16 @@ document.addEventListener("keydown", e => {
 });
 document.addEventListener("click", async e => {
   const vb = e.target.closest("button[data-v]"); if (vb) { verifyAction(vb.dataset.v); return; }
+  const cp = e.target.closest("button[data-cap-pick]");
+  if (cp) { capPick(cp.dataset.capPick, cp.dataset.capName, ""); $("#cap-url").value = cp.dataset.capUrl || ""; $("#cap-text").focus(); return; }
+  const co = e.target.closest("button[data-cap-open]");
+  if (co) { if (/^https?:/.test(co.dataset.capOpen)) window.open(co.dataset.capOpen, "_blank", "noopener"); return; }
   const tr = e.target.closest("tr[data-ev]"); if (tr) showEvidence(JSON.parse(tr.dataset.ev));
   const b = e.target.closest("button[data-decide]");
   if (b) { const id = b.dataset.decide, note = (document.querySelector(`[data-note="${id}"]`) || {}).value || "";
     const res = await post(`/api/review/${id}`, {decision: b.dataset.d, note}); if (res.error) alert(res.error); loadReview(); }
 });
-if (CFG.static) { $("#verify-tab").hidden = true; }
+if (CFG.static) { $("#verify-tab").hidden = true; $("#capture-tab").hidden = true; }
 if (CFG.static) { $("#static-banner").hidden = false; $("#snap-time").textContent = DATA.overview.generated + (DATA.redacted ? ". Names of private individuals withheld (automated redaction)" : ""); }
 show(loaders[location.hash.slice(1)] ? location.hash.slice(1) : "live");
 if (!CFG.static) setInterval(() => { if (current === "live") loadLive(); }, 2000);

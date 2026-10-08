@@ -719,6 +719,8 @@ def doctor_cmd(network: bool = typer.Option(True, "--network/--no-network", help
 @app.command("verify-precedents")
 def verify_precedents_cmd(
     max_searches: int | None = MaxSearchesOpt, run_id: str | None = typer.Option(None, "--run-id"),
+    only_index: bool = typer.Option(False, "--only-index", help="Only entries imported with import-evidence-index"),
+    no_search: bool = typer.Option(False, "--no-search", help="Read the listed source links only (no search credits)"),
     quiet: bool = QuietOpt, verbose: bool = VerboseOpt, config: Path | None = ConfigOpt,
 ) -> None:
     """Search, fetch and snapshot sources for seeded precedents (Boston Globe Fresh Start, AP, SPJ...). Never self-verifies."""
@@ -726,7 +728,7 @@ def verify_precedents_cmd(
     db, settings = _db(config)
     try:
         res = asyncio.run(run_seeds(db, settings, "precedents", run_id=run_id, max_searches=max_searches, quiet=quiet,
-                                    verbose=verbose, command=_cmdline()))
+                                    verbose=verbose, command=_cmdline(), only_index=only_index, search=not no_search))
         console.print_json(json.dumps(res, default=str))
         run_finished(settings, "precedent verification", res)
         _print_stop(res, f"nsmpa verify-precedents --run-id {res['run_id']}")
@@ -1211,6 +1213,126 @@ def exclude_run_cmd(run_id: str = typer.Argument(...), reason: str = typer.Optio
                    ("completed" if undo else "excluded", None if undo else f"excluded: {reason}", run_id))
         db.conn.commit()
         console.print(f"Run {run_id} {'restored' if undo else 'excluded from reports'}")
+    finally:
+        db.close()
+
+
+@app.command("reclassify")
+def reclassify_cmd(run_id: list[str] = typer.Option(..., "--run-id", help="Repeatable"),
+                   config: Path | None = ConfigOpt) -> None:
+    """Re-judge stored excerpts with the current classifier and recompute stances (no fetching, no credits)."""
+    from .reclassify import reclassify_run
+    db, settings = _db(config)
+    try:
+        for rid in run_id:
+            console.print_json(json.dumps(reclassify_run(db, settings, rid)))
+    finally:
+        db.close()
+
+
+@app.command("import-evidence-index")
+def import_evidence_index_cmd(path: Path = typer.Argument(..., exists=True, readable=True),
+                              name: str = typer.Option(..., "--name", help="A label for this list, e.g. 'Easterner evidence index v6'"),
+                              config: Path | None = ConfigOpt) -> None:
+    """Import a hand-built list of organizations + source links as precedents (never counted in percentages)."""
+    from .evidence_index import import_evidence_index
+    db, _ = _db(config)
+    try:
+        console.print_json(json.dumps(import_evidence_index(db, path, name=name)))
+        console.print("Next: nsmpa verify-precedents --only-index --no-search   (reads every listed source; no credits)")
+    finally:
+        db.close()
+
+
+@app.command("evidence-index-report")
+def evidence_index_report_cmd(name: str | None = typer.Option(None, "--name"),
+                              out: Path = typer.Option(Path("output/evidence_index_check.csv"), "--out"),
+                              config: Path | None = ConfigOpt) -> None:
+    """Compare each imported entry (its tier) with what NSMPA found when it read the source."""
+    import csv
+    from collections import Counter
+    from .evidence_index import index_report
+    db, _ = _db(config)
+    try:
+        rows = index_report(db, name)
+        if not rows:
+            raise typer.BadParameter("no imported evidence-index entries")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with out.open("w", newline="", encoding="utf-8") as fh:
+            w = csv.DictWriter(fh, fieldnames=list(rows[0]))
+            w.writeheader()
+            w.writerows(rows)
+        by = Counter((r["tier"], r["status"]) for r in rows)
+        for tier in sorted({r["tier"] for r in rows}):
+            n = sum(v for (t, _), v in by.items() if t == tier)
+            console.print(f"Tier {tier}: {n} entries · " + ", ".join(f"{s} {v}" for (t, s), v in sorted(by.items()) if t == tier))
+        console.print(f"Wrote {out}")
+    finally:
+        db.close()
+
+
+@app.command("capture")
+def capture_cmd(entity: str = typer.Option(..., "--entity", help="Organization id, or a unique part of its name"),
+                url: str = typer.Option(..., "--url", help="The page you copied the text from"),
+                text_file: Path | None = typer.Option(None, "--file", exists=True, readable=True,
+                                                      help="Plain-text file with the copied page text (default: read stdin)"),
+                by: str = typer.Option(..., "--by", help="Who captured it (name or initials)"),
+                title: str = typer.Option("", "--title"), note: str = typer.Option("", "--note"),
+                config: Path | None = ConfigOpt) -> None:
+    """Record policy text you copied by hand from a site that blocks automated access."""
+    import sys
+    from .capture import CaptureError, add_capture
+    db, settings = _db(config)
+    try:
+        if entity.isdigit():
+            eid = int(entity)
+        else:
+            rows = db.execute("SELECT id, name FROM research_entities WHERE active=1 AND name LIKE ? LIMIT 6",
+                              (f"%{entity}%",)).fetchall()
+            if len(rows) != 1:
+                names = ", ".join(f"{r['id']}={r['name']}" for r in rows) or "none"
+                raise typer.BadParameter(f"'{entity}' matches {len(rows)} organizations ({names}); pass the id")
+            eid = int(rows[0]["id"])
+        text = text_file.read_text(encoding="utf-8", errors="replace") if text_file else sys.stdin.read()
+        try:
+            res = add_capture(db, settings, entity_id=eid, url=url, text=text, captured_by=by, title=title, note=note)
+        except CaptureError as exc:
+            raise typer.BadParameter(str(exc))
+        if res["duplicate"]:
+            console.print(f"Already captured (capture #{res['capture_id']}); nothing changed.")
+        else:
+            console.print(f"Capture #{res['capture_id']}: {res['evidence']} excerpt(s), {res['substantive']} substantive"
+                          f"{'' if res['first_party'] else ' (not on the organization’s own site)'}; "
+                          f"{res['ai_leads_confirmed']} AI lead(s) confirmed. Stance now {res['stance']} "
+                          f"({res['relief_mode']}) in run {res['run_id']}. Fingerprint {res['fingerprint'][:16]}…")
+    finally:
+        db.close()
+
+
+@app.command("leads")
+def leads_cmd(status: str = typer.Option("unconfirmed", "--status", help="unconfirmed | confirmed | no_policy_found | all"),
+              limit: int = typer.Option(50, "--limit"), config: Path | None = ConfigOpt) -> None:
+    """AI-search leads for blocked sites: what the AI says the policy is, and whether NSMPA could confirm it."""
+    from rich.table import Table
+    db, _ = _db(config)
+    try:
+        sql = ("SELECT l.id, re.id AS eid, re.name, l.status, l.confirmed_via, l.claimed_url, l.quote, l.summary FROM ai_leads l "
+               "JOIN research_entities re ON re.id=l.entity_id")
+        params: list = []
+        if status != "all":
+            sql += " WHERE l.status=?"
+            params.append(status)
+        rows = db.execute(sql + " ORDER BY l.id DESC LIMIT ?", params + [limit]).fetchall()
+        t = Table(title=f"AI-search leads ({status})", show_lines=True)
+        for col in ("id", "organization", "status", "claimed URL", "quote / summary"):
+            t.add_column(col)
+        for r in rows:
+            t.add_row(str(r["id"]), f"{r['name']} (#{r['eid']})", f"{r['status']}{' via ' + r['confirmed_via'] if r['confirmed_via'] else ''}",
+                      r["claimed_url"] or "", (r["quote"] or r["summary"] or "")[:300])
+        console.print(t)
+        if status == "unconfirmed" and rows:
+            console.print("Confirm a lead by opening the URL in your browser and recording the text: "
+                          "nsmpa capture --entity ID --url URL --by YOU < copied.txt  (or the GUI's Capture tab)")
     finally:
         db.close()
 

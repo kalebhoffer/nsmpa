@@ -92,7 +92,7 @@ async def test_dead_homepage_spends_no_search_credits(tmp_path, db):
 
 
 async def test_blocked_site_is_one_finding_not_dozens_of_errors(tmp_path, db):
-    s = make_settings(tmp_path, research_recover_stale_sites=False, max_retries=0)
+    s = make_settings(tmp_path, research_recover_stale_sites=False, max_retries=0, blocked_fallback=False)
     student_entity(db, tmp_path, "https://blocked.example/")
     rid, stats, provider = await run(db, s, {})
     assert provider.calls == [] and stats["failed"] == 0

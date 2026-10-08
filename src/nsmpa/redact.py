@@ -128,9 +128,9 @@ class Redactor:
 
 
 TEXT_FIELDS = {"excerpt", "quote", "source_title", "best_excerpt", "strongest_supportive", "strongest_adverse", "title",
-               "context", "rationale", "practice_summary", "claim", "status_note", "summary", "conditions", "sentence"}
+               "context", "rationale", "practice_summary", "claim", "status_note", "summary", "conditions", "sentence", "note"}
 URL_FIELDS = {"source_url", "strongest_supportive_url", "strongest_adverse_url", "best_source", "final_url", "url",
-              "requested_url", "homepage_url"}
+              "requested_url", "homepage_url", "confirmed_url", "claimed_url"}
 DROP_FIELDS = {"archive_url", "snapshot_path"}
 
 

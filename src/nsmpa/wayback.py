@@ -37,7 +37,8 @@ _NOT_NAME_WORD = {
     "Office", "Public", "Safety", "North", "South", "East", "West", "New", "Monday", "Tuesday", "Wednesday",
     "Thursday", "Friday", "Saturday", "Sunday", "January", "February", "March", "April", "May", "June", "July",
     "August", "September", "October", "November", "December", "Editor", "Editors", "Staff", "Sheriff", "Superior",
-    "Associated", "Press", "United", "States", "Read", "More", "Related", "Share", "Comments", "Contact", "Advertise",
+    "Associated", "Press", "By", "On", "In", "At", "For", "And", "But", "After", "When", "Before", "During", "According",
+    "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday", "News", "Sports", "Opinion", "Photo", "Jan", "Feb", "Mar", "Apr", "Jun", "Jul", "Aug", "Sep", "Sept", "Oct", "Nov", "Dec", "United", "States", "Read", "More", "Related", "Share", "Comments", "Contact", "Advertise",
     "Prosecuting", "Attorney", "Judge", "Officer", "Sergeant", "Detective", "Chief", "President", "Dean", "Professor",
 }
 
@@ -47,7 +48,7 @@ def person_names(text: str) -> set[str]:
     for m in _NAME.finditer(text or ""):
         cand = m.group(1)
         words = re.split(r"\s+", cand)
-        if any(w.rstrip(".") in _NOT_NAME_WORD for w in words):
+        if any(w.rstrip(".") in _NOT_NAME_WORD for w in words) or len(words[0]) < 3 or len(words[-1]) < 3:
             continue
         out.add(cand)
     return out
@@ -60,6 +61,25 @@ def _ratio(a: str, b: str) -> float:
     return round(difflib.SequenceMatcher(None, a, b, autojunk=False).ratio(), 3)
 
 
+def _headline(title: str) -> str:
+    """Title without the site-name suffix ("Headline – The Spectator", "Headline | Site")."""
+    return normalize_for_hash(re.split(r"\s+[–—|·]\s+|\s+-\s+(?=[^-]+$)", title or "")[0])
+
+
+def _containment(old: str, new: str) -> float:
+    """Share of the archived article's sentences still present in the current page.
+
+    Robust to site redesigns: navigation, ads and theme text differ between captures, the article body does not
+    (unless it was edited). A plain diff ratio reported 0.0 for unchanged articles whose page template changed.
+    """
+    new_n = normalize_for_hash(new)
+    sents = [normalize_for_hash(x) for x in re.split(r"(?<=[.!?])\s+", old or "")]
+    sents = [x for x in sents if len(x) >= 40]
+    if not sents:
+        return 1.0
+    return round(sum(1 for x in sents if x in new_n) / len(sents), 3)
+
+
 def compare_versions(old_html: bytes, new_html: bytes | None, *, url: str, current_status: int | None,
                      threshold: float) -> list[dict]:
     """Pure comparison (unit-testable). Returns observation dicts with no names or titles."""
@@ -70,17 +90,26 @@ def compare_versions(old_html: bytes, new_html: bytes | None, *, url: str, curre
             obs.append({"type": "unpublished", "current_status": current_status})
         return obs
     new = extract_main_text(new_html, "text/html", url, {})
-    sim = _ratio(old.main_text, new.main_text)
-    old_names, new_text = person_names(old.main_text), new.full_text or new.main_text
-    removed = sorted(n for n in old_names if n not in new_text)
-    if removed and sim >= 0.4:  # still recognisably the same article
+    new_text = new.full_text or new.main_text
+    if len(normalize_for_hash(old.main_text)) < 60 or len(normalize_for_hash(new_text)) < 60:
+        return obs  # one side has no readable article text: not comparable, report nothing
+    sim = _containment(old.main_text, new_text)
+    old_names = person_names(old.main_text)
+    new_words = set(re.findall(r"[A-Za-z][A-Za-z'-]+", new_text))
+    # A name counts as removed only when none of its words survive anywhere on the current page; partial matches are
+    # template/byline reflow ("By Callie" + "Craighead Apr"), not redaction.
+    removed = sorted(n for n in old_names if not any(w.rstrip(".") in new_words for w in n.split() if len(w.rstrip(".")) >= 3))
+    old_vocab = {w for w in re.findall(r"[a-z]{4,}", normalize_for_hash(old.main_text))}
+    same_article = not old_vocab or len(old_vocab & set(re.findall(r"[a-z]{4,}", normalize_for_hash(new_text)))) / len(old_vocab) >= 0.6
+    if removed and same_article:  # still recognisably the same article (vocabulary overlap survives redaction and redesigns)
         obs.append({"type": "names_removed", "count": len(removed),
                     "name_hashes": [sha256_text(normalize_for_hash(n))[:12] for n in removed],
                     "update_note_present": bool(re.search(r"editor'?s'? note|has been updated|updated to remove|name has been", new_text, re.I))})
     if new.noindex and not old.noindex:
         obs.append({"type": "noindex_added", "directive": new.meta_robots or new.x_robots_tag})
-    if old.title and new.title and normalize_for_hash(old.title) != normalize_for_hash(new.title):
-        obs.append({"type": "title_changed", "title_similarity": _ratio(old.title, new.title)})
+    oh, nh = _headline(old.title), _headline(new.title)
+    if oh and nh and oh not in nh and nh not in oh and _ratio(oh, nh) < 0.85:
+        obs.append({"type": "title_changed", "title_similarity": _ratio(oh, nh)})
     if sim < threshold:
         obs.append({"type": "content_altered", "text_similarity": sim})
     return obs
@@ -109,7 +138,8 @@ def describe(o: dict, earliest: str, compared: str) -> str:
         return (f"Wayback Machine comparison: this article was archived as live on {d}, but the URL now returns HTTP "
                 f"{o['current_status']}. May reflect unpublishing or a site migration; verify.")
     if o["type"] == "content_altered":
-        return f"Wayback Machine comparison: the text changed substantially since the {d} capture (similarity {o['text_similarity']})."
+        return (f"Wayback Machine comparison: only {round(o['text_similarity'] * 100)}% of the article's sentences from the "
+                f"{d} capture are still in the current version.")
     if o["type"] == "title_changed":
         return f"Wayback Machine comparison: the headline changed since the {d} capture."
     return json.dumps(o)

@@ -103,7 +103,8 @@ PROCESS = re.compile(
     re.I,
 )
 PROHIBITIVE = re.compile(
-    r"\b(?:do(?:es)? not|don'?t|doesn'?t|will not|won'?t|never|cannot|can'?t|can not|"
+    r"\b(?:do(?:es)? not|don'?t|doesn'?t|will not|won'?t|shall not|must not|never|cannot|can'?t|can not|"
+    r"not one(?: of)?|none of|no (?:editors?|newsrooms?|newspapers?|outlets?|publications?) (?:would|will|should)|"
     r"(?:is|are) not (?:able|permitted|allowed|in the business)|no longer|refuse\w*|declin\w*|"
     r"not (?:remove|unpublish|delete|take down|de-?index|anonymi[sz]e|alter|change)|"
     r"policy is (?:not to|to not)|(?:strongly )?resist\w*|against (?:our|the) policy|"
@@ -126,6 +127,94 @@ CHANGED_OUTCOME = re.compile(
 CASE_BY_CASE_CUE = re.compile(TAGS["case_by_case"].pattern + "|" + TAGS["discretion"].pattern, re.I)
 ARCHIVE_CUE = TAGS["archive_integrity"]
 REQUEST_CUE = re.compile(r"\brequests?\b|\basks?\b|\basked\b|\bpetition\w*\b|\bcontact(?:s|ed)? (?:us|the editor)\b", re.I)
+# Negations that are not about relief ("when the law does not provide an answer", "could not be liable for libel").
+NEG_CAVEAT = re.compile(r"\b(?:do(?:es)? not|doesn'?t|will not|won'?t|cannot|can'?t|may not|might not)\s+"
+                        r"(?:necessarily|automatically|always|immediately|fully|completely)\b", re.I)
+NEG_NOT_RELIEF = re.compile(
+    r"\b(?:do(?:es)? not|don'?t|doesn'?t|cannot|can'?t|could not|couldn'?t|would not|wouldn'?t|will not|won'?t|"
+    r"(?:is|are|was|were) not|may not|might not)\s+(?:typically\s+|usually\s+|generally\s+|necessarily\s+|ordinarily\s+|always\s+)?(?:be\s+)?(?:held\s+)?(?:(?:legally\s+)?liable|provide|give|offer|"
+    r"require|have|know|mean|apply|exist|need|matter|guarantee|cover|define|constitute|sue|win|prevail|qualify|"
+    r"impact|affect|prevent|stop|erase|eliminate|delete it from|reach|control)\b", re.I)
+# The removal wish belongs to the requester, not the publication: "the subject may demand removal",
+# "people wish they could hide", "journalists sometimes ask the publications to take down these pieces".
+REQUESTER_WISH = re.compile(
+    r"\b(?:subjects?|people|someone|anyone|readers?|sources?|individuals?|persons?|they|he|she|students?|journalists?|alumni|"
+    r"famil(?:y|ies)|parents?|former \w+|plaintiffs?|lawyers?|attorneys?)\b(?:\W+\w+){0,3}?\W+(?:may\W+|might\W+|could\W+|"
+    r"often\W+|sometimes\W+|frequently\W+|will\W+|then\W+|also\W+)*(?:demand\w*|ask(?:s|ed|ing)?|request\w*|want\w*|wish\w*|seek\w*|petition\w*|plead\w*|beg\w*|urg\w*)\b"
+    r"(?:\W+\w+){0,8}?\W+(?:remov\w*|take\s*down|takedowns?|unpublish\w*|hide|delet\w*|de-?index\w*|anonymi\w*|scrub\w*|"
+    r"pull\w*|erase\w*)", re.I)
+REQUESTER_HABIT = re.compile(r"\b(?:sometimes|often|frequently|occasionally|routinely|regularly|increasingly)\s+(?:ask|request|demand|beg|"
+                             r"plead|want|urge|petition)\w*\b(?:\W+\w+){0,8}?\W+(?:remov\w*|take\s*down|unpublish\w*|delet\w*|"
+                             r"de-?index\w*|anonymi\w*|scrub\w*|pull\w*)", re.I)
+PUBLISHER_VOICE = re.compile(r"\b(?:we|our|us|editors? (?:will|may|can|should|must)|the (?:paper|newspaper|newsroom|publication|staff) "
+                             r"(?:will|may|can|should|must|agreed|decided))\b", re.I)
+PHYSICAL_COPIES = re.compile(r"\b(?:stolen|theft|thie(?:f|ves)|newsstands?|news racks?|racks|from (?:the )?(?:stands|bins|boxes)|"
+                             r"print (?:run|copies|edition)s?|copies (?:were|of the))\b", re.I)
+CONTACT_INFO = re.compile(r"@|\[email\s*protected\]|\bcontact:|\bphone:|\bemail:", re.I)
+COMMENT_MODERATION = re.compile(r"\b(?:comments?|commenters?|hate speech|profanity|spam|inflammatory|off-topic|"
+                                r"your posts?|social media (?:posts?|pages?|accounts?|guidelines)|"
+                                r"leave a (?:comment|reply)|reader (?:comments?|submissions?))\b", re.I)
+# Passive removals count as the publication's practice only when the thing removed is journalism or a name in it
+# ("the article was removed", "names were redacted") — not memos, signs, or officials removed from office.
+PASSIVE_REMOVAL = re.compile(r"\b(?:was|were|has been|have been|had been)\s+(?:quietly\s+)?(?:removed|unpublished|deleted|"
+                             r"taken down|de-?indexed|anonymi[sz]ed|redacted)\b", re.I)
+PASSIVE_CONTENT = re.compile(r"\b(?:articles?|stor(?:y|ies)|names?|photos?|posts?|columns?|pieces?|headlines?|mugshots?|"
+                             r"content|coverage|archives?|reports?|blotter)\b(?:\W+\w+){0,5}?\W+(?:was|were|has been|have been|"
+                             r"had been)\s+(?:quietly\s+)?(?:removed|unpublished|deleted|taken down|de-?indexed|anonymi[sz]ed|redacted)\b",
+                             re.I)
+# Production editing of media (audio pauses, photo backgrounds, color) is not post-publication relief.
+MEDIA_EDITING = re.compile(r"\b(?:audio|video|photo(?:graph)?s?|images?|background|pauses?|stumbles?|levels?|color|colou?r "
+                           r"correct\w*|equali[sz]ation|normali[sz]ation|pixels?|cropp\w*|retouch\w*|soundbites?|"
+                           r"natural sound|ambient)\b", re.I)
+# A publisher asking search engines to drop its own stories: "the AP would also request that Google deindex the stories".
+SEARCH_REMOVAL_REQUEST = re.compile(
+    r"\b(?:we|the [A-Z][\w.&]*(?: [A-Z][\w.&]*){0,3}|[A-Z]{2,})\s+(?:would|will|may|can|could|also|then|\s)+"
+    r"(?:request|ask|petition|submit a request to)\w*\s+(?:that\s+)?(?:Google|Bing|search engines?)\b[^.]{0,80}?"
+    r"\b(?:de-?index\w*|remov\w*|drop\w*|delist\w*)", re.I)
+# The publisher working with search engines: "may choose to cooperate with Google if Google decides to help".
+SEARCH_COOPERATION = re.compile(r"\b(?:may|can|could|might|will|should)\s+(?:choose to\s+|also\s+|decide to\s+)?"
+                                r"(?:cooperate|work|coordinate|partner)\s+with\s+(?:Google|Bing|search engines?)\b|"
+                                r"\b(?:may|can|could|might)\s+(?:choose to\s+)?see if (?:Google|search engines?) will\b", re.I)
+# Court-record expungement/sealing procedures are the courts' process, not the publication's.
+COURT_PROCESS = re.compile(r"\b(?:courts?|clerk|judge|state\.[a-z]{2}\.us|record seal\w*|seal(?:ing)? (?:of )?records?)\b[^.]{0,120}"
+                           r"\b(?:process|forms?|petition|motion|file|filing)\b|\b(?:deletion|expungement|sealing) process\b", re.I)
+# Grounds that limit removal to defective or unlawful content; relief for accurate reporting needs other grounds.
+LIMITED_GROUNDS = re.compile(r"\b(?:inaccura\w*|factual(?:ly)? (?:wrong|incorrect|inaccurate|error)|substantially wrong|"
+                             r"(?:is|are|was|were|proves?|proven) (?:false|wrong|incorrect)|errors?|erroneous|fabricat\w*|"
+                             r"plagiari\w*|libel\w*|defamat\w*|court orders?|legal(?:ly)? (?:required|requirement|obligation)|"
+                             r"copyright|unprotected speech|does not meet our standards|not meet our standards|"
+                             r"grammat\w*|misspell\w*)\b", re.I)
+HUMANE_GROUNDS = re.compile(r"\b(?:harm\w*|fresh start|privacy|dismiss\w*|acquit\w*|expung\w*|sealed|exonerat\w*|"
+                            r"not guilty|never charged|charges (?:were )?dropped|minor (?:crimes?|offen[cs]es)|juvenile|"
+                            r"years? (?:old|ago|later)|old(?:er)? (?:stories|articles|coverage)|outdated|newsworth\w*|"
+                            r"public interest|rehabilitat\w*|second chance|right to be forgotten)\b", re.I)
+RELIEF_TOPIC = re.compile(r"\b(?:remov\w*|unpublish\w*|takedowns?|take\s*down|delet\w*|de-?index\w*|anonymi\w*|archiv\w*|online|"
+                          r"search engines?|google|redact\w*|scrub\w*|pull\w*\s+(?:down|content|stories|articles))\b", re.I)
+UNPUBLISHED_ADJ = re.compile(r"\bunpublished\s+(?:writers?|authors?|poets?|works?|manuscripts?|poems?|novels?|stories by|"
+                             r"research|data|papers?|songs?|music|photographs? by|material from)\b", re.I)
+ACCURACY_REASON = re.compile(r"\b(?:can ?not be verified|could not be verified|unverified|unverifiable|inaccura\w*|incorrect\w*|"
+                             r"false|errors?|erroneous\w*|mistakes?|misattribut\w*|fabricat\w*|plagiari\w*)\b", re.I)
+
+
+def relief_other(sentence: str) -> bool:
+    """Relief verbs other than the adjective 'unpublished'."""
+    return bool(re.search(r"\b(?:remov\w*|unpublish(?:es|ing)?\b|take\s*down|delet\w*|de-?index\w*|anonymi\w*)", sentence, re.I))
+
+
+def _governs(neg, action, sentence: str) -> bool:
+    """A negation applies to the relief verb only when it comes shortly before it (or "not be removed" just after)."""
+    if re.match(r"\s+(?:be\s+)?(?:altered|changed|removed|deleted|edited|modified|unpublished|taken down|scrubbed)\b",
+                sentence[neg.end():], re.I):
+        return True  # "shall not be altered" is itself a statement about changing published work
+    if neg.start() <= action.start():
+        return action.start() - neg.end() <= 60
+    return bool(re.search(r"\bnot\b", sentence[action.end():action.end() + 15])) or neg.start() - action.end() <= 25
+
+
+def _neg(text: str):
+    """PROHIBITIVE, ignoring negations that are about something other than relief."""
+    blank = lambda m: " " * len(m.group(0))  # noqa: E731  (keep offsets)
+    return PROHIBITIVE.search(NEG_CAVEAT.sub(blank, NEG_NOT_RELIEF.sub(blank, text)))  # keep offsets
 # Past-tense descriptions of what a newsroom actually did (documented practice / precedent).
 PRACTICE_SUPPORT = re.compile(
     r"\b(?:began|begun|started|launched|created|adopted|introduced|implemented|announced)\s+(?:a |an |its |our |the )?"
@@ -280,9 +369,9 @@ def classify_statement(sentence: str, context: str = "") -> Statement:
     has_object = bool(CONTENT_OBJECT.search(sentence))
     relief = RELIEF_ACTION.search(sentence)
     update = UPDATE_ACTION.search(sentence)
-    permissive = PERMISSIVE.search(sentence) or (IMPERATIVE.match(sentence) if not PROHIBITIVE.search(sentence) else None)
+    permissive = PERMISSIVE.search(sentence) or (IMPERATIVE.match(sentence) if not _neg(sentence) else None)
     process = PROCESS.search(sentence)
-    prohibitive = PROHIBITIVE.search(sentence)
+    prohibitive = _neg(sentence)
     narrow = NARROW_EXCEPTION.search(sentence)
     changed = CHANGED_OUTCOME.search(sentence)
     changed_ctx = changed or (CHANGED_OUTCOME.search(context) if context else None)
@@ -306,10 +395,63 @@ def classify_statement(sentence: str, context: str = "") -> Statement:
         cues.append("personal_data_not_journalism")
         return done("mention", 0.1)
 
+    if re.search(r"\?[\"'”’)\]]*\s*$", sentence):
+        cues.append("question_not_position")  # "But should you?" asks, it does not state a policy
+        return done("mention", 0.2)
+    if CONTACT_INFO.search(sentence) and not relief:
+        cues.append("contact_details")
+        return done("mention", 0.1)
+    if PHYSICAL_COPIES.search(sentence) and not re.search(r"\b(?:online|website|archive|search)\b", sentence, re.I):
+        cues.append("physical_copies_not_archive")  # stolen print copies, newsstands: not post-publication relief
+        return done("mention", 0.2)
+    if UNPUBLISHED_ADJ.search(sentence) and not relief_other(sentence):
+        cues.append("unpublished_adjective")  # "unpublished writers/manuscripts": not post-publication relief
+        return done("mention", 0.2)
+    if COURT_PROCESS.search(sentence) and not re.search(r"\b(?:articles?|stor(?:y|ies)|archives?|our (?:site|website))\b",
+                                                         sentence, re.I):
+        cues.append("court_record_process_not_publication")
+        return done("mention", 0.2)
+    if SEARCH_COOPERATION.search(sentence) and not _neg(sentence):
+        cues.append("publisher_cooperates_with_search_engine")
+        return done("relief_permitted", 0.6)
+    if SEARCH_REMOVAL_REQUEST.search(sentence) and not _neg(sentence):
+        cues.append("publisher_requests_search_removal")
+        return done("changed_circumstance_relief" if changed_ctx else "relief_permitted", 0.75)
+    journalism_unit = re.search(r"\b(?:stor(?:y|ies)|articles?|archives?|requests?|crimes?|coverage|names?|headlines?)\b",
+                                sentence, re.I)
+    if not journalism_unit and (len(MEDIA_EDITING.findall(sentence)) >= 2 or re.search(
+            r"\b(?:audio|video|photo\w*|image)\b[^.]{0,60}\b(?:remov\w*|alter\w*|conceal\w*)\b|"
+            r"\b(?:remov\w*|alter\w*|conceal\w*)\b[^.]{0,60}\b(?:audio|video|photo\w*|image)\b|"
+            r"\b(?:remov\w*|edit\w*)\b[^.]{0,40}\b(?:pauses?|stumbles?|background)\b", sentence, re.I)):
+        cues.append("media_editing_not_relief")
+        return done("mention", 0.2)
+    if COMMENT_MODERATION.search(sentence) and len(sentence) > 250:
+        # Run-on policy pages: a comment-moderation list followed by the real archive policy. Judge the tail alone.
+        tail = sentence[[m.end() for m in COMMENT_MODERATION.finditer(sentence)][-1]:]
+        tail = re.sub(r"^[^A-Z]*", "", tail)
+        if len(tail) >= 60 and tail != sentence:
+            return classify_statement(tail, context)
+    if COMMENT_MODERATION.search(sentence) and not re.search(r"\b(?:articles?|stor(?:y|ies)|archives?)\b(?![^.]{0,30}comment)", sentence, re.I):
+        cues.append("comment_moderation")  # removing reader comments is not post-publication relief for journalism
+        return done("mention", 0.2)
+    if PASSIVE_REMOVAL.search(sentence) and not PASSIVE_CONTENT.search(sentence) and not (
+            PRACTICE_NOTE.search(sentence) or re.search(r"\b(?:we|our|editors? (?:have|has|had|decided|agreed|chose))\b", sentence, re.I)):
+        cues.append("removal_not_of_journalism")
+        return done("mention", 0.2)
+    if (REQUESTER_WISH.search(sentence) or REQUESTER_HABIT.search(sentence)) and not PUBLISHER_VOICE.search(sentence) and not PRACTICE_NOTE.search(sentence):
+        cues.append("requester_not_publisher")
+        return done("mention", 0.3)
+    if re.search(r"\bwish(?:es|ed)?\b[^.]{0,40}\bcould\b", sentence, re.I) and not PUBLISHER_VOICE.search(sentence):
+        cues.append("requester_not_publisher")
+        return done("mention", 0.3)
+
     # Documented practice (past tense, what actually happened) takes precedence.
     if PRACTICE_ADVERSE.search(sentence) and (has_object or request):
         cues.append("practice:denied")
         return done("practice_relief_denied", 0.75)
+    if PRACTICE_NOTE.search(sentence) and ACCURACY_REASON.search(sentence):
+        cues.append("practice:correction")  # removing unverifiable or false material is a correction, not relief
+        return done("practice_update", 0.6)
     if PRACTICE_NOTE.search(sentence):
         cues.append("practice:note")
         return done("practice_relief_granted", 0.8)
@@ -321,6 +463,11 @@ def classify_statement(sentence: str, context: str = "") -> Statement:
         return done("practice_update", 0.6)
 
     subject_ok = has_object or (request and relief)
+    if prohibitive and re.match(r"(?:not one|none of|no )", prohibitive.group(0), re.I):
+        permissive = None  # "Not one of the editors would remove…": the modal is inside the negation
+    if relief and prohibitive and not _governs(prohibitive, relief, sentence):
+        cues.append("negation_not_on_relief")
+        prohibitive = None
     if relief and subject_ok:
         if prohibitive and narrow:
             return done("relief_narrow_exceptions", 0.85)
@@ -336,6 +483,11 @@ def classify_statement(sentence: str, context: str = "") -> Statement:
         if permissive:
             if changed_ctx:
                 return done("changed_circumstance_relief", 0.85)
+            if LIMITED_GROUNDS.search(sentence) and not HUMANE_GROUNDS.search(sentence):
+                # "will remove if factually inaccurate / so substantially wrong": an errors-only exception, which is a
+                # strict-archive position for accurate reporting.
+                cues.append("limited_to_errors_or_legal")
+                return done("relief_narrow_exceptions", 0.7)
             if case:
                 return done("case_by_case", 0.8)
             return done("relief_permitted", 0.8)
@@ -352,8 +504,13 @@ def classify_statement(sentence: str, context: str = "") -> Statement:
             return done("changed_circumstance_update", 0.75)
         if relief is None and (prohibitive is None):
             return done("update_remedy", 0.6)
-    if archive and (has_object or re.search(r"\b(?:we|our)\b", sentence, re.I)):
+    if archive and (has_object or re.search(r"\b(?:we|our)\b", sentence, re.I)) and RELIEF_TOPIC.search(f"{sentence} {context}"):
         return done("archive_principle", 0.6)
+    early = action_positions(sentence)
+    if any(early.get(a) == "permitted" for a in ("deindex", "anonymize", "unpublish")) and not any(
+            early.get(a) == "rejected" for a in ("deindex", "anonymize", "unpublish")) and (has_object or relief):
+        cues.append("clause:relief_permitted")
+        return done("changed_circumstance_relief" if changed_ctx else "relief_permitted", 0.7)
     if (tags and set(tags) & {"reputational_harm", "search_engine", "digital_permanence", "right_to_be_forgotten", "minimize_harm"}
             and (has_object or request)):
         return done("harm_consideration", 0.5)
@@ -429,16 +586,22 @@ _ACTION_PATTERNS: dict[str, re.Pattern[str]] = {
     "anonymize": re.compile(r"\banonymi[sz]\w*|\bredact\w*|\binitials?\b|\bwithh[oe]ld\w* (?:the |a |their )?names?|"
                             r"\b(?:remov|omit|replac|delet|chang|withh[oe]ld)\w* (?:[\w'’]+\s+){0,2}?(?:full\s+)?names?\b|"
                             r"\bnames? (?:has|have|had|were|was|are|is|will be|may be|can be) (?:been )?(?:removed|withheld|omitted|redacted|changed)", re.I),
-    "deindex": re.compile(r"\bde-?\s?index\w*|\bno-?index\w*|\b(?:remov|hid|block|exclud|suppress)\w* (?:it |them |the (?:article|story) |(?:a |the |their |his |her )?names? )?from "
+    "deindex": re.compile(r"\bde-?\s?index\w*|\bno-?index\w*|"
+                          r"\b(?:remov|hid|hidden|block|exclud|suppress|delist)\w*\b(?:\W+[\w'’]+){0,5}?\W+from\s+(?:google|bing|"
+                          r"search engines?|search results?|internet search|online search)\b|\b(?:remov|hid|block|exclud|suppress)\w* (?:it |them |the (?:article|story) |(?:a |the |their |his |her )?names? )?from "
                           r"(?:search|google|search engines?|search results?)|\bsearch engines? (?:will )?(?:not|no longer) (?:find|index|surface)|"
                           r"\bnot (?:be )?(?:indexed|searchable)\b|\bright to be forgotten\b", re.I),
     "unpublish": re.compile(r"\bunpublish\w*|\btake[sn]? down|\btaken down|\btaking down|\btakedowns?\b|"
+                            r"\bblock\w* (?:old |the |such |older )?(?:\w+ )?(?:articles?|stor(?:y|ies)|content|posts?)\b|"
                             r"\b(?:remov|delet|withdr[ae]w)\w* (?:the |an? |our |old |that |this |such )?(?:\w+ )?(?:articles?|stor(?:y|ies)|content|posts?|pieces?|coverage|items?)\b|"
-                            r"\b(?:articles?|stor(?:y|ies)|content|posts?) (?:\w+ ){0,3}(?:removed|deleted|taken down|unpublished)\b", re.I),
+                            r"\b(?:articles?|stor(?:y|ies)|content|posts?) (?:[\w'’]+ ){0,3}(?:removed|deleted|taken down|unpublished)\b|"
+                            r"\b(?:article|story|content|news) (?:removal|deletion|takedown)s?\b", re.I),
     "update": re.compile(r"\beditor'?s'? notes?\b|\bupdat\w*|\bappend\w*|\baddend\w*|\bfollow[- ]?up\b|\bcorrect(?:ion|ed|ing|ions)?\b|"
                          r"\bclarif\w+|\b(?:outcome|disposition)\b", re.I),
 }
-_AFFIRM = re.compile(r"^\s*(?:we|editors?|the (?:paper|newspaper|newsroom|editors?|publication|staff)|our (?:policy|practice) is to)\s+"
+_AFFIRM = re.compile(r"^\s*(?:we|editors?|the (?:paper|newspaper|newsroom|editors?|publication|staff)|"
+                     r"our (?:main |primary |usual |standard |first )?(?:policy|practice|remedy|approach|option|response) is to|"
+                     r"(?:we|editors?) (?:can|may|will|could) (?:also )?(?:request|ask) (?:that )?(?:the story |the article |it )?(?:be )?)\s*"
                      r"(?:will\s+|generally\s+|typically\s+|usually\s+|always\s+|instead\s+|also\s+)?" + _RELIEF_OR_UPDATE_VERB, re.I)
 _CLAUSE_SPLIT = re.compile(r",?\s+\bbut\b\s+|;\s*|\s+\bhowever\b,?\s+|,\s+\b(?:although|though|while)\b\s+|\s+\binstead\b,?\s+|"
                            r"\s+\b(?:rather than)\b\s+|\.\s+", re.I)
@@ -466,11 +629,19 @@ def action_positions(sentence: str) -> dict[str, str]:
             # "remove the name from the story": the object is the name, not the story.
             if not re.search(r"\b(?:remov|delet|take|unpublish)\w*\s+(?:the |an? |our |old |that |this )?(?:\w+ )?(?:articles?|stor(?:y|ies)|content|posts?)\b", clause, re.I):
                 found.remove("unpublish")
+        if "deindex" in found and "unpublish" in found and re.search(
+                r"\bfrom\s+(?:google|bing|search engines?|search results?|internet search)", clause, re.I) and not re.search(
+                r"\bfrom\s+(?:our|the|its)\s+(?:site|website|archives?|pages?)|\bunpublish", clause, re.I):
+            found.remove("unpublish")  # "remove old crime stories from Google" asks for de-indexing, not unpublishing
         if "deindex" in found and "anonymize" in found and re.search(r"\bnames?\s+from\s+(?:search|google)", clause, re.I):
             found.remove("anonymize")  # "remove a name from search results" is de-indexing, not anonymizing the text
         if not found:
             continue
-        neg = PROHIBITIVE.search(clause)
+        neg = _neg(clause)
+        if neg:
+            acts = [m for pat in _ACTION_PATTERNS.values() for m in pat.finditer(clause)]
+            if acts and not any(_governs(neg, m, clause) for m in acts):
+                neg = None  # "requests to remove content ... errors do not significantly alter the gist"
         perm = PERMISSIVE.search(clause)
         proc = PROCESS.search(clause) or CASE_BY_CASE_CUE.search(clause)
         narrow = NARROW_EXCEPTION.search(clause)
@@ -491,6 +662,8 @@ def action_positions(sentence: str) -> dict[str, str]:
         for a in found:
             if rank[pos] >= rank.get(out.get(a, "mentioned"), 0) or a not in out:
                 out[a] = pos
+    if SEARCH_REMOVAL_REQUEST.search(sentence) and not _neg(sentence) and out.get("deindex") != "rejected":
+        out["deindex"] = "permitted"  # the publisher asks search engines to drop its own stories
     if rather:
         for a, pat in _ACTION_PATTERNS.items():
             if pat.search(rather.group(1)):

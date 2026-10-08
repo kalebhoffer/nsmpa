@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import json
 import re
 import xml.etree.ElementTree as ET
 from io import BytesIO
@@ -10,7 +11,7 @@ from dataclasses import dataclass, field
 from bs4 import BeautifulSoup, UnicodeDammit
 
 from .models import PageAnalysis
-from .utils import compact_ws, normalize_url, prepare_request_url
+from .utils import normalize_for_hash, compact_ws, normalize_url, prepare_request_url
 
 try:  # lxml is faster and more tolerant; html.parser is the always-available fallback
     import lxml  # noqa: F401
@@ -92,7 +93,57 @@ def _strip_boilerplate(soup: BeautifulSoup) -> None:
         role = str(attrs.get("role", "")).lower()
         if role in {"navigation", "banner", "contentinfo", "complementary", "search", "dialog"} or (
                 ident.strip() and BOILERPLATE_ATTR.search(ident) and tag.name not in {"body", "html", "main", "article"}):
+            # Some themes put a boilerplate-sounding class on a wrapper around the whole page: never drop the content.
+            if tag.find(["main", "article"]) is not None or tag.find(attrs={"role": "main"}) is not None:
+                continue
             tag.decompose()
+
+
+_JSON_STRING = re.compile(r'"((?:[^"\\]|\\.){200,})"')
+_BLOB = re.compile(r"\S{120,}")  # base64/config tokens leaking into visible text
+
+
+def _embedded_text(scripts: list[str]) -> str:
+    """Article text that a JavaScript site ships inside its page data instead of its HTML.
+
+    News platforms such as Arc XP (``Fusion.globalContent``), Next.js (``__NEXT_DATA__``) and JSON-LD (``articleBody``)
+    put each paragraph in a JSON string, often as escaped HTML. Long JSON strings that read like prose are decoded,
+    stripped of tags and joined in page order. Config values, URLs and base64 never qualify.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for src in scripts:
+        if len(src) < 200 or ('"' not in src):
+            continue
+        for m in _JSON_STRING.finditer(src):
+            try:
+                val = json.loads(f'"{m.group(1)}"')
+            except ValueError:
+                continue
+            if "<" in val and ">" in val:
+                val = BeautifulSoup(val, _PARSER).get_text(" ", strip=True)
+            val = compact_ws(val)
+            words = val.split()
+            if len(words) < 30 or val in seen:
+                continue
+            # Prose: mostly short words, sentence punctuation, few slashes/braces.
+            if sum(len(w) > 25 for w in words) > len(words) * 0.05 or val.count(". ") < 1 or val.count("/") > len(words) * 0.3:
+                continue
+            seen.add(val)
+            out.append(val)
+    return " ".join(out)
+
+
+def _densest_block(soup) -> str:
+    """Text of the element whose direct <p> children hold the most text (a minimal readability heuristic)."""
+    best, best_len = None, 0
+    for el in soup.find_all(["div", "section", "article", "main", "td"]):
+        n = sum(len(p.get_text(" ", strip=True)) for p in el.find_all("p", recursive=False))
+        if n > best_len:
+            best, best_len = el, n
+    if best is None or best_len < 200:
+        return ""
+    return compact_ws(" ".join(p.get_text(" ", strip=True) for p in best.find_all("p", recursive=False)))
 
 
 def extract_main_text(content: bytes, content_type: str, url: str, headers: dict[str, str]) -> MainText:
@@ -125,6 +176,7 @@ def extract_main_text(content: bytes, content_type: str, url: str, headers: dict
             href = prepare_request_url(str(a.get("href")), base=url)
             if href:
                 links.append((compact_ws(a.get_text(" ", strip=True))[:200], href))
+        scripts = [t.string or t.get_text() for t in soup.find_all("script")]
         for t in soup(["script", "style", "noscript", "template"]):
             t.decompose()
         full_text = compact_ws(soup.get_text(" ", strip=True))
@@ -133,6 +185,18 @@ def extract_main_text(content: bytes, content_type: str, url: str, headers: dict
         main_text = compact_ws(root.get_text(" ", strip=True)) if root else ""
         if len(main_text) < 200 and root is not soup.body and soup.body is not None:
             main_text = compact_ws(soup.body.get_text(" ", strip=True))
+        if len(main_text) < 200:
+            # Themes that wrap the whole page in a boilerplate-looking class leave nothing after stripping. Fall back to
+            # the densest block of paragraphs (the article body), never to the full page with its menus and widgets.
+            dense = _densest_block(soup) or _densest_block(BeautifulSoup(decoded, _PARSER))
+            if len(dense) > len(main_text):
+                main_text = dense
+        main_text = compact_ws(_BLOB.sub(" ", main_text))
+        full_text = compact_ws(_BLOB.sub(" ", full_text))
+        embedded = _embedded_text(scripts) if len(main_text) < 4000 or len(scripts) else ""
+        if embedded and len(embedded) > len(main_text) * 0.5 and normalize_for_hash(embedded[:200]) not in normalize_for_hash(main_text):
+            main_text = compact_ws(f"{main_text} {embedded}") if len(main_text) < 600 else compact_ws(f"{embedded} {main_text}")
+            full_text = compact_ws(f"{full_text} {embedded}")
         noindex, nofollow = _directives(meta_robots, x_robots)
         return MainText(url, title, main_text, full_text, canonical, meta_robots, x_robots, noindex, nofollow,
                         list(dict.fromkeys(links)), bool(LISTING_URL.search(url)), author=author, published=published)

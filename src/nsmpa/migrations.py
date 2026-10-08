@@ -873,12 +873,68 @@ def migrate_v6(conn: sqlite3.Connection) -> None:
     _create_views(conn)
 
 
+V7_TABLES = """
+CREATE TABLE IF NOT EXISTS captures (
+  id INTEGER PRIMARY KEY,
+  entity_id INTEGER NOT NULL REFERENCES research_entities(id),
+  run_id TEXT,
+  page_id INTEGER,
+  url TEXT NOT NULL,
+  title TEXT,
+  text TEXT NOT NULL,
+  text_sha256 TEXT NOT NULL,
+  captured_by TEXT NOT NULL,
+  note TEXT,
+  first_party INTEGER NOT NULL DEFAULT 0,
+  evidence_count INTEGER NOT NULL DEFAULT 0,
+  captured_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(entity_id, text_sha256)
+);
+CREATE TABLE IF NOT EXISTS ai_leads (
+  id INTEGER PRIMARY KEY,
+  run_id TEXT,
+  entity_id INTEGER NOT NULL REFERENCES research_entities(id),
+  model TEXT,
+  quote TEXT,
+  claimed_url TEXT,
+  summary TEXT,
+  status TEXT NOT NULL DEFAULT 'unconfirmed',   -- unconfirmed | confirmed | contradicted
+  confirmed_via TEXT,                            -- live | archive | snippet | capture
+  confirmed_url TEXT,
+  evidence_id INTEGER,
+  grounding_json TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_ai_leads_entity ON ai_leads(entity_id, status);
+CREATE INDEX IF NOT EXISTS idx_captures_entity ON captures(entity_id);
+"""
+
+
+def migrate_v7(conn: sqlite3.Connection) -> None:
+    """v0.7: how each page/excerpt was obtained (live, archive, snippet, capture), researcher captures, AI-search leads."""
+    run_script(conn, V7_TABLES)
+    for table in ("research_pages", "evidence_items"):
+        _add_column(conn, table, "acquisition", "TEXT NOT NULL DEFAULT 'live'")
+        _add_column(conn, table, "archive_ts", "TEXT")
+        _add_column(conn, table, "archive_url", "TEXT")
+    _create_views(conn)
+
+
+def migrate_v8(conn: sqlite3.Connection) -> None:
+    """v0.7.1: researcher evidence indexes imported as precedent seeds (tier, kind, source type, shared group)."""
+    for col in ("index_id", "tier", "kind", "source_kind", "group_name", "country", "source_list"):
+        _add_column(conn, "precedent_seeds", col, "TEXT")
+    run_script(conn, "CREATE INDEX IF NOT EXISTS idx_precedent_index ON precedent_seeds(source_list, index_id);")
+
+
 MIGRATIONS: list[tuple[int, str, Callable[[sqlite3.Connection], None]]] = [
     (2, "baseline v0.1/v0.2 schema", migrate_v2),
     (3, "v0.3 checkpoints, unique evidence, review queue, provenance, views", migrate_v3),
     (4, "v0.4 action positions, case match, expert voices, precedent seeds", migrate_v4),
     (5, "v0.5 AI review, Wayback comparisons, accuracy audits", migrate_v5),
     (6, "v0.6 heartbeats, outreach, legal context, policy re-checks", migrate_v6),
+    (7, "v0.7 acquisition provenance, researcher captures, AI-search leads", migrate_v7),
+    (8, "v0.7.1 evidence-index precedents", migrate_v8),
 ]
 
 LATEST_VERSION = MIGRATIONS[-1][0]

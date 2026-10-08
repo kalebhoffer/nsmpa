@@ -14,9 +14,12 @@ from .config import Settings
 from .db import Database
 from .stance import DETERMINATE
 
+NOT_SELECTED = "COALESCE(json_extract(metadata_json,'$.excluded_from_rates'), 0) IN (0, 'false')"
+
 COHORT_LABELS = {
     "student_media": "Student journalism",
     "professional_newsroom": "Professional journalism",
+    "broadcast_newsroom": "Broadcast journalism (TV and radio)",
     "support_org": "Support, standards, legal & advisory organizations",
     "press_association": "Press associations",
     "journalism_school": "Journalism schools",
@@ -115,7 +118,8 @@ def cohort_metrics(db: Database, settings: Settings, cohort: str, run_id: str | 
                 "A core stratum excluding special-focus and very small institutions is reported alongside.")
     else:
         disc = {}
-        denominator = int(db.scalar("SELECT COUNT(*) FROM research_entities WHERE cohort=? AND active=1 AND merged_into IS NULL", (cohort,)))
+        denominator = int(db.scalar("SELECT COUNT(*) FROM research_entities WHERE cohort=? AND active=1 AND merged_into IS NULL "
+                                    f"AND {NOT_SELECTED}", (cohort,)))
         sources = db.execute(
             "SELECT es.source, COUNT(DISTINCT es.entity_id) n FROM entity_sources es JOIN research_entities re ON re.id=es.entity_id "
             "WHERE re.cohort=? AND re.active=1 GROUP BY es.source ORDER BY n DESC", (cohort,)).fetchall()
@@ -125,7 +129,12 @@ def cohort_metrics(db: Database, settings: Settings, cohort: str, run_id: str | 
     # Student percentages are per IPEDS institution: count primary publications only. Secondary and unmatched student
     # papers are researched and reported separately ("additional_student_publications_researched").
     coverage_filter = ("AND COALESCE(json_extract(re.metadata_json,'$.excluded_from_ipeds_coverage'), 0) IN (0, 'false')"
-                       if cohort == "student_media" else "")
+                       if cohort == "student_media" else "") + f" AND {NOT_SELECTED.replace('metadata_json', 're.metadata_json')}"
+    # Organizations added because a researcher's evidence index lists them were *selected for having policies*:
+    # researched and catalogued, never part of a percentage.
+    selected = db.scalar(
+        f"SELECT COUNT(*) FROM ({sub}) s JOIN research_entities re ON re.id=s.entity_id WHERE re.cohort=? AND re.active=1 "
+        f"AND NOT ({NOT_SELECTED.replace('metadata_json', 're.metadata_json')})", params + [cohort])
     rows = db.execute(
         f"SELECT s.* FROM ({sub}) s JOIN research_entities re ON re.id=s.entity_id WHERE re.cohort=? AND re.active=1 {coverage_filter}",
         params + [cohort]).fetchall()
@@ -158,6 +167,7 @@ def cohort_metrics(db: Database, settings: Settings, cohort: str, run_id: str | 
         **disc,
         "entities_in_universe": denominator,
         **({"additional_student_publications_researched": extra_student} if cohort == "student_media" else {}),
+        "selected_from_evidence_index_researched": selected,
         "entities_researched": researched,
         "research_coverage": _ratio(researched, denominator),
         "policy_discovery_rate": _ratio(determinate, researched),
@@ -187,7 +197,8 @@ def cohort_metrics(db: Database, settings: Settings, cohort: str, run_id: str | 
 
 def all_cohorts(db: Database) -> list[str]:
     present = [r[0] for r in db.execute("SELECT DISTINCT cohort FROM research_entities WHERE active=1 ORDER BY cohort")]
-    order = ["student_media", "professional_newsroom", "support_org", "press_association", "journalism_school", "other"]
+    order = ["student_media", "professional_newsroom", "broadcast_newsroom", "support_org", "press_association",
+             "journalism_school", "other"]
     if "student_media" not in present and db.scalar("SELECT COUNT(*) FROM institutions WHERE included=1"):
         present.append("student_media")
     return [c for c in order if c in present]

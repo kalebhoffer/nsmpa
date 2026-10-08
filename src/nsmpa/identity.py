@@ -42,6 +42,14 @@ class Identity:
         return self.status in {"ok", "weak"}
 
 
+CAMPUS_SUFFIX = re.compile(r"\s*[-–,]\s*(?:main campus|[A-Z][\w .'&]*campus)\s*$", re.I)
+
+
+def institution_base_name(name: str) -> str:
+    """'University of Washington-Seattle Campus' -> 'University of Washington' (how papers and people write it)."""
+    return CAMPUS_SUFFIX.sub("", name or "").strip()
+
+
 def _names(entity, metadata: dict) -> list[str]:
     out = [entity["name"] or ""]
     out += [t for t in (metadata.get("titles") or []) if t]
@@ -52,6 +60,23 @@ def _names(entity, metadata: dict) -> list[str]:
         if len(n) >= 4 and "." not in n:
             cleaned.append(normalize_for_hash(n))
     return [c for c in dict.fromkeys(cleaned) if c]
+
+
+def _acronym(inst: str) -> str | None:
+    """'Brigham Young University' -> 'BYU'; only for 3+ capitalised words, never single words."""
+    words = [w for w in re.findall(r"[A-Za-z]+", inst) if w[0].isupper() and w.lower() not in {"of", "the", "and", "at"}]
+    return "".join(w[0] for w in words).upper() if len(words) >= 3 else None
+
+
+def _news_signals(text: str, page) -> tuple[int, int]:
+    links = getattr(page, "links", []) or []
+    structure = sum(1 for _, h in links if SECTION_LINK.search(h) or DATE_LINK.search(h))
+    return structure, len(set(m.lower() for m in NEWSROOM_WORDS.findall(text)))
+
+
+def _newsy(text: str, page) -> bool:
+    structure, vocab = _news_signals(text, page)
+    return structure >= 3 or vocab >= 3
 
 
 def check_identity(entity, metadata: dict, access_class: str, page=None) -> Identity:
@@ -67,25 +92,30 @@ def check_identity(entity, metadata: dict, access_class: str, page=None) -> Iden
     cohort = entity["cohort"]
     if cohort == "student_media":
         student = bool(VERIFY_STUDENT.search(text) or STRONG_STUDENT_TERMS.search(text))
-        inst = entity["parent_name"] or ""
+        inst = institution_base_name(entity["parent_name"] or "")
         inst_norm = normalize_for_hash(inst)
         toks = _name_tokens(inst)
-        words = set(norm.split())
-        # Whole-word matches only ("eastern" must not match inside "Easterner"), and every distinctive word must appear.
-        inst_hit = bool(inst_norm and re.search(rf"\b{re.escape(inst_norm)}\b", norm)) or (len(toks) >= 2 and all(t in words for t in toks))
+        # Whole-word phrase matches only: "eastern" must not match inside "Easterner", and scattered words ("Eastern" in
+        # one travel article, "Washington" in another) are not the institution's name.
+        inst_hit = bool(inst_norm and re.search(rf"\b{re.escape(inst_norm)}\b", norm)) or (
+            len(toks) >= 2 and re.search(r"\b" + r"\W+(?:\w+\W+)?".join(map(re.escape, toks)) + r"\b", norm) is not None)
+        acro = _acronym(inst)
+        if not inst_hit and acro and re.search(rf"\b{acro}\b", text):  # "BYU", "UCLA": case-sensitive, whole word
+            inst_hit = True
         sig = {"student_signal": student, "institution_named": inst_hit, "name_on_page": name_hit}
         if student and (inst_hit or name_hit):
             return Identity("ok", "site identifies as a student publication of the institution", sig)
         if student or inst_hit:
             return Identity("weak", "partial student-publication signals; verify", sig)
-        return Identity("mismatch", "no student-media signal and no mention of the institution: the domain no longer "
-                                    "appears to be this student publication (possibly lapsed and repurposed)", sig)
-    links = getattr(page, "links", []) or []
-    structure = sum(1 for _, h in links if SECTION_LINK.search(h) or DATE_LINK.search(h))
-    vocab = len(set(m.lower() for m in NEWSROOM_WORDS.findall(text)))
+        if not inst and name_hit and _newsy(text, page):
+            # No linked institution to look for (unmatched directory paper): own name plus a working news site.
+            return Identity("weak", "publication name and news-site structure, but no institution on record; verify", sig)
+        return Identity("mismatch", "no student-media signal: the domain no longer appears to be this student "
+                                    "publication (possibly lapsed and repurposed)", sig)
+    structure, vocab = _news_signals(text, page)
     newsy = structure >= 3 or vocab >= 3
     sig = {"name_on_page": name_hit, "news_structure_links": structure, "newsroom_vocabulary": vocab}
-    if cohort == "professional_newsroom":
+    if cohort in {"professional_newsroom", "broadcast_newsroom"}:
         if name_hit and newsy:
             return Identity("ok", "site carries the publication's name and news-site structure", sig)
         if name_hit or newsy:

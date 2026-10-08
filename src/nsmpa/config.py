@@ -134,6 +134,7 @@ class Settings(BaseModel):
     host_failure_threshold: int = Field(6, ge=1, le=100)
     max_response_bytes: int = Field(10_000_000, ge=100_000, le=100_000_000)
     per_host_delay_seconds: float = Field(1.5, ge=0.0, le=30)
+    archive_delay_seconds: float = Field(4.0, ge=0.0, le=60)   # web.archive.org rate-limits bursts (HTTP 429)
     max_concurrency: int = Field(16, ge=1, le=128)
     max_per_host_concurrency: int = Field(2, ge=1, le=16)
     crawl_max_pages_per_publication: int = Field(250, ge=10, le=10_000)
@@ -184,6 +185,15 @@ class Settings(BaseModel):
     # --- v0.4 deep practice digging -------------------------------------------------------
     research_practice_dig: Literal["never", "auto", "always"] = "always"
     research_recover_stale_sites: bool = True
+    # Sites that block automated access: archived copies -> search snippets (leads) -> AI search (leads, confirmed
+    # word-for-word) -> standards published elsewhere. Never bypasses the block itself.
+    blocked_fallback: bool = True
+    blocked_fallback_archive_pages: int = Field(8, ge=0, le=50)
+    blocked_fallback_snippets: bool = True
+    blocked_fallback_ai: bool = True
+    blocked_fallback_ai_max_calls: int = Field(50, ge=0, le=100_000)   # per run
+    blocked_fallback_phrase_searches: int = Field(2, ge=0, le=10)      # credits spent confirming AI quotes
+    blocked_fallback_other_sources: bool = True
     research_crime_article_sample: int = Field(20, ge=0, le=200)
     research_baseline_article_sample: int = Field(3, ge=0, le=20)
     research_practice_queries: bool = True
