@@ -324,9 +324,10 @@ def research_setup_cmd(config: Path | None = ConfigOpt) -> None:
     """Seed support orgs + benchmark newsrooms and sync promoted student publications."""
     db, _ = _db(config)
     try:
+        from .legal import seed_legal
         from .seeds import seed_experts, seed_precedents
         result = {"support_orgs": seed_support_orgs(db), "benchmark_newsrooms": seed_benchmark_newsrooms(db),
-                  "student_entities": sync_student_entities(db), **seed_precedents(db), **seed_experts(db)}
+                  "student_entities": sync_student_entities(db), **seed_precedents(db), **seed_experts(db), **seed_legal(db)}
         console.print_json(json.dumps(result))
     finally:
         db.close()
@@ -953,6 +954,44 @@ def audit_report(audit_id: str | None = typer.Option(None, "--audit-id"), as_jso
             raise typer.BadParameter("No audit yet; run `nsmpa audit sample` first")
         rep = report(db, aid)
         console.print_json(json.dumps(rep)) if as_json else console.print(format_report(rep))
+    finally:
+        db.close()
+
+
+@app.command("legal-research")
+def legal_research_cmd(max_searches: int | None = MaxSearchesOpt, key: list[str] = typer.Option([], "--key"),
+                       run_id: str | None = typer.Option(None, "--run-id"), quiet: bool = QuietOpt, verbose: bool = VerboseOpt,
+                       config: Path | None = ConfigOpt) -> None:
+    """Find sources for legal-context leads (EU erasure law, state record clearing, key cases). Never self-verifies."""
+    from .legal import run_legal_research
+    db, settings = _db(config)
+    try:
+        res = asyncio.run(run_legal_research(db, settings, max_searches=max_searches, keys=key or None, quiet=quiet,
+                                             verbose=verbose, run_id=run_id))
+        console.print_json(json.dumps(res))
+        run_finished(settings, "legal research", res)
+    finally:
+        db.close()
+
+
+@app.command("legal")
+def legal_cmd(key: str | None = typer.Option(None, "--key"), status: str | None = typer.Option(None, "--status"),
+              note: str = typer.Option("", "--note"), config: Path | None = ConfigOpt) -> None:
+    """List legal-context leads, or record human verification of one."""
+    from .legal import seed_legal, set_legal_status
+    db, _ = _db(config)
+    try:
+        seed_legal(db)
+        if key and status:
+            set_legal_status(db, key, status, note)
+            console.print(f"{key}: {status}")
+            return
+        t = Table(title="Legal context (leads to verify; not legal advice)")
+        for c in ("key", "jurisdiction", "title", "citation", "status"):
+            t.add_column(c)
+        for r in db.execute("SELECT * FROM legal_context ORDER BY CASE WHEN key LIKE 'state_%' THEN 1 ELSE 0 END, id"):
+            t.add_row(r["key"], r["jurisdiction"], r["title"][:50], r["citation"] or "", r["status"])
+        console.print(t)
     finally:
         db.close()
 
