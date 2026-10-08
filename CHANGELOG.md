@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.7.1 — validated against a hand-built evidence index
+
+- `import-evidence-index`, `verify-precedents --only-index --no-search`, `evidence-index-report`: a researcher's list of
+  organizations and source links becomes precedents NSMPA verifies by reading each source; organizations added this way
+  are researched and shown but flagged `excluded_from_rates` (never in a denominator or percentage). Secondary reports
+  count only where they name the organization. See `docs/evidence_index.md`.
+- New `broadcast_newsroom` group (TV/radio), separate denominator; no census loaded yet, so no percentages.
+- `nsmpa reclassify --run-id`: re-judge stored excerpts with the current classifier and recompute stances, no fetching.
+- Extraction: article text embedded in page data (Arc XP `Fusion.globalContent`, Next.js, JSON-LD); config blobs removed.
+- Search recall: wider tier-1 vocabulary ("fresh start", "right to be forgotten", "old crime stories", "de-indexed",
+  "reporting policy", "publishing principles", "community guide"); individually blocked first-party policy pages read
+  from the archive. Recall on 10 Tier-A organizations: 10/10 policies found.
+- Classifier: news stories on a newsroom's own site speak for it only in first person, by name or in editor's notes;
+  errors/legal-only removal is a narrow exception; "our main remedy is to deindex"; caveats ("does not necessarily
+  remove") are not refusals; "Not one of the editors would remove"; court-record procedures; cooperation with Google;
+  social-media post moderation; noun forms ("article removal requests"); removal "from Google" is de-indexing.
+- Database: opening is write-free (views refreshed only when their definition changes), and long jobs commit before
+  network waits, so read-only commands never time out behind a running job.
+
+## 0.7.0 — sites that block automated access
+
+- Blocked-site fallback (`docs/blocked_sites.md`): archived copies (identity-checked archived homepage, policy/about
+  pages from links, search results and a top-level CDX listing), search snippets kept as leads, AI web search (Gemini
+  Google Search grounding or Claude web search) whose quotes count only when found word for word in text NSMPA holds,
+  and standards published elsewhere. Never bypasses a block. Silence from a blocked site is UNDETERMINED, never "no policy".
+- Researcher captures: GUI **Capture** tab (blocked-site queue with AI leads, organization search, paste form) and
+  `nsmpa capture`; verbatim text with SHA-256 fingerprint, captured-by and time; stance recomputed; pending AI leads
+  confirmed by matching text. `nsmpa leads` lists AI leads.
+- Provenance on every page and excerpt (`acquisition`: live, archive, snippet, capture; archive date and link) in the
+  GUI, CSV exports and packet ("How obtained", "Archived copy"); packet adds Captures and AI Search Leads sheets.
+- Schema v7. Accuracy fixes from the October pilots: Wayback comparison by sentence containment (no false "rewritten"
+  reports after site redesigns), byline/headline-suffix false positives removed, article-body extraction fallback,
+  identity checks (phrase-level institution match, acronyms, no-institution fallback), smarter site recovery, and
+  classifier guards (requester vs. publisher, questions, comments, physical copies, non-journalism removals,
+  negation scope, accuracy corrections).
+
 ## 0.6.1
 
 - `--redact-names` for the packet and dashboard: private individuals' names withheld (organizations, institutions, cited

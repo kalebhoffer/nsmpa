@@ -29,6 +29,7 @@ RELIEF_LABEL = {"DEINDEX_OR_ANONYMIZE_PRESERVING_ARCHIVE": "De-index/anonymize, 
                 "UNPUBLISHING_PERMITTED": "Unpublishing permitted", "UPDATE_ONLY": "Update / editor's note only",
                 "NO_RELIEF": "No relief", "UNADDRESSED": "Not addressed"}
 COHORT_SHORT = {"student_media": "Student media", "professional_newsroom": "Professional newsrooms",
+                "broadcast_newsroom": "Broadcast newsrooms",
                 "support_org": "Standards & support orgs", "press_association": "Press associations",
                 "journalism_school": "Journalism schools", "other": "Other"}
 SEED_COHORTS = ("expert", "precedent_case")
@@ -46,6 +47,7 @@ def _evidence_scope(alias: str = "e") -> str:
 EVIDENCE_COLS = """e.id AS evidence_id, e.cohort, re.name AS entity, re.parent_name AS parent_or_institution, e.evidence_class,
   e.statement_type, e.direction, e.actions_json AS action_positions, e.case_match_score, e.similarity_score, e.authority_score,
   e.verification_status, e.excerpt, e.source_url, e.source_title, e.fetched_at, COALESCE(e.page_sha256, p.content_sha256) AS page_sha256,
+  COALESCE(e.acquisition, 'live') AS acquisition, e.archive_url,
   p.snapshot_path,
   q.query AS found_by_query, e.case_match_factors_json AS case_match_factors, e.rationale AS classifier_cues, e.run_id"""
 EVIDENCE_FROM = """FROM evidence_items e JOIN research_entities re ON re.id=e.entity_id
@@ -71,6 +73,8 @@ def gather(db: Database, settings: Settings, run_id: str | None = None) -> dict:
         f"""SELECT re.id AS entity_id, re.cohort, re.name, re.parent_name, re.state, re.homepage_url, s.stance, s.confidence,
                    s.relief_mode, s.preserves_archive_relief, s.action_positions_json, s.rationale, s.practice_summary,
                    s.technical_summary, s.review_status, s.review_reasons_json, s.run_id,
+                   CASE WHEN COALESCE(json_extract(re.metadata_json,'$.excluded_from_rates'), 0) IN (0, 'false')
+                        THEN 'yes' ELSE 'no (selected from evidence index)' END AS counted_in_rates,
                    sup.excerpt AS strongest_supportive, sup.source_url AS strongest_supportive_url,
                    adv.excerpt AS strongest_adverse, adv.source_url AS strongest_adverse_url
             FROM ({sub}) s JOIN research_entities re ON re.id=s.entity_id
@@ -81,6 +85,8 @@ def gather(db: Database, settings: Settings, run_id: str | None = None) -> dict:
     modes: dict[str, dict[str, int]] = {}
     actions: dict[str, dict[str, int]] = {}
     for e in entities:
+        if e["counted_in_rates"] != "yes":
+            continue  # listed because they have policies: shown, never counted
         modes.setdefault(e["cohort"], {}).setdefault(e["relief_mode"] or "UNADDRESSED", 0)
         modes[e["cohort"]][e["relief_mode"] or "UNADDRESSED"] += 1
         a = json.loads(e["action_positions_json"] or "{}")
@@ -138,7 +144,8 @@ def gather(db: Database, settings: Settings, run_id: str | None = None) -> dict:
         "sources": [dict(r) for r in db.execute(
             """SELECT p.id AS page_id, re.cohort, re.name AS entity, p.page_kind, p.first_party, p.access_class, p.http_status,
                       p.requested_url, p.final_url, p.title, p.author, p.published_date, p.fetched_at, p.content_sha256, p.text_sha256,
-                      p.snapshot_path, p.meta_robots, p.x_robots_tag, p.noindex, p.run_id
+                      p.snapshot_path, p.meta_robots, p.x_robots_tag, p.noindex, p.run_id,
+                      COALESCE(p.acquisition, 'live') AS acquisition, p.archive_url
                FROM research_pages p JOIN research_entities re ON re.id=p.entity_id
                WHERE p.run_id NOT IN (SELECT id FROM research_runs WHERE status='excluded') ORDER BY re.cohort, re.name, p.id LIMIT ?""", (lim,))],
         "legal": [dict(r) for r in db.execute(
@@ -160,6 +167,16 @@ def gather(db: Database, settings: Settings, run_id: str | None = None) -> dict:
                LEFT JOIN research_pages p ON p.id=f.page_id
                WHERE f.quote_verified=1
                ORDER BY CASE f.agreement WHEN 'disagree' THEN 0 WHEN 'ai_only' THEN 1 ELSE 2 END, re.name LIMIT ?""", (lim,))],
+        "captures": [dict(r) for r in db.execute(
+            """SELECT c.id AS capture_id, re.cohort, re.name AS entity, c.url, c.title, c.captured_by, c.captured_at,
+                      c.first_party, c.evidence_count, c.text_sha256, c.note
+               FROM captures c JOIN research_entities re ON re.id=c.entity_id ORDER BY c.id""")],
+        "ai_leads": [dict(r) for r in db.execute(
+            """SELECT l.id AS lead_id, re.cohort, re.name AS entity, l.status, l.confirmed_via, l.confirmed_url, l.claimed_url,
+                      l.quote, l.summary, l.evidence_id, l.model, l.created_at
+               FROM ai_leads l JOIN research_entities re ON re.id=l.entity_id
+               WHERE l.run_id IS NULL OR l.run_id NOT IN (SELECT id FROM research_runs WHERE status='excluded')
+               ORDER BY CASE l.status WHEN 'confirmed' THEN 0 WHEN 'unconfirmed' THEN 1 ELSE 2 END, re.name LIMIT ?""", (lim,))],
         "ledger": [dict(r) for r in db.execute(
             """SELECT q.id AS query_id, q.created_at, q.run_id, re.name AS entity, q.purpose, q.query, q.status, q.was_cached,
                       q.credits_estimated, q.result_count, q.produced_evidence
@@ -260,6 +277,10 @@ def build_workbook(data: dict, path: Path) -> None:
         ("Every excerpt row includes the source URL (clickable), the time it was fetched, the SHA-256 of the exact page that was "
          "analysed and the local snapshot path, so anyone can confirm the quote against the live page or the archived copy.", False),
         ("Rows marked UNVERIFIED have not yet been checked by a person. Verify before quoting publicly.", False),
+        ("'How obtained' says where the text came from: live = NSMPA read the page itself; archive = the Internet Archive's "
+         "copy (link in 'Archived copy'; used when a site blocks automated access); capture = a researcher copied it from "
+         "the page by hand (see the Captures sheet: who, when, and a SHA-256 fingerprint of the exact text); snippet = a "
+         "search-engine excerpt, kept as a lead only and never used to decide an organization's stance.", False),
         (("Names of private individuals have been replaced with [name withheld] by automated redaction "
           f"({data.get('redaction_count', 0)} replacements). Organizations, institutions, cited experts and quoted speakers are "
           "kept. URLs containing a redacted name and archived-copy links are withheld; originals are retained privately and "
@@ -323,7 +344,8 @@ def build_workbook(data: dict, path: Path) -> None:
                ("direction", "Direction", 11), ("statement_type", "Statement type", 24), ("evidence_class", "Evidence class", 20),
                ("action_positions", "Positions by action", 28), ("case_match_score", "Match to my case (0-100)", 11),
                ("verification_status", "Verified?", 12), ("excerpt", "Exact excerpt", 80), ("source_url", "Source", 40),
-               ("source_title", "Page title", 30), ("fetched_at", "Fetched (UTC)", 18), ("page_sha256", "Page SHA-256", 20),
+               ("source_title", "Page title", 30), ("fetched_at", "Fetched (UTC)", 18),
+               ("acquisition", "How obtained", 14), ("archive_url", "Archived copy", 36), ("page_sha256", "Page SHA-256", 20),
                ("snapshot_path", "Snapshot", 30), ("found_by_query", "Found by search", 36), ("case_match_factors", "Matched facts", 40),
                ("classifier_cues", "Classifier cues", 30), ("run_id", "Run", 16)]
     sheet("Closest to My Case", data["closest"], ev_cols,
@@ -341,6 +363,7 @@ def build_workbook(data: dict, path: Path) -> None:
         ent_rows.append(row)
     sheet("De-index vs Unpublish", ent_rows, [
         ("cohort", "Group", 16), ("name", "Organization", 28), ("parent_name", "Institution", 26), ("relief_mode", "Overall position", 26),
+        ("counted_in_rates", "Counted in rates?", 14),
         ("deindex_policy", "De-index: policy", 13), ("deindex_practice", "De-index: practice", 13), ("deindex_technical", "De-index: noindex seen", 15),
         ("anonymize_policy", "Anonymize: policy", 13), ("anonymize_practice", "Anonymize: practice", 13),
         ("unpublish_policy", "Unpublish: policy", 13), ("unpublish_practice", "Unpublish: practice", 13),
@@ -414,7 +437,7 @@ def build_workbook(data: dict, path: Path) -> None:
                    "numbers not present in the evidence were removed automatically.")
     sheet("Entities", data["entities"], [
         ("entity_id", "ID", 7), ("cohort", "Group", 16), ("name", "Organization", 28), ("parent_name", "Institution", 26),
-        ("state", "State", 7), ("homepage_url", "Website", 32), ("stance", "Written-policy stance", 24), ("confidence", "Confidence", 10),
+        ("counted_in_rates", "Counted in rates?", 14), ("state", "State", 7), ("homepage_url", "Website", 32), ("stance", "Written-policy stance", 24), ("confidence", "Confidence", 10),
         ("rationale", "Rationale", 60), ("practice_summary", "Practice found", 30), ("technical_summary", "Technical", 40),
         ("strongest_supportive", "Strongest supportive", 60), ("strongest_supportive_url", "Source", 36),
         ("strongest_adverse", "Strongest opposing", 60), ("strongest_adverse_url", "Source", 36),
@@ -423,9 +446,26 @@ def build_workbook(data: dict, path: Path) -> None:
     sheet("Sources", data["sources"], [
         ("page_id", "Page ID", 8), ("cohort", "Group", 16), ("entity", "Organization", 26), ("page_kind", "Page type", 14),
         ("first_party", "Own site?", 9), ("access_class", "Access", 14), ("http_status", "HTTP", 7), ("final_url", "URL", 50),
+        ("acquisition", "How obtained", 14), ("archive_url", "Archived copy", 36),
         ("title", "Title", 36), ("author", "Author", 18), ("published_date", "Published", 18), ("fetched_at", "Fetched (UTC)", 18),
         ("content_sha256", "Page SHA-256", 22), ("snapshot_path", "Snapshot", 36), ("meta_robots", "meta robots", 18),
         ("x_robots_tag", "X-Robots-Tag", 14), ("noindex", "noindex", 8)])
+    if data.get("captures"):
+        sheet("Captures", data["captures"], [
+            ("capture_id", "ID", 7), ("cohort", "Group", 16), ("entity", "Organization", 26), ("url", "Page", 46),
+            ("title", "Title", 30), ("captured_by", "Captured by", 16), ("captured_at", "When (UTC)", 18),
+            ("first_party", "Own site?", 9), ("evidence_count", "Excerpts", 9), ("text_sha256", "Text SHA-256", 24),
+            ("note", "Note", 30)],
+              note="Text copied by hand from sites that block automated access. The fingerprint lets anyone confirm the "
+                   "stored text has not changed since capture.")
+    if data.get("ai_leads"):
+        sheet("AI Search Leads", data["ai_leads"], [
+            ("lead_id", "ID", 7), ("cohort", "Group", 16), ("entity", "Organization", 26), ("status", "Status", 14),
+            ("confirmed_via", "Confirmed via", 12), ("confirmed_url", "Confirmed at", 40), ("claimed_url", "AI-claimed URL", 40),
+            ("quote", "What the AI quoted", 70), ("summary", "AI summary", 50), ("evidence_id", "Evidence ID", 10),
+            ("model", "Model", 16)],
+              note="What an AI web search said each blocked organization's policy is. Only 'confirmed' leads, whose quote was "
+                   "found word for word in text NSMPA holds, appear as evidence; unconfirmed leads are not evidence.")
     sheet("Search Ledger", data["ledger"], [
         ("query_id", "ID", 8), ("created_at", "When", 18), ("entity", "Organization", 24), ("purpose", "Purpose", 30),
         ("query", "Query", 70), ("status", "Status", 12), ("was_cached", "Cached", 8), ("credits_estimated", "Credits", 8),
@@ -640,7 +680,9 @@ def build_deck(data: dict, path: Path, *, title: str, max_precedent_slides: int)
         body = ("Observed: " + r["excerpt"][:600]) if observation else f"“{r['excerpt'][:600]}”"
         text(s, 0.9, 1.9, 11.5, 3.2, body, size=22, color=INK, italic=not observation)
         factors = ", ".join(f["factor"].replace("_", " ") for f in json.loads(r["case_match_factors"] or "[]"))
-        text(s, 0.9, 5.2, 11.5, 1.4, [f"Source: {r['source_url']}", f"Fetched {r['fetched_at']} · page SHA-256 {str(r['page_sha256'])[:16]}…",
+        how = {"archive": " (Internet Archive copy)", "capture": " (copied by a researcher)", "snippet": " (search snippet)"}.get(
+            r.get("acquisition") or "live", "")
+        text(s, 0.9, 5.2, 11.5, 1.4, [f"Source: {r['source_url']}{how}", f"Fetched {r['fetched_at']} · page SHA-256 {str(r['page_sha256'])[:16]}…",
                                        f"Matches: {factors or '—'}", verified_tag(r["verification_status"])], size=12, color=INK_2)
 
     # AI-drafted section summaries (optional)

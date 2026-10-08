@@ -108,13 +108,15 @@ def _user_text(page_text: str, entity_name: str) -> str:
     return f"Organization: {entity_name}\n\nPage text:\n<page>\n{page_text}\n</page>"
 
 
-def _call_gemini(client, settings: Settings, user_text: str, system: str, schema: dict) -> tuple[dict, dict]:
+def _call_gemini(client, settings: Settings, user_text: str, system: str, schema: dict, *,
+                 grounded: bool = False) -> tuple[dict, dict]:
     from google.genai import types
     config = types.GenerateContentConfig(
         system_instruction=system,
         response_mime_type="application/json",
         response_json_schema=schema,
         max_output_tokens=16000,
+        tools=[types.Tool(google_search=types.GoogleSearch())] if grounded else None,
     )
     last: Exception | None = None
     for attempt in range(settings.ai_max_retries + 1):
@@ -145,10 +147,16 @@ def _call_gemini(client, settings: Settings, user_text: str, system: str, schema
     text = response.text or ""
     if not text.strip():
         raise AIUnavailable("Gemini returned an empty response")
+    if grounded:
+        gm = getattr(cands[0], "grounding_metadata", None) if cands else None
+        meta["sources"] = [{"title": getattr(c.web, "title", None), "uri": getattr(c.web, "uri", None)}
+                           for c in (getattr(gm, "grounding_chunks", None) or []) if getattr(c, "web", None)]
+        meta["search_queries"] = list(getattr(gm, "web_search_queries", None) or [])
     return json.loads(text), meta
 
 
-def _call_anthropic(client, settings: Settings, user_text: str, system: str, schema: dict) -> tuple[dict, dict]:
+def _call_anthropic(client, settings: Settings, user_text: str, system: str, schema: dict, *,
+                    grounded: bool = False) -> tuple[dict, dict]:
     kwargs: dict[str, Any] = dict(
         model=settings.ai_model,
         max_tokens=16000,
@@ -156,6 +164,8 @@ def _call_anthropic(client, settings: Settings, user_text: str, system: str, sch
         output_config={"effort": settings.ai_effort, "format": {"type": "json_schema", "schema": schema}},
         messages=[{"role": "user", "content": user_text}],
     )
+    if grounded:
+        kwargs["tools"] = [{"type": "web_search_20260209", "name": "web_search", "max_uses": 5}]
     if settings.ai_refusal_fallback:
         response = client.beta.messages.create(betas=["server-side-fallback-2026-07-01"], fallbacks="default", **kwargs)
     else:
@@ -167,15 +177,24 @@ def _call_anthropic(client, settings: Settings, user_text: str, system: str, sch
         raise AIUnavailable("model declined this page (refusal)")
     if response.stop_reason == "max_tokens":
         raise AIUnavailable("response truncated at max_tokens")
-    text = next((b.text for b in response.content if getattr(b, "type", "") == "text"), "")
-    return json.loads(text), meta
+    if grounded:
+        meta["sources"] = [{"title": getattr(r, "title", None), "uri": getattr(r, "url", None)}
+                           for b in response.content if getattr(b, "type", "") == "web_search_tool_result"
+                           for r in (getattr(b, "content", None) or []) if hasattr(r, "url")]
+    texts = [b.text for b in response.content if getattr(b, "type", "") == "text"]
+    return json.loads(texts[-1] if texts else ""), meta
 
 
-def call_json(client, settings: Settings, user_text: str, system: str, schema: dict) -> tuple[dict, dict]:
-    """Provider-neutral structured-output request used by every AI feature."""
+def call_json(client, settings: Settings, user_text: str, system: str, schema: dict, *,
+              grounded: bool = False) -> tuple[dict, dict]:
+    """Provider-neutral structured-output request used by every AI feature.
+
+    ``grounded=True`` lets the model search the web (Gemini: Google Search grounding; Claude: the web search tool).
+    Grounded answers are leads only: callers must confirm every quote against text NSMPA itself holds.
+    """
     if settings.ai_provider == "gemini":
-        return _call_gemini(client, settings, user_text, system, schema)
-    return _call_anthropic(client, settings, user_text, system, schema)
+        return _call_gemini(client, settings, user_text, system, schema, grounded=grounded)
+    return _call_anthropic(client, settings, user_text, system, schema, grounded=grounded)
 
 
 def call_model(client, settings: Settings, page_text: str, entity_name: str) -> tuple[dict, dict]:
@@ -184,13 +203,15 @@ def call_model(client, settings: Settings, page_text: str, entity_name: str) -> 
 
 
 def cached_call(db: Database, client, settings: Settings, prompt_version: str, payload_key: str, user_text: str,
-                system: str, schema: dict) -> tuple[dict, bool]:
+                system: str, schema: dict, *, grounded: bool = False) -> tuple[dict, bool]:
     """call_json with the shared ai_cache (keyed by provider, model, prompt version and payload)."""
     key = sha256_text(f"{settings.ai_provider}|{settings.ai_model}|{prompt_version}|{payload_key}")
     row = db.execute("SELECT response_json FROM ai_cache WHERE cache_key=?", (key,)).fetchone()
     if row:
         return json.loads(row["response_json"]), True
-    data, meta = call_json(client, settings, user_text, system, schema)
+    data, meta = call_json(client, settings, user_text, system, schema, grounded=grounded)
+    if grounded:
+        data = {**data, "_sources": meta.get("sources", []), "_search_queries": meta.get("search_queries", [])}
     db.execute("INSERT OR REPLACE INTO ai_cache(cache_key,model,prompt_version,response_json,input_tokens,output_tokens,stop_reason) "
                "VALUES(?,?,?,?,?,?,?)", (key, meta["model"], prompt_version, json.dumps(data), meta["input_tokens"],
                                          meta["output_tokens"], meta["stop_reason"]))

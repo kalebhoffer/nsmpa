@@ -167,7 +167,8 @@ RESEARCH_EXPORTS: dict[str, str] = {
         SELECT p.id AS page_id, p.entity_id, re.name AS entity_name, p.requested_url, p.final_url, p.canonical_url,
                p.http_status, p.access_class, p.page_kind, p.first_party, p.title, p.content_type, p.text_length,
                p.content_sha256, p.text_sha256, p.snapshot_path, p.meta_robots, p.x_robots_tag, p.noindex,
-               p.redirect_chain_json, p.error, p.fetched_at
+               p.redirect_chain_json, p.error, p.fetched_at, COALESCE(p.acquisition,'live') AS acquisition, p.archive_ts,
+               p.archive_url
         FROM research_pages p JOIN research_entities re ON re.id=p.entity_id WHERE p.run_id=:run ORDER BY p.entity_id, p.id""",
     "evidence": """
         SELECT e.id AS evidence_id, e.entity_id, re.name AS entity_name, re.parent_name, e.cohort, e.evidence_class,
@@ -176,6 +177,7 @@ RESEARCH_EXPORTS: dict[str, str] = {
                e.topic, e.authority_score, e.relevance_score, e.similarity_score, e.similarity_factors_json,
                e.extraction_confidence, e.verification_status, e.duplicate_of, e.near_dup_key,
                e.excerpt, e.source_url, e.source_title, e.source_domain, e.fetched_at, e.page_sha256, e.text_sha256,
+               COALESCE(e.acquisition,'live') AS acquisition, e.archive_ts, e.archive_url,
                e.query_id, q.query AS search_query, e.rationale AS classifier_cues, e.run_id
         FROM evidence_items e JOIN research_entities re ON re.id=e.entity_id
         LEFT JOIN search_queries q ON q.id=e.query_id

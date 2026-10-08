@@ -40,7 +40,8 @@ from .stance import classify_entity, store_stance
 from .utils import (is_blocked_social_or_aggregator, normalize_for_hash, normalize_url, prepare_request_url,
                     registrableish_domain, same_site, sha256_text)
 
-COHORTS = {"student_media", "professional_newsroom", "support_org", "press_association", "journalism_school", "other"}
+COHORTS = {"student_media", "professional_newsroom", "broadcast_newsroom", "support_org", "press_association",
+           "journalism_school", "other"}
 # Lead lists, not populations: never part of any denominator and skipped by `research` unless named explicitly.
 SEED_COHORTS = {"expert", "precedent_case"}
 GUIDANCE_COHORTS = {"support_org", "press_association", "journalism_school"}
@@ -80,9 +81,11 @@ class QuerySpec:
 
 TIER1 = [
     QuerySpec(1, "policy", "relief",
-              'site:{site} (unpublish OR unpublishing OR deindex OR "de-index" OR takedown OR "remove an article" OR anonymize OR "removal request")'),
+              'site:{site} (unpublish OR unpublishing OR deindex OR "de-index" OR "de-indexed" OR takedown OR "remove an article" OR '
+              'anonymize OR "removal request" OR "fresh start" OR "right to be forgotten" OR "old crime stories" OR "remove old")'),
     QuerySpec(1, "policy", "editorial_policy",
-              'site:{site} ("editorial policy" OR "ethics policy" OR "corrections policy" OR "archive policy" OR "code of ethics" OR standards)'),
+              'site:{site} ("editorial policy" OR "ethics policy" OR "corrections policy" OR "archive policy" OR "code of ethics" OR '
+              'standards OR "publishing principles" OR "reporting policy" OR "community guide" OR "crime coverage" OR guidelines)'),
     QuerySpec(1, "adverse", "archive_restriction",
               'site:{site} ("never unpublish" OR "do not remove" OR "will not remove" OR "historical record" OR "archive integrity" OR "requests to remove")'),
 ]
@@ -153,7 +156,19 @@ def entity_site(entity) -> str:
     return host
 
 
+def alt_domains(entity) -> list[str]:
+    """Other domains the organization itself publishes on (metadata ``alt_domains``), e.g. ap.org for AP News."""
+    try:
+        meta = json.loads(entity["metadata_json"] or "{}")
+    except (KeyError, IndexError, TypeError, ValueError):
+        return []
+    return [d.lower().removeprefix("www.") for d in meta.get("alt_domains") or [] if d]
+
+
 def is_first_party(entity, url: str) -> bool:
+    dom = registrableish_domain(url)
+    if dom and any(dom == d or dom.endswith("." + d) for d in alt_domains(entity)):
+        return True
     home = entity["homepage_url"]
     if not home:
         return bool(entity["domain"]) and registrableish_domain(url).endswith(entity["domain"])
@@ -204,6 +219,13 @@ def page_kind(url: str, title: str, is_pdf: bool, is_listing: bool) -> str:
     if ARTICLE_PATH_RE.search(path):
         return "article"
     return "other"
+
+
+POLICY_URL_PATH = re.compile(r"/(?:about(?:-us)?|policies|policy|standards|ethics|corrections|help|faq|contact|"
+                             r"who-we-are|editorial-(?:policy|standards|guidelines)|guidelines|principles|hc/)", re.I)
+# The newsroom speaking for itself inside a story: first person, an editor's note, or "this story/article was ...".
+NEWSROOM_VOICE = re.compile(r"\b(?:we|our|us)\b|editor'?s'? note|\bthis (?:story|article|report|post) (?:has been|was|is)\b|"
+                            r"\bupdated to (?:remove|reflect|include|correct)\b", re.I)
 
 
 def evidence_class_for(cohort: str, first_party: bool, about_entity: bool, kind: str, statement_type: str) -> str:
@@ -427,12 +449,19 @@ def score_target(entity, url: str, title: str, snippet: str, rank: int, spec: Qu
     return round(max(0.0, min(score, 1.0)), 3), reasons
 
 
+# Result sites that describe a publication but are never its home: encyclopedias, library/archive collections,
+# university news offices, rankings and podcast hosts.
+RECOVERY_SKIP = re.compile(r"(?:wikipedia\.org|//(?:news|library|libraries|content\.libraries|mabel|calendar|today)\.|"
+                           r"onlinebooks\.|niche\.com|podbean\.com|archive\.org|/digital/collection/)", re.I)
+
+
 class EntityResearcher:
     def __init__(self, db: Database, settings: Settings, broker: SearchBroker, fetcher: HardenedFetcher, run_id: str,
                  dash: RunDashboard, stop: StopController):
         self.db, self.settings, self.broker, self.fetcher = db, settings, broker, fetcher
         self.run_id, self.dash, self.stop = run_id, dash, stop
         self.snapshot_root = settings.research_snapshot_dir
+        self.ai_fallback_calls = 0
 
     # ---------------------------------------------------------------- targets
     def _store_target(self, entity, url: str, title: str, snippet: str, rank: int, spec: QuerySpec | None,
@@ -554,6 +583,12 @@ class EntityResearcher:
             self.dash.log(f"  fetch [{t['score']:.2f}] {t['url']}")
             r = await self.fetcher.fetch_safe(t["url"])
             status, _, _ = await self._record_page(entity, r, target_id=t["id"], query_id=t["query_id"], topic=t["topic"])
+            if (first and r.access_class in {"blocked", "robots_disallowed", "rate_limited"} and self.settings.blocked_fallback
+                    and (POLICY_URL_PATH.search(urlsplit(t["url"]).path) or POLICY_PAGE_RE.search(f"{t['title'] or ''} {t['url']}"))):
+                from .fallback import BlockedSiteFallback
+                page, _ = await BlockedSiteFallback(self, entity, 0).read_archived(t["url"], topic=t["topic"])
+                if page is not None:
+                    status = "archive_fallback"
             self.db.execute("UPDATE research_targets SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (status, t["id"]))
             self.db.conn.commit()
             self._sync_fetch_counters()
@@ -606,6 +641,7 @@ class EntityResearcher:
             n_useful += self._store_voices(entity, page, page_id)
             if n_useful:
                 self.broker.mark_useful(query_id)
+        self.db.conn.commit()  # page + evidence are durable before the next network wait (and the lock is released)
         return ("fetched" if ok else r.access_class), page, page_id
 
     def _insert_item(self, entity, *, page, page_id: int | None, query_id: int | None, topic: str, first: bool, about: bool,
@@ -646,6 +682,9 @@ class EntityResearcher:
 
     def _store_evidence(self, entity, page, page_id: int, query_id: int | None, topic: str, first: bool, kind: str,
                         raw_sha: str | None, text_sha: str | None, *, substantive_only: bool = False) -> int:
+        policy_path = bool(POLICY_URL_PATH.search(urlsplit(page.url).path))
+        news_story = kind in {"article", "crime_article", "baseline_article"} or (
+            not policy_path and bool(getattr(page, "published", None) or getattr(page, "author", None)))
         items = extract_evidence(page.main_text, entity_terms=entity_terms(entity),
                                  max_items=self.settings.research_max_evidence_per_page,
                                  require_entity_mention=not first)
@@ -656,7 +695,15 @@ class EntityResearcher:
                 continue  # archived crime stories: keep only what the newsroom said or did, not the crime narrative
             low = it.context.lower()
             about = first or any(t.lower() in low for t in entity_terms(entity))
+            own_voice = NEWSROOM_VOICE.search(it.excerpt) or any(
+                t.lower() in it.excerpt.lower() for t in entity_terms(entity) if len(t) >= 6)  # "The Bangor Daily News reviews…"
+            if first and news_story and st.statement_type != "mention" and not own_voice:
+                # A news story *about* someone else's removal (Emory renaming buildings, a school removing DEI pages)
+                # is not this newsroom's policy or practice.
+                about = False
             ev_class = evidence_class_for(entity["cohort"], first, about and not first, kind, st.statement_type)
+            if first and not about:
+                ev_class = "secondary_report"
             if ev_class == "secondary_report" and entity["cohort"] in GUIDANCE_COHORTS and first:
                 about = False  # a guidance org describing another newsroom's decision
             new_id = self._insert_item(
@@ -781,62 +828,106 @@ class EntityResearcher:
                 "supportive": 0, "adverse": 0, "relief_mode": "UNADDRESSED", "identity": ident.status}
 
     async def _recover_site(self, entity, ident, budget: int):
-        """The directory URL is dead or repurposed: look for where the publication lives now (1 search)."""
-        from .discovery import score_candidate
-        from .models import SearchResult as _SR
+        """The directory URL is dead or repurposed: look for where the publication lives now (1 search).
+
+        Up to three plausible result sites are fetched (free) and each must pass the identity check; a site that also
+        carries the publication's own name beats an umbrella page (e.g. a university's student-media hub).
+        """
+        from .identity import institution_base_name
         meta = json.loads(entity["metadata_json"] or "{}")
         old_dom = entity["domain"] or registrableish_domain(entity["homepage_url"] or "")
+        pub = re.sub(r"\(\d+ titles\)$", "", entity["name"] or "").strip()
         if entity["cohort"] == "student_media" and entity["parent_name"]:
-            query = f'"{entity["parent_name"]}" student newspaper'
-        elif entity["cohort"] == "professional_newsroom":
-            name = re.sub(r"\(\d+ titles\)$", "", entity["name"]).strip()
-            if "." in name:
+            query = f'"{institution_base_name(entity["parent_name"])}" student newspaper'
+        elif entity["cohort"] in {"professional_newsroom", "broadcast_newsroom"}:
+            if "." in pub:
                 return None
-            query = f'"{name}" newspaper {entity["state"] or ""}'.strip()
+            query = f'"{pub}" newspaper {entity["state"] or ""}'.strip()
         else:
             return None
         self.dash.update(phase="finding the publication's current website")
         results, qid, _ = await self.broker.search(query, purpose="research:recover_site", entity_id=int(entity["id"]))
         self._sync_search_counters()
-        inst_site = None
-        if entity["cohort"] == "student_media":
-            inst_site = self.db.scalar("SELECT website FROM institutions WHERE name=? LIMIT 1", (entity["parent_name"],), None)
-        ranked = []
+        pub_toks = [t for t in re.findall(r"[a-z]{3,}", pub.lower()) if t not in {"the", "online", "daily", "news", "univ"}] or \
+            [t for t in re.findall(r"[a-z]{4,}", pub.lower()) if t not in {"online", "univ"}]  # "The Univ of WA Daily" -> daily
+        seen, cands = set(), []
         for res in results:
             url = prepare_request_url(res.url)
-            if not url or registrableish_domain(url) == old_dom or is_blocked_social_or_aggregator(url):
+            if not url or is_blocked_social_or_aggregator(url) or RECOVERY_SKIP.search(url):
                 continue
-            if entity["cohort"] == "student_media":
-                sc, _ = score_candidate(entity["parent_name"], inst_site, _SR(url=url, title=res.title, snippet=res.snippet,
-                                                                           rank=res.rank, provider="serper", query=query))
-            else:
-                names = [n for n in [re.sub(r"\(\d+ titles\)$", "", entity["name"]).strip()] if n]
-                sc = 0.7 if any(n.lower().replace("the ", "") in (res.title or "").lower() for n in names) else 0.0
-            if sc >= 0.6:
-                ranked.append((sc, url))
-        for sc, url in sorted(ranked, reverse=True)[:2]:
+            dom = registrableish_domain(url)
+            host = urlsplit(url).netloc.lower()
+            if dom == old_dom or host in seen:
+                continue
+            seen.add(host)
+            blob = f"{res.title} {res.snippet}".lower()
+            score = (2 if pub_toks and any(t in blob for t in pub_toks) else 0) + (1 if "student" in blob else 0)
+            cands.append((-score, res.rank, url))
+        # Best-named candidate first (title/snippet naming the publication beats an umbrella or committee page that
+        # merely mentions it); a site that blocks robots is accepted, unverified, only when the result names it.
+        chosen = None
+        for _neg, _, url in sorted(cands)[:3]:
             root = f"{urlsplit(url).scheme}://{urlsplit(url).netloc}/"
             r = await self.fetcher.fetch_safe(root)
             page = extract_main_text(r.content, r.content_type, r.final_url, r.headers) if r.access_class == "ok" else None
             trial = dict(entity)
             trial["homepage_url"], trial["domain"] = root, registrableish_domain(root)
-            if check_identity(trial, meta, r.access_class, page).status == "ok":
-                meta.setdefault("previous_urls", []).append(entity["homepage_url"])
-                meta["recovered"] = {"from": entity["homepage_url"], "to": root, "query_id": qid, "reason": ident.reason}
-                self.db.execute("UPDATE research_entities SET homepage_url=?, domain=?, metadata_json=?, updated_at=CURRENT_TIMESTAMP "
-                                "WHERE id=?", (root, trial["domain"], json.dumps(meta), entity["id"]))
-                if (entity["source_key"] or "").startswith("student_publication:"):
-                    try:
-                        self.db.execute("UPDATE publications SET homepage_url=?, domain=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                                        (root, trial["domain"], int(entity["source_key"].split(":")[1])))
-                    except Exception as exc:  # unique (unitid, domain) clash: the new site is already recorded
-                        self.dash.log(f"publication update skipped: {exc}")
-                self.db.execute("UPDATE evidence_items SET about_entity=0, evidence_class='unattributable_site' WHERE run_id=? AND entity_id=?",
-                                (self.run_id, entity["id"]))
-                self.db.conn.commit()
-                self.dash.add_recent(f"↪ {entity['name']}: moved to {trial['domain']}")
-                return self.db.execute("SELECT * FROM research_entities WHERE id=?", (entity["id"],)).fetchone()
-        return None
+            got = check_identity(trial, meta, r.access_class, page)
+            if got.status == "ok" and (-_neg >= 2 or got.signals.get("name_on_page")):
+                chosen = (root, trial, True)
+            elif got.status == "blocked" and -_neg >= 2:
+                chosen = (root, trial, False)
+            if chosen:
+                break
+        if chosen is None:
+            return None
+        root, trial, confirmed = chosen
+        meta.setdefault("previous_urls", []).append(entity["homepage_url"])
+        meta["recovered"] = {"from": entity["homepage_url"], "to": root, "query_id": qid, "reason": ident.reason,
+                             "verified": confirmed}
+        self.db.execute("UPDATE research_entities SET homepage_url=?, domain=?, metadata_json=?, updated_at=CURRENT_TIMESTAMP "
+                        "WHERE id=?", (root, trial["domain"], json.dumps(meta), entity["id"]))
+        if (entity["source_key"] or "").startswith("student_publication:"):
+            try:
+                self.db.execute("UPDATE publications SET homepage_url=?, domain=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                                (root, trial["domain"], int(entity["source_key"].split(":")[1])))
+            except Exception as exc:  # unique (unitid, domain) clash: the new site is already recorded
+                self.dash.log(f"publication update skipped: {exc}")
+        self.db.execute("UPDATE evidence_items SET about_entity=0, evidence_class='unattributable_site' WHERE run_id=? AND entity_id=?",
+                        (self.run_id, entity["id"]))
+        self.db.conn.commit()
+        self.dash.add_recent(f"↪ {entity['name']}: moved to {trial['domain']}" + ("" if confirmed else " (site blocks robots; unverified)"))
+        return self.db.execute("SELECT * FROM research_entities WHERE id=?", (entity["id"],)).fetchone()
+
+    async def _research_blocked(self, entity, ident, budget: int) -> dict:
+        """The live site refuses robots: archived copies, snippets, AI search (confirmed) and other sources instead."""
+        from .fallback import BlockedSiteFallback
+        fb = BlockedSiteFallback(self, entity, budget)
+        out = await fb.run(ident)
+        if out.get("identity") == "mismatch":
+            from .identity import Identity
+            return self._stop_for_identity(entity, Identity("mismatch", out["reason"], {"source": "archive"}))
+        self.dash.update(phase="classifying")
+        result = classify_entity(self.db, self.settings, self.run_id, entity)
+        result.coverage.update({"live_site": "blocks_automated_access", "fallback": {k: v for k, v in out.items() if k != "guidance"}})
+        result.review_reasons.append("site_blocks_robots_evidence_from_archive_or_leads")
+        if not out.get("archived_pages") and result.stance not in {"UNDETERMINED"}:
+            result.review_reasons.append("no_archived_pages")
+        if result.stance == "NO_RELEVANT_GUIDANCE":
+            # Silence from copies and snippets is weaker than silence from the live site: never claim "no policy".
+            result.stance, result.confidence = "UNDETERMINED", 0.0
+            result.rationale = ("Site blocks automated access; archived copies, search snippets and AI search found no "
+                                "confirmed policy text. " + (result.rationale or ""))
+        store_stance(self.db, self.run_id, int(entity["id"]), result)
+        enqueue_entity_review(self.db, self.run_id, entity, result)
+        self.db.conn.commit()
+        self.dash.update(step_done=8, step_total=8)
+        leads = self.db.scalar("SELECT COUNT(*) FROM ai_leads WHERE run_id=? AND entity_id=? AND status='unconfirmed'",
+                               (self.run_id, entity["id"]))
+        self.dash.add_recent(f"· {entity['name']}: blocked → {out.get('archived_pages', 0)} archived page(s), {leads} AI lead(s) to confirm")
+        return {"stance": result.stance, "confidence": result.confidence, "queries": out.get("searches", 0), "escalated": False,
+                "max_similarity": result.max_similarity, "supportive": result.supportive, "adverse": result.adverse,
+                "relief_mode": result.relief_mode, "identity": "blocked_fallback", "archived_pages": out.get("archived_pages", 0)}
 
     async def research(self, entity, budget_per_entity: int, _recovered: bool = False) -> dict:
         eid = int(entity["id"])
@@ -854,6 +945,8 @@ class EntityResearcher:
         ident = check_identity(entity, meta, r_home.access_class if r_home else "invalid_url", home_page)
         self._note_identity(entity, ident)
         step()
+        if ident.status == "blocked" and self.settings.blocked_fallback:
+            return await self._research_blocked(entity, ident, budget_per_entity)
         if not ident.proceed:
             recovered = None
             if searching and self.settings.research_recover_stale_sites and not _recovered and ident.status in {"mismatch", "unreachable"}:
@@ -944,6 +1037,7 @@ async def research_all(db: Database, settings: Settings, run_id: str, cohort: st
     todo = [r for r in rows if str(r["id"]) not in completed]
     stop = stop or StopController()
     universe = {"student_media": "Student Journalism", "professional_newsroom": "Professional Newsrooms",
+                "broadcast_newsroom": "Broadcast Newsrooms",
                 "support_org": "Support / Standards Organizations"}.get(cohort or "", cohort or "All cohorts")
     dash = dashboard or RunDashboard("NSMPA National Research", len(rows), quiet=quiet, verbose=verbose, universe=universe,
                                      db=db, run_id=run_id, persist_seconds=settings.heartbeat_seconds)

@@ -54,6 +54,13 @@ BENCHMARK_NEWSROOMS: list[tuple[str, str, str]] = [
 ]
 
 
+# Other domains these organizations publish their own standards on (counted as their own site).
+ALT_DOMAINS: dict[str, list[str]] = {
+    "Associated Press": ["ap.org"],
+    "Reuters": ["thomsonreuters.com", "reutersagency.com"],
+}
+
+
 def seed_benchmark_newsrooms(db: Database) -> dict[str, int]:
     inserted = updated = 0
     with db.transaction():
@@ -73,7 +80,8 @@ def seed_benchmark_newsrooms(db: Database) -> dict[str, int]:
                 ON CONFLICT(cohort,source_key) DO UPDATE SET name=excluded.name,homepage_url=excluded.homepage_url,
                   domain=excluded.domain,metadata_json=excluded.metadata_json,updated_at=CURRENT_TIMESTAMP
                 """,
-                (key, name, clean, domain, db.json({"category": category, "benchmark": True})),
+                (key, name, clean, domain, db.json({"category": category, "benchmark": True,
+                                                    **({"alt_domains": ALT_DOMAINS[name]} if name in ALT_DOMAINS else {})})),
             )
             if existing:
                 updated += 1

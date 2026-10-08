@@ -127,3 +127,23 @@ Common options: `--quiet/-q` minimal output · `--verbose/-v` queries, URLs, dec
 | `pilot` | `--budget`, `--ai-calls`, `--support`, `--newsrooms`, `--schools`, `--unitid`, `-q`, `-v` | Capped end-to-end trial with a plain-language report |
 | `packet` / `dashboard` | `--redact-names` (new) | Withhold names of private individuals in shared files |
 | `gui` → Verify tab | keys V / R / D / S / O | Source verification with the saved copy side by side |
+
+## Blocked sites and captures (v0.7)
+
+| Command | Options | Purpose |
+|---|---|---|
+| `capture` | `--entity` (id or name), `--url`, `--by`, `--file` (else stdin), `--title`, `--note` | Record policy text copied by hand from a site that blocks robots |
+| `leads` | `--status unconfirmed\|confirmed\|no_policy_found\|all`, `--limit` | AI-search leads and whether NSMPA confirmed them |
+| `gui` → Capture tab | | Blocked-site queue, capture form, leads, captures |
+
+Research falls back automatically for blocked sites (`blocked_fallback*` settings); see `docs/blocked_sites.md`.
+
+## Evidence index and broadcast group (v0.7.1)
+
+| Command | Options | Purpose |
+|---|---|---|
+| `import-evidence-index` | `PATH`, `--name` | Import a hand-built list as precedents; new organizations are never counted in rates |
+| `verify-precedents` | `--only-index`, `--no-search` (new) | Read listed sources only, with archive fallback; no credits |
+| `evidence-index-report` | `--name`, `--out` | Each entry's tier vs. what NSMPA found |
+
+See `docs/evidence_index.md`. Broadcast newsrooms are a separate group: `--cohort broadcast_newsroom`.

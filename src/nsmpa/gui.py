@@ -80,7 +80,8 @@ def api_results(db: Database, settings: Settings) -> dict:
         m = cohort_metrics(db, settings, c)
         modes = {r["relief_mode"] or "UNADDRESSED": r["n"] for r in db.execute(
             f"SELECT s.relief_mode, COUNT(*) n FROM ({sub}) s JOIN research_entities re ON re.id=s.entity_id "
-            f"WHERE re.cohort=? GROUP BY s.relief_mode", sp + [c])}
+            f"WHERE re.cohort=? AND COALESCE(json_extract(re.metadata_json,'$.excluded_from_rates'), 0) IN (0, 'false') "
+            f"GROUP BY s.relief_mode", sp + [c])}
         out.append({"cohort": c, "label": m.label, "denominator": m.denominator, "researched": m.researched,
                     "valid": m.valid_for_percentages, "stances": m.stance_counts, "relief_modes": modes,
                     "gates": [{"name": g.name, "value": g.value, "threshold": g.threshold, "comparator": g.comparator,
@@ -108,7 +109,7 @@ def api_evidence(db: Database, params: dict) -> dict:
     total = db.scalar(f"SELECT COUNT(*) FROM evidence_items e JOIN research_entities re ON re.id=e.entity_id WHERE {w}", args)
     rows = _q(db, f"""SELECT e.id, e.cohort, re.name AS entity, re.parent_name, e.direction, e.statement_type, e.evidence_class,
                              e.actions_json, e.case_match_score, e.authority_score, e.verification_status, e.excerpt,
-                             e.source_url, e.fetched_at, e.page_sha256, e.rationale
+                             e.source_url, e.fetched_at, e.page_sha256, e.rationale, e.acquisition, e.archive_ts, e.archive_url
                       FROM evidence_items e JOIN research_entities re ON re.id=e.entity_id WHERE {w}
                       ORDER BY {order}, e.id LIMIT ? OFFSET ?""", args + [limit, offset])
     return {"total": total, "rows": rows}
@@ -192,6 +193,7 @@ def api_verify(db: Database, params: dict) -> dict:
     else:
         rows = _q(db, f"""SELECT e.id, re.name AS entity, e.cohort, e.direction, e.statement_type, e.evidence_class, e.excerpt,
                                 e.context, e.source_url, e.fetched_at, e.page_sha256, e.case_match_score, e.page_id,
+                                e.acquisition, e.archive_ts, e.archive_url,
                                 (SELECT p.text_sha256 IS NOT NULL FROM research_pages p WHERE p.id=e.page_id) AS has_snapshot,
                                 EXISTS (SELECT 1 FROM entity_stances s WHERE s.strongest_supportive_id=e.id OR s.strongest_adverse_id=e.id)
                                   AS drives_stance
@@ -203,6 +205,27 @@ def api_verify(db: Database, params: dict) -> dict:
                             WHERE duplicate_of IS NULL AND statement_type NOT IN ('mention','technical_sitewide_noindex')
                               AND run_id NOT IN {EXCL} GROUP BY 1""")
     return {"kind": kind, "items": rows, "counts": {c["status"]: c["n"] for c in counts}}
+
+
+def api_capture(db: Database) -> dict:
+    from .capture import capture_queue, list_captures
+    return {
+        "queue": capture_queue(db),
+        "captures": list_captures(db),
+        "leads": _q(db, """SELECT l.id, l.entity_id, re.name AS entity, l.status, l.confirmed_via, l.claimed_url, l.confirmed_url,
+                                  l.quote, l.summary, l.created_at
+                           FROM ai_leads l JOIN research_entities re ON re.id=l.entity_id
+                           ORDER BY l.status='unconfirmed' DESC, l.id DESC LIMIT 200"""),
+    }
+
+
+def api_entities(db: Database, params: dict) -> dict:
+    q = (params.get("q") or "").strip()
+    if len(q) < 2:
+        return {"items": []}
+    return {"items": _q(db, """SELECT id, name, cohort, parent_name, homepage_url FROM research_entities
+                               WHERE active=1 AND merged_into IS NULL AND (name LIKE ? OR parent_name LIKE ? OR homepage_url LIKE ?)
+                               ORDER BY cohort, name LIMIT 25""", (f"%{q}%",) * 3)}
 
 
 def snapshot_html(db: Database, kind: str, item_id: int) -> str:
@@ -355,6 +378,8 @@ class _Handler(BaseHTTPRequestHandler):
             "/api/ops": api_ops,
             "/api/insights": api_insights,
             "/api/verify": lambda db: api_verify(db, params),
+            "/api/capture": api_capture,
+            "/api/entities": lambda db: api_entities(db, params),
         }
         if url.path.startswith("/api/entity/"):
             try:
@@ -379,11 +404,28 @@ class _Handler(BaseHTTPRequestHandler):
         if not secrets.compare_digest(self.headers.get("X-NSMPA-Token", ""), self.token):
             return self._json({"error": "missing or bad token"}, 403)
         url = urlsplit(self.path)
-        length = min(int(self.headers.get("Content-Length") or 0), 100_000)
+        limit = 2_100_000 if url.path == "/api/capture" else 100_000  # captures carry whole pages of pasted text
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > limit:
+            return self._json({"error": f"request too large (max {limit:,} bytes)"}, 413)
         try:
             body = json.loads(self.rfile.read(length) or b"{}")
         except ValueError:
             return self._json({"error": "bad json"}, 400)
+        if url.path == "/api/capture":
+            from .capture import CaptureError, add_capture
+            db = self._db()
+            try:
+                res = add_capture(db, self.settings, entity_id=int(body.get("entity_id") or 0), url=str(body.get("url", "")),
+                                  text=str(body.get("text", "")), captured_by=str(body.get("captured_by", "")),
+                                  title=str(body.get("title", "")), note=str(body.get("note", "")))
+                return self._json({"ok": True, **res})
+            except (CaptureError, ValueError) as exc:
+                return self._json({"error": str(exc)}, 400)
+            except sqlite3.Error as exc:
+                return self._json({"error": f"database: {exc}"}, 500)
+            finally:
+                db.close()
         if url.path.startswith("/api/review/"):
             from .review import record_decision
             db = self._db()

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 
 from .config import Settings
 from .db import Database
@@ -142,11 +143,15 @@ def _ensure_entity(db: Database, cohort: str, key: str, name: str, url: str | No
 
 
 async def _research_seed(researcher: EntityResearcher, entity, query: str | None, primary_url: str | None, max_pages: int,
-                         purpose: str) -> None:
+                         purpose: str, *, search: bool = True) -> None:
     if primary_url:
         r = await researcher.fetcher.fetch_safe(primary_url)
         await researcher._record_page(entity, r, target_id=None, query_id=None, topic=purpose, forced_kind="policy")
-    if query and researcher.broker.provider.name != "none":
+        researcher.db.conn.commit()
+        if r.access_class != "ok" and researcher.settings.blocked_fallback:
+            from .fallback import BlockedSiteFallback  # the source blocks robots or is gone: read its archived copy
+            await BlockedSiteFallback(researcher, entity, 0).read_archived(primary_url, topic=purpose, forced_kind="policy")
+    if query and search and researcher.broker.provider.name != "none":
         spec = QuerySpec(1, "seed", purpose, query, third_party=True)
         results, qid, _ = await researcher.broker.search(query, purpose=f"seed:{purpose}", entity_id=int(entity["id"]))
         researcher._sync_search_counters()
@@ -164,11 +169,13 @@ async def _research_seed(researcher: EntityResearcher, entity, query: str | None
 
 async def run_seeds(db: Database, settings: Settings, kind: str, *, run_id: str | None = None, max_searches: int | None = None,
                     quiet: bool = False, verbose: bool = False, provider=None, fetcher: HardenedFetcher | None = None,
-                    stop: StopController | None = None, command: str | None = None) -> dict:
+                    stop: StopController | None = None, command: str | None = None, only_index: bool = False,
+                    search: bool = True) -> dict:
     """kind = 'precedents' or 'experts'. Resumable, budgeted, checkpointed like every other run."""
     if kind == "precedents":
         seed_precedents(db)
-        rows = db.execute("SELECT * FROM precedent_seeds ORDER BY id").fetchall()
+        rows = db.execute("SELECT * FROM precedent_seeds " + ("WHERE index_id IS NOT NULL " if only_index else "")
+                          + "ORDER BY id").fetchall()
         keys = [r["seed_key"] for r in rows]
     else:
         seed_experts(db)
@@ -205,12 +212,12 @@ async def run_seeds(db: Database, settings: Settings, kind: str, *, run_id: str 
                         eid = _ensure_entity(db, "precedent_case", key, row["organization"], row["primary_url"], row["title"],
                                              {"seed_key": key, "claim": row["claim"]})
                         db.execute("UPDATE precedent_seeds SET entity_id=? WHERE id=?", (eid, row["id"]))
+                        db.conn.commit()  # never hold the write lock across network waits
                         entity = db.execute("SELECT * FROM research_entities WHERE id=?", (eid,)).fetchone()
                         dash.update(current=f"{row['organization']}: {row['title']}")
                         await _research_seed(researcher, entity, row["verification_query"], row["primary_url"],
-                                             settings.precedent_max_pages_per_seed, key)
-                        n = db.scalar("SELECT COUNT(*) FROM evidence_items WHERE entity_id=? AND run_id=? AND about_entity=1 "
-                                      "AND statement_type NOT IN ('mention')", (eid, rid))
+                                             settings.precedent_max_pages_per_seed, key, search=search)
+                        n = _substantive_about(db, rid, eid, row)
                         st = "sources_found" if n else "not_found"
                         db.execute("UPDATE precedent_seeds SET status=CASE WHEN status IN ('human_verified','refuted') THEN status ELSE ? END, "
                                    "status_note=?, last_checked_at=CURRENT_TIMESTAMP WHERE id=?",
@@ -256,6 +263,59 @@ async def run_seeds(db: Database, settings: Settings, kind: str, *, run_id: str 
     remaining = len(keys) - len(done_keys(db, rid, kind))
     return {"run_id": rid, "kind": kind, "status": status, "stop_reason": reason, "with_sources": found, "remaining": remaining,
             "searches_live": broker.live_calls, "searches_cached": broker.cached_calls, "credits_estimated": broker.credits_used}
+
+
+GENERIC_NAME_WORDS = {"daily", "news", "times", "student", "students", "newspaper", "media", "university", "college",
+                      "network", "online", "digital", "archive", "press", "journal", "herald", "gazette", "tribune",
+                      "post", "voice", "review", "weekly", "public", "radio", "television", "station", "group",
+                      "campus", "paper", "papers", "other", "school", "community", "national", "american", "county", "local"}
+
+
+def _org_terms(name: str, homepage: str | None = None) -> list[str]:
+    """Ways a report may name the organization: core name, the part in parentheses, distinctive words, web name."""
+    core = re.sub(r"^the\s+", "", name.split("/")[0].split("(")[0].strip(), flags=re.I)
+    terms = {core}
+    if "(" in name:
+        terms.add(name.split("(")[1].rstrip(")").strip())
+    terms |= {w for w in re.findall(r"[A-Za-z][A-Za-z'’-]{5,}", name) if w.lower() not in GENERIC_NAME_WORDS}
+    if homepage:
+        stem = re.sub(r"^www\.", "", re.sub(r"^https?://", "", homepage)).split("/")[0].split(".")[0]
+        if len(stem) >= 5 and stem.lower() not in GENERIC_NAME_WORDS:
+            terms.add(stem)
+    return [t for t in terms if len(t) >= 3]
+
+
+def _substantive_about(db: Database, run_id: str, entity_id: int, row) -> int:
+    """Substantive excerpts that support this seed. A secondary report about many outlets (a case study of ten campus
+    papers, a feature on several newsrooms) counts only where the excerpt or its context names this organization."""
+    rows = db.execute("SELECT excerpt, context FROM evidence_items WHERE entity_id=? AND run_id=? AND about_entity=1 "
+                      "AND statement_type NOT IN ('mention')", (entity_id, run_id)).fetchall()
+    keys = row.keys() if hasattr(row, "keys") else []
+    if "source_kind" not in keys or row["source_kind"] not in {"secondary_report", "group_standards"}:
+        return len(rows)
+    home = None
+    if "index_id" in keys and row["index_id"]:
+        home = db.scalar("SELECT homepage_url FROM research_entities WHERE cohort!='precedent_case' AND id IN "
+                         "(SELECT entity_id FROM entity_sources WHERE source_key=?)", (row["seed_key"],), None)
+    terms = [t.lower() for t in _org_terms(row["organization"], home)]
+    return sum(1 for r in rows if any(t in f"{r['excerpt']} {r['context']}".lower() for t in terms)) if \
+        row["source_kind"] == "secondary_report" else len(rows)
+
+
+def recount_index_statuses(db: Database, run_id: str) -> dict:
+    """Re-apply the counting rule to an existing verification run (no refetch)."""
+    from collections import Counter
+    out: Counter = Counter()
+    for row in db.execute("SELECT * FROM precedent_seeds WHERE index_id IS NOT NULL AND entity_id IS NOT NULL").fetchall():
+        if row["status"] in {"human_verified", "refuted"}:
+            continue
+        n = _substantive_about(db, run_id, row["entity_id"], row)
+        st = "sources_found" if n else "not_found"
+        db.execute("UPDATE precedent_seeds SET status=?, status_note=? WHERE id=?",
+                   (st, f"{n} substantive excerpt(s) about the organization in run {run_id}", row["id"]))
+        out[st] += 1
+    db.conn.commit()
+    return dict(out)
 
 
 def set_precedent_status(db: Database, key: str, status: str, note: str = "") -> None:
