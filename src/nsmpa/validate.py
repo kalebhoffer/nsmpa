@@ -122,9 +122,16 @@ def cohort_metrics(db: Database, settings: Settings, cohort: str, run_id: str | 
         note = "Union of sourced lists, deduplicated by domain: " + ", ".join(f"{r['source']} ({r['n']})" for r in sources)
         note += ". This is a sourced panel, not a census, unless the sources are demonstrably exhaustive."
     sub, params = latest_stances_sql(run_id)
+    # Student percentages are per IPEDS institution: count primary publications only. Secondary and unmatched student
+    # papers are researched and reported separately ("additional_student_publications_researched").
+    coverage_filter = ("AND COALESCE(json_extract(re.metadata_json,'$.excluded_from_ipeds_coverage'), 0) IN (0, 'false')"
+                       if cohort == "student_media" else "")
     rows = db.execute(
-        f"SELECT s.* FROM ({sub}) s JOIN research_entities re ON re.id=s.entity_id WHERE re.cohort=? AND re.active=1",
+        f"SELECT s.* FROM ({sub}) s JOIN research_entities re ON re.id=s.entity_id WHERE re.cohort=? AND re.active=1 {coverage_filter}",
         params + [cohort]).fetchall()
+    extra_student = db.scalar(
+        f"SELECT COUNT(*) FROM ({sub}) s JOIN research_entities re ON re.id=s.entity_id WHERE re.cohort='student_media' AND re.active=1 "
+        f"AND json_extract(re.metadata_json,'$.excluded_from_ipeds_coverage') IN (1, 'true')", params) if cohort == "student_media" else None
     counts: dict[str, int] = {}
     for r in rows:
         counts[r["stance"]] = counts.get(r["stance"], 0) + 1
@@ -150,6 +157,7 @@ def cohort_metrics(db: Database, settings: Settings, cohort: str, run_id: str | 
     m.metrics = {
         **disc,
         "entities_in_universe": denominator,
+        **({"additional_student_publications_researched": extra_student} if cohort == "student_media" else {}),
         "entities_researched": researched,
         "research_coverage": _ratio(researched, denominator),
         "policy_discovery_rate": _ratio(determinate, researched),
