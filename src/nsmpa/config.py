@@ -205,6 +205,9 @@ class Settings(BaseModel):
     ai_max_calls_per_run: int = Field(500, ge=1, le=1_000_000)
     # --- v0.6 operations -------------------------------------------------------------------
     notify_on_finish: bool = True
+    outreach_sender_name: str = ""
+    outreach_sender_email: str = ""
+    outreach_affiliation: str = ""
     heartbeat_seconds: float = Field(2.0, ge=0.2, le=60)
     gui_port: int = Field(8765, ge=1024, le=65535)
     ai_concurrency: int = Field(4, ge=1, le=32)
