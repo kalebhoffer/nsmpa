@@ -16,6 +16,7 @@ from pathlib import Path
 from . import __version__
 from .config import Settings
 from .db import Database
+from .utils import sha256_text
 from .validate import all_cohorts, cohort_metrics, latest_stances_sql
 
 # Validated categorical slots (dataviz reference palette, light mode; first three validate all-pairs).
@@ -386,6 +387,15 @@ def build_workbook(data: dict, path: Path) -> None:
         acc_rows = [{"metric": "Accuracy audit", "value": "Not yet measured — run `nsmpa audit sample` and label the sample"}]
     sheet("Accuracy", acc_rows, [("metric", "Measure", 60), ("value", "Result", 50)],
           note="Measured by people hand-checking a random, stratified sample of the tool's classifications.")
+    if data.get("ai_summaries"):
+        srows = [{"section": v["title"], "sentence": snt["text"], "evidence_ids": ", ".join(f"E{i}" for i in snt["evidence_ids"]),
+                  "model": v.get("model", ""), "dropped": v.get("dropped", 0)}
+                 for v in data["ai_summaries"].values() for snt in v["sentences"]]
+        sheet("AI Summaries", srows, [("section", "Section", 28), ("sentence", "AI-drafted sentence (edit before use)", 80),
+                                      ("evidence_ids", "Cites evidence IDs", 20), ("model", "Model", 22),
+                                      ("dropped", "Sentences dropped by validation", 12)],
+              note="Drafted by AI from the listed evidence only. Sentences without valid evidence citations or with "
+                   "numbers not present in the evidence were removed automatically.")
     sheet("Entities", data["entities"], [
         ("entity_id", "ID", 7), ("cohort", "Group", 16), ("name", "Organization", 28), ("parent_name", "Institution", 26),
         ("state", "State", 7), ("homepage_url", "Website", 32), ("stance", "Written-policy stance", 24), ("confidence", "Confidence", 10),
@@ -616,6 +626,16 @@ def build_deck(data: dict, path: Path, *, title: str, max_precedent_slides: int)
         text(s, 0.9, 5.2, 11.5, 1.4, [f"Source: {r['source_url']}", f"Fetched {r['fetched_at']} · page SHA-256 {str(r['page_sha256'])[:16]}…",
                                        f"Matches: {factors or '—'}", verified_tag(r["verification_status"])], size=12, color=INK_2)
 
+    # AI-drafted section summaries (optional)
+    for key, summ in (data.get("ai_summaries") or {}).items():
+        if not summ.get("sentences"):
+            continue
+        s = new(summ["title"], "AI-drafted summary — edit before presenting")
+        text(s, 0.6, 1.9, 12.1, 4.6, [f"{x['text']}  [{', '.join('E' + str(i) for i in x['evidence_ids'])}]"
+                                      for x in summ["sentences"]], size=18)
+        footer(s, f"Drafted by {summ.get('model')} from the cited evidence only (IDs refer to the workbook). "
+                  f"{summ.get('dropped', 0)} unsupported sentence(s) removed automatically.")
+
     # Expert voices
     voices = data["voices"]
     for direction, heading in (("supportive", "What respected practitioners say"), ("adverse", "Practitioners urging caution")):
@@ -684,14 +704,80 @@ def build_deck(data: dict, path: Path, *, title: str, max_precedent_slides: int)
     return len(prs.slides)
 
 
+# =========================================================================== AI summaries
+
+SUMMARY_PROMPT_VERSION = "ai-summary-v1"
+SUMMARY_SYSTEM = """You draft short, neutral summaries of evidence for a research presentation about how news organizations handle
+requests to remove, de-index, anonymize, or update old articles. Use ONLY the numbered evidence provided. Write 2-3 plain
+sentences. Every sentence must cite the evidence IDs it relies on. Do not generalize beyond the evidence, do not state
+counts or percentages that are not given in the input, do not characterize the evidence as proving anything, and include
+opposing evidence if it is provided."""
+SUMMARY_SCHEMA = {
+    "type": "object",
+    "properties": {"sentences": {"type": "array", "items": {
+        "type": "object",
+        "properties": {"text": {"type": "string"}, "evidence_ids": {"type": "array", "items": {"type": "integer"}}},
+        "required": ["text", "evidence_ids"], "additionalProperties": False}}},
+    "required": ["sentences"], "additionalProperties": False,
+}
+SUMMARY_SECTIONS = {
+    "guidance": ("What professional guidance says", "guidance"),
+    "practice": ("What newsrooms have actually done", "practice"),
+    "opposing": ("The case against removal", "opposing"),
+}
+
+
+def validate_summary(sentences: list[dict], allowed_ids: set[int], payload: str) -> tuple[list[dict], int]:
+    """Keep only sentences that cite at least one provided evidence ID, cite no unknown IDs, and state no new numbers."""
+    import re as _re
+    numbers_in = set(_re.findall(r"\d+(?:\.\d+)?", payload))
+    kept, dropped = [], 0
+    for snt in sentences or []:
+        ids = [i for i in snt.get("evidence_ids", []) if isinstance(i, int)]
+        text = str(snt.get("text", "")).strip()
+        cleaned = _re.sub(r"\[E\d+\]", "", text)
+        bad_numbers = set(_re.findall(r"\d+(?:\.\d+)?", cleaned)) - numbers_in
+        if not text or not ids or not set(ids) <= allowed_ids or bad_numbers:
+            dropped += 1
+            continue
+        kept.append({"text": text, "evidence_ids": ids})
+    return kept, dropped
+
+
+def ai_summaries(db: Database, settings: Settings, data: dict, client=None) -> dict:
+    from .ai_review import AIUnavailable, cached_call, make_client
+    out: dict = {}
+    for key, (title, data_key) in SUMMARY_SECTIONS.items():
+        rows = data.get(data_key, [])[:25]
+        if not rows:
+            continue
+        lines = [f"Section: {title}", "Evidence:"]
+        for r in rows:
+            lines.append(f"[E{r['evidence_id']}] ({r['entity']}, {r['cohort']}, {r['direction']}) {r['excerpt'][:500]}")
+        payload = "\n".join(lines)
+        try:
+            client = client or make_client(settings)
+            resp, cached = cached_call(db, client, settings, SUMMARY_PROMPT_VERSION, sha256_text(payload), payload,
+                                       SUMMARY_SYSTEM, SUMMARY_SCHEMA)
+        except AIUnavailable as exc:
+            out[key] = {"title": title, "sentences": [], "dropped": 0, "error": str(exc)}
+            continue
+        kept, dropped = validate_summary(resp.get("sentences", []), {r["evidence_id"] for r in rows}, payload)
+        out[key] = {"title": title, "sentences": kept, "dropped": dropped, "cached": cached,
+                    "model": f"{settings.ai_provider}:{settings.ai_model}"}
+    return out
+
+
 # =========================================================================== entry point
 
 def build_packet(db: Database, settings: Settings, out_dir: Path, *, run_id: str | None = None,
-                 title: str = "Post-publication relief in U.S. journalism: the evidence") -> dict:
+                 title: str = "Post-publication relief in U.S. journalism: the evidence", ai_summaries_on: bool = False,
+                 ai_client=None) -> dict:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out = Path(out_dir) / f"packet_{stamp}"
     out.mkdir(parents=True, exist_ok=True)
     data = gather(db, settings, run_id)
+    data["ai_summaries"] = ai_summaries(db, settings, data, ai_client) if ai_summaries_on else {}
     xlsx = out / "NSMPA_evidence.xlsx"
     pptx = out / "NSMPA_presentation.pptx"
     build_workbook(data, xlsx)

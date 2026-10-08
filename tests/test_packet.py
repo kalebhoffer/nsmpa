@@ -49,3 +49,45 @@ async def test_packet_workbook_and_deck(tmp_path, db):
     alltext = " ".join(sh.text_frame.text for sl in deck.slides for sh in sl.shapes if sh.has_text_frame)
     assert "UNVERIFIED" in alltext and "historical record" in alltext
     assert any(sh.has_chart for sl in deck.slides for sh in sl.shapes)
+
+
+
+def test_validate_summary_drops_uncited_and_invented_numbers():
+    from nsmpa.packet import validate_summary
+    payload = "Evidence:\n[E5] (A, x, adverse) We do not remove stories.\n[E9] (B, y, supportive) Editors may remove names after 2 years."
+    kept, dropped = validate_summary([
+        {"text": "One newsroom refuses removal.", "evidence_ids": [5]},
+        {"text": "Another may remove names after 2 years.", "evidence_ids": [9]},
+        {"text": "Most newsrooms (73%) agree.", "evidence_ids": [5]},      # invented number
+        {"text": "Unsupported claim.", "evidence_ids": []},                 # no citation
+        {"text": "Cites a missing item.", "evidence_ids": [404]},          # unknown id
+    ], {5, 9}, payload)
+    assert [k["evidence_ids"] for k in kept] == [[5], [9]] and dropped == 3
+
+
+async def test_packet_with_ai_summaries(tmp_path, db):
+    import json as _json
+    from types import SimpleNamespace
+    s = await populate(tmp_path, db)
+
+    class FakeSummaryAI:
+        def __init__(self):
+            self.models = SimpleNamespace(generate_content=self.gen)
+
+        def gen(self, *, model, contents, config):
+            from google.genai import types
+            import re as _re
+            ids = [int(x) for x in _re.findall(r"\[E(\d+)\]", contents)][:2]
+            body = {"sentences": [{"text": "The cited evidence describes the position.", "evidence_ids": ids},
+                                  {"text": "Ninety-nine percent agree (99%).", "evidence_ids": ids}]}
+            return SimpleNamespace(text=_json.dumps(body), prompt_feedback=None,
+                                   candidates=[SimpleNamespace(finish_reason=types.FinishReason.STOP)],
+                                   usage_metadata=SimpleNamespace(prompt_token_count=1, candidates_token_count=1))
+
+    res = build_packet(db, s, s.output_dir, ai_summaries_on=True, ai_client=FakeSummaryAI())
+    wb = load_workbook(res["workbook"])
+    assert "AI Summaries" in wb.sheetnames
+    sentences = [c.value for c in wb["AI Summaries"]["B"]][3:]
+    assert sentences and all("99%" not in (x or "") for x in sentences)
+    deck = Presentation(res["presentation"])
+    assert any("AI-DRAFTED SUMMARY" in sh.text_frame.text for sl in deck.slides for sh in sl.shapes if sh.has_text_frame)
