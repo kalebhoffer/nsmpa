@@ -187,9 +187,9 @@ async def test_budget_exhaustion_checkpoints_and_resume_completes(tmp_path, db):
     settings = make_settings(tmp_path, research_concurrency=1)
     seed_newsrooms(tmp_path, db)
     p1 = FakeSearch(SEARCH_ROUTES)
-    rid, s1 = await run_research(db, settings, p1, max_searches=8)
+    rid, s1 = await run_research(db, settings, p1, max_searches=14)
     assert s1["status"] == "budget_exhausted"
-    assert s1["credits_estimated"] <= 8 and len(p1.calls) <= 8
+    assert s1["credits_estimated"] <= 14 and len(p1.calls) <= 14
     assert "max-searches" in (db.scalar("SELECT status_reason FROM research_runs WHERE id=?", (rid,)) or "")
     done_before = item_counts(db, rid).get("done", 0)
     assert done_before >= 1
@@ -478,7 +478,7 @@ def test_migration_from_v2_preserves_data_and_backs_up(tmp_path):
     conn.close()
     db = Database(path)
     try:
-        assert db.schema_version() == 3
+        assert db.schema_version() == 4
         assert db.last_backup is not None and db.last_backup.exists()
         assert db.scalar("SELECT name FROM institutions WHERE unitid='1'") == "Legacy U"
         assert db.scalar("SELECT engine_version FROM research_runs WHERE id='old'") == "0.2"
@@ -501,14 +501,14 @@ def test_failed_migration_rolls_back(tmp_path, monkeypatch):
         conn.execute("CREATE TABLE half_done(x)")
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(mig, "MIGRATIONS", [mig.MIGRATIONS[0], (3, "broken", broken)])
+    monkeypatch.setattr(mig, "MIGRATIONS", [mig.MIGRATIONS[0], mig.MIGRATIONS[1], (4, "broken", broken)])
     import nsmpa.db as dbmod
     monkeypatch.setattr(dbmod, "MIGRATIONS", mig.MIGRATIONS)
     with pytest.raises(RuntimeError):
         Database(path)
     conn = sqlite3.connect(path)
     assert conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE name='half_done'").fetchone()[0] == 0
-    assert 3 not in {r[0] for r in conn.execute("SELECT version FROM schema_migrations")}
+    assert 4 not in {r[0] for r in conn.execute("SELECT version FROM schema_migrations")}
     conn.close()
 
 

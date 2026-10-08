@@ -401,6 +401,8 @@ class HardenedFetcher:
             return True
         if self.settings.allow_pdf and (ctype == "application/pdf" or urlsplit(url).path.lower().endswith(".pdf")):
             return True
+        if ctype in {"application/gzip", "application/x-gzip", "application/octet-stream"} and urlsplit(url).path.lower().endswith(".xml.gz"):
+            return True  # compressed sitemaps
         return False
 
     async def _fetch_http(self, url: str, check_robots: bool, max_bytes: int, textual_only: bool = True) -> FetchResult:

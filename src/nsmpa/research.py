@@ -23,18 +23,20 @@ from urllib.parse import urlsplit
 
 from .config import Settings
 from .db import Database
-from .evidence import STATEMENT_RELEVANCE, extract_evidence
+from .evidence import (STATEMENT_DIRECTION, STATEMENT_RELEVANCE, action_positions, extract_evidence, extract_voices,
+                       person_key)
 from .extract import extract_main_text
 from .fetch import HardenedFetcher
 from .progress import RunDashboard
 from .review import enqueue_entity_review
 from .runs import (StopController, create_or_resume_run, done_keys, finish_run, mark_item, register_items)
 from .search import SearchAuthError, SearchBroker, SearchBudgetExceeded, get_search_provider
-from .similarity import score_similarity
+from .practice import choose_samples, site_article_urls
+from .similarity import score_case_match, score_similarity
 from .snapshots import store_raw, store_text
 from .stance import classify_entity, store_stance
-from .utils import (is_blocked_social_or_aggregator, normalize_url, prepare_request_url, registrableish_domain,
-                    same_site)
+from .utils import (is_blocked_social_or_aggregator, normalize_for_hash, normalize_url, prepare_request_url,
+                    registrableish_domain, same_site, sha256_text)
 
 COHORTS = {"student_media", "professional_newsroom", "support_org", "press_association", "journalism_school", "other"}
 GUIDANCE_COHORTS = {"support_org", "press_association", "journalism_school"}
@@ -109,6 +111,16 @@ TIER3_TERMS = [
     ("precedent", '"arrest record"'), ("precedent", '"changed circumstances"'), ("precedent", "rehabilitation"),
     ("precedent", '"request to remove"'), ("precedent", '"request to unpublish"'), ("precedent", '"request to deindex"'),
     ("precedent", '"name removed"'), ("precedent", '"name anonymized"'),
+]
+PRACTICE_SPECS = [
+    QuerySpec(4, "practice", "editors_note_outcome",
+              'site:{site} "editor\'s note" ("charges were dismissed" OR "charges were dropped" OR acquitted OR expunged OR "found not guilty")'),
+    QuerySpec(4, "practice", "name_removed_note",
+              'site:{site} ("name has been removed" OR "removed the name" OR "no longer identifies" OR "has been updated to remove" OR "at the request of")'),
+    QuerySpec(4, "practice", "updated_outcome",
+              'site:{site} ("this story has been updated" OR "this article has been updated") (dismissed OR dropped OR acquitted OR cleared OR expunged)'),
+    QuerySpec(4, "practice", "unpublish_deindex_note",
+              'site:{site} (unpublished OR "removed this story" OR "removed this article" OR "de-indexed" OR "search engines") editor'),
 ]
 TIER3 = [QuerySpec(3, p, re.sub(r"\W+", "_", t.strip('"')).strip("_"), f"site:{{site}} {t}") for p, t in TIER3_TERMS]
 
@@ -507,13 +519,14 @@ class EntityResearcher:
             self.dash.update(phase=f"fetch {t['topic']}")
             self.dash.log(f"  fetch [{t['score']:.2f}] {t['url']}")
             r = await self.fetcher.fetch_safe(t["url"])
-            status = await self._record_page(entity, r, target_id=t["id"], query_id=t["query_id"], topic=t["topic"])
+            status, _, _ = await self._record_page(entity, r, target_id=t["id"], query_id=t["query_id"], topic=t["topic"])
             self.db.execute("UPDATE research_targets SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (status, t["id"]))
             self.db.conn.commit()
             self._sync_fetch_counters()
 
     async def _record_page(self, entity, r, *, target_id: int | None, query_id: int | None, topic: str,
-                           forced_kind: str | None = None) -> str:
+                           forced_kind: str | None = None, substantive_only: bool = False):
+        """Persist one fetched page plus its evidence and attributed voices. Returns (status, page, page_id)."""
         first = is_first_party(entity, r.final_url or r.requested_url)
         ok = r.access_class == "ok" and bool(r.content)
         page = extract_main_text(r.content, r.content_type, r.final_url, r.headers) if ok else None
@@ -532,15 +545,15 @@ class EntityResearcher:
             """
             INSERT INTO research_pages(run_id,entity_id,target_id,requested_url,final_url,http_status,status,content_type,title,
               text_length,content_sha256,meta_robots,x_robots_tag,noindex,policy_score,evidence_tags_json,headers_json,snapshot_path,
-              error,canonical_url,access_class,page_kind,text_sha256,redirect_chain_json,query_id,first_party)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+              error,canonical_url,access_class,page_kind,text_sha256,redirect_chain_json,query_id,first_party,author,published_date)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(run_id,entity_id,requested_url) DO UPDATE SET final_url=excluded.final_url,http_status=excluded.http_status,
               status=excluded.status,content_type=excluded.content_type,title=excluded.title,text_length=excluded.text_length,
               content_sha256=excluded.content_sha256,meta_robots=excluded.meta_robots,x_robots_tag=excluded.x_robots_tag,
               noindex=excluded.noindex,headers_json=excluded.headers_json,snapshot_path=excluded.snapshot_path,error=excluded.error,
               canonical_url=excluded.canonical_url,access_class=excluded.access_class,page_kind=excluded.page_kind,
               text_sha256=excluded.text_sha256,redirect_chain_json=excluded.redirect_chain_json,first_party=excluded.first_party,
-              fetched_at=CURRENT_TIMESTAMP
+              author=excluded.author,published_date=excluded.published_date,fetched_at=CURRENT_TIMESTAMP
             """,
             (self.run_id, entity["id"], target_id, r.requested_url, r.final_url, r.status_code or None,
              "fetched" if ok else "failed", r.content_type, page.title if page else None,
@@ -548,61 +561,165 @@ class EntityResearcher:
              int(page.noindex) if page else 0, 0.0, "[]",
              json.dumps({k: v for k, v in r.headers.items() if k in {"content-type", "x-robots-tag", "last-modified", "server", "link"}}),
              snap_path, r.error, page.canonical_url if page else None, r.access_class, kind, text_sha,
-             json.dumps(r.redirect_chain), query_id, int(first)),
+             json.dumps(r.redirect_chain), query_id, int(first), page.author if page else None, page.published if page else None),
         )
-        page_id = self.db.execute("SELECT id FROM research_pages WHERE run_id=? AND entity_id=? AND requested_url=?",
-                                  (self.run_id, entity["id"], r.requested_url)).fetchone()["id"]
+        page_id = int(self.db.execute("SELECT id FROM research_pages WHERE run_id=? AND entity_id=? AND requested_url=?",
+                                      (self.run_id, entity["id"], r.requested_url)).fetchone()["id"])
         if page and page.main_text:
-            n_useful = self._store_evidence(entity, page, int(page_id), query_id, topic, first, kind, raw_sha, text_sha)
+            n_useful = self._store_evidence(entity, page, page_id, query_id, topic, first, kind, raw_sha, text_sha,
+                                            substantive_only=substantive_only)
+            n_useful += self._store_voices(entity, page, page_id)
             if n_useful:
                 self.broker.mark_useful(query_id)
-        return "fetched" if ok else r.access_class
+        return ("fetched" if ok else r.access_class), page, page_id
+
+    def _insert_item(self, entity, *, page, page_id: int | None, query_id: int | None, topic: str, first: bool, about: bool,
+                     ev_class: str, statement_type: str, direction: str, excerpt: str, context: str, excerpt_sha: str,
+                     near_dup: str, tags: list[str], actions: dict, authority: float, confidence: float, cues: str,
+                     raw_sha: str | None, text_sha: str | None) -> int | None:
+        profile = self.settings.case_profile
+        cohort_basis = entity["cohort"] if first else None
+        sim = score_similarity(profile, excerpt, context, cohort=cohort_basis)
+        cm = score_case_match(profile, self.settings.my_case, excerpt, context, cohort=cohort_basis)
+        fetched_at = self.db.scalar("SELECT fetched_at FROM research_pages WHERE id=?", (page_id,), None) if page_id else None
+        dup = self.db.execute(
+            "SELECT id FROM evidence_items WHERE run_id=? AND entity_id=? AND near_dup_key=? AND duplicate_of IS NULL "
+            "AND excerpt_sha256!=? ORDER BY id LIMIT 1", (self.run_id, entity["id"], near_dup, excerpt_sha)).fetchone()
+        cur = self.db.execute(
+            """
+            INSERT OR IGNORE INTO evidence_items(run_id,entity_id,page_id,query_id,cohort,source_url,source_title,source_domain,
+              fetched_at,page_sha256,text_sha256,excerpt,context,excerpt_sha256,near_dup_key,duplicate_of,first_party,about_entity,
+              evidence_class,statement_type,direction,topic,authority_score,relevance_score,similarity_score,similarity_factors_json,
+              extraction_confidence,rationale,actions_json,case_match_score,case_match_factors_json)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (self.run_id, entity["id"], page_id, query_id, entity["cohort"], page.url, (page.title or "")[:500],
+             registrableish_domain(page.url), fetched_at, raw_sha, text_sha, excerpt, context, excerpt_sha, near_dup,
+             dup["id"] if dup else None, int(first), int(about), ev_class, statement_type, direction, topic, authority,
+             STATEMENT_RELEVANCE[statement_type], sim.score, json.dumps(sim.factors), confidence, cues[:500],
+             json.dumps(actions, sort_keys=True), cm.score, json.dumps(cm.factors)),
+        )
+        if not (cur.rowcount and cur.lastrowid):
+            return None
+        self.db.conn.executemany("INSERT OR IGNORE INTO evidence_item_tags(evidence_id,tag) VALUES(?,?)",
+                                 [(cur.lastrowid, t) for t in tags])
+        if not dup:
+            self.dash.increment(evidence_unique=1)
+            if sim.score >= profile.high_similarity_threshold:
+                self.dash.increment(high_similarity=1)
+        return int(cur.lastrowid)
 
     def _store_evidence(self, entity, page, page_id: int, query_id: int | None, topic: str, first: bool, kind: str,
-                        raw_sha: str | None, text_sha: str | None) -> int:
+                        raw_sha: str | None, text_sha: str | None, *, substantive_only: bool = False) -> int:
         items = extract_evidence(page.main_text, entity_terms=entity_terms(entity),
                                  max_items=self.settings.research_max_evidence_per_page,
                                  require_entity_mention=not first)
-        profile = self.settings.case_profile
         useful = 0
-        fetched_at = self.db.scalar("SELECT fetched_at FROM research_pages WHERE id=?", (page_id,), None)
         for it in items:
             st = it.statement
+            if substantive_only and st.statement_type in {"mention", "harm_consideration"}:
+                continue  # archived crime stories: keep only what the newsroom said or did, not the crime narrative
             low = it.context.lower()
             about = first or any(t.lower() in low for t in entity_terms(entity))
             ev_class = evidence_class_for(entity["cohort"], first, about and not first, kind, st.statement_type)
             if ev_class == "secondary_report" and entity["cohort"] in GUIDANCE_COHORTS and first:
                 about = False  # a guidance org describing another newsroom's decision
-            authority = authority_for(ev_class, kind, page.url)
-            sim = score_similarity(profile, it.excerpt, it.context, cohort=entity["cohort"] if first else None)
-            dup = self.db.execute(
-                "SELECT id FROM evidence_items WHERE run_id=? AND entity_id=? AND near_dup_key=? AND duplicate_of IS NULL "
-                "AND excerpt_sha256!=? ORDER BY id LIMIT 1",
-                (self.run_id, entity["id"], it.near_dup_key, it.excerpt_sha256)).fetchone()
+            new_id = self._insert_item(
+                entity, page=page, page_id=page_id, query_id=query_id, topic=topic, first=first, about=about, ev_class=ev_class,
+                statement_type=st.statement_type, direction=st.direction, excerpt=it.excerpt, context=it.context,
+                excerpt_sha=it.excerpt_sha256, near_dup=it.near_dup_key, tags=st.tags, actions=action_positions(it.excerpt),
+                authority=authority_for(ev_class, kind, page.url), confidence=st.confidence, cues="; ".join(st.cues),
+                raw_sha=raw_sha, text_sha=text_sha)
+            if new_id and st.statement_type != "mention":
+                useful += 1
+                if st.statement_type.startswith("practice_relief_granted") and about:
+                    self.dash.add_recent(f"✓ Documented practice  {entity['name']}: {it.excerpt[:60]}")
+        return useful
+
+    def _store_voices(self, entity, page, page_id: int) -> int:
+        n = 0
+        for v in extract_voices(page.main_text, author=page.author):
+            key = person_key(v.person_name)
+            expert = self.db.execute("SELECT id, role, affiliation FROM experts WHERE person_key=?", (key,)).fetchone()
+            cm = score_case_match(self.settings.case_profile, self.settings.my_case, v.quote, v.context)
             cur = self.db.execute(
                 """
-                INSERT OR IGNORE INTO evidence_items(run_id,entity_id,page_id,query_id,cohort,source_url,source_title,source_domain,
-                  fetched_at,page_sha256,text_sha256,excerpt,context,excerpt_sha256,near_dup_key,duplicate_of,first_party,about_entity,
-                  evidence_class,statement_type,direction,topic,authority_score,relevance_score,similarity_score,similarity_factors_json,
-                  extraction_confidence,rationale)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                INSERT OR IGNORE INTO voices(person_key,person_name,role,affiliation,expert_id,quote,quote_sha256,context,source_url,
+                  source_title,source_domain,page_id,run_id,entity_id,statement_type,direction,actions_json,attribution_method,
+                  attribution_confidence,case_match_score)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
-                (self.run_id, entity["id"], page_id, query_id, entity["cohort"], page.url, page.title[:500],
-                 registrableish_domain(page.url), fetched_at, raw_sha, text_sha, it.excerpt, it.context, it.excerpt_sha256,
-                 it.near_dup_key, dup["id"] if dup else None, int(first), int(about), ev_class, st.statement_type, st.direction,
-                 topic, authority, STATEMENT_RELEVANCE[st.statement_type], sim.score, json.dumps(sim.factors),
-                 st.confidence, "; ".join(st.cues)[:500]),
+                (key, v.person_name, v.role or (expert["role"] if expert else None), expert["affiliation"] if expert else None,
+                 expert["id"] if expert else None, v.quote, sha256_text(normalize_for_hash(v.quote)), v.context, page.url,
+                 (page.title or "")[:300], registrableish_domain(page.url), page_id, self.run_id, entity["id"],
+                 v.statement.statement_type, v.statement.direction, json.dumps(v.actions, sort_keys=True), v.method,
+                 v.confidence + (0.15 if expert else 0.0), cm.score),
             )
-            if cur.rowcount and cur.lastrowid:
-                self.db.conn.executemany("INSERT OR IGNORE INTO evidence_item_tags(evidence_id,tag) VALUES(?,?)",
-                                         [(cur.lastrowid, t) for t in st.tags])
-                if not dup:
-                    self.dash.increment(evidence_unique=1)
-                    if sim.score >= profile.high_similarity_threshold:
-                        self.dash.increment(high_similarity=1)
-                if st.statement_type != "mention":
-                    useful += 1
-        return useful
+            if cur.rowcount:
+                n += 1
+                if expert:
+                    self.dash.add_recent(f"✎ Voice  {v.person_name}: {v.quote[:60]}")
+        return n
+
+    async def _dig_practice(self, entity, budget_left: int) -> int:
+        """Search for and sample the entity's own archive for evidence of what it actually did."""
+        used = 0
+        if self.broker.provider.name != "none" and self.settings.research_practice_queries and budget_left > 0:
+            u, _ = await self._search_tier(entity, list(PRACTICE_SPECS), budget_left)
+            used += u
+            await self._fetch_targets(entity)
+        home = prepare_request_url(entity["homepage_url"] or "")
+        if not home or self.stop.force or entity_site(entity) != registrableish_domain(home) and "/" in entity_site(entity):
+            return used  # path-scoped hubs on a university site are not newsroom archives
+        if self.settings.research_crime_article_sample <= 0:
+            return used
+        self.dash.update(phase="archive: reading sitemaps")
+        urls = await site_article_urls(self.fetcher, home)
+        crime, baseline = choose_samples(urls, self.settings.research_crime_article_sample,
+                                         self.settings.research_baseline_article_sample)
+        self.dash.log(f"  archive sample: {len(urls)} sitemap URLs -> {len(crime)} crime/arrest, {len(baseline)} baseline")
+        baseline_noindex = baseline_ok = 0
+        for u in baseline:
+            if self.stop.force:
+                return used
+            self.dash.update(phase="archive: baseline articles")
+            r = await self.fetcher.fetch_safe(u)
+            status, page, _ = await self._record_page(entity, r, target_id=None, query_id=None, topic="baseline_article",
+                                                      forced_kind="baseline_article", substantive_only=True)
+            if page:
+                baseline_ok += 1
+                baseline_noindex += int(page.noindex)
+        sitewide = baseline_ok > 0 and baseline_noindex == baseline_ok
+        for u in crime:
+            if self.stop.force:
+                return used
+            self.dash.update(phase="archive: crime/arrest articles")
+            r = await self.fetcher.fetch_safe(u)
+            status, page, page_id = await self._record_page(entity, r, target_id=None, query_id=None, topic="crime_article",
+                                                            forced_kind="crime_article", substantive_only=True)
+            if page and page.noindex:
+                directive = "; ".join(x for x in (page.meta_robots and f"meta robots={page.meta_robots}",
+                                                  page.x_robots_tag and f"X-Robots-Tag={page.x_robots_tag}") if x)
+                if sitewide:
+                    stype, text = "technical_sitewide_noindex", (
+                        f'Archived crime/arrest article "{page.title}" carries noindex ({directive}), but so do all '
+                        f"{baseline_ok} sampled comparison articles on this site; not evidence of targeted de-indexing.")
+                else:
+                    stype, text = "technical_noindex", (
+                        f'Archived crime/arrest article "{page.title}" carries a noindex directive ({directive}); '
+                        f"{baseline_ok - baseline_noindex} of {baseline_ok} sampled comparison articles on the same site are indexable.")
+                self._insert_item(
+                    entity, page=page, page_id=page_id, query_id=None, topic="crime_article", first=True, about=True,
+                    ev_class="technical", statement_type=stype, direction=STATEMENT_DIRECTION[stype], excerpt=text,
+                    context=f"{page.title}. {page.main_text[:1200]}", excerpt_sha=sha256_text(normalize_for_hash(text + page.url)),
+                    near_dup=sha256_text(page.url)[:24], tags=["noindex"],
+                    actions={"deindex": "practiced"} if stype == "technical_noindex" else {},
+                    authority=0.9, confidence=0.9 if baseline_ok else 0.6, cues=f"noindex;baseline={baseline_noindex}/{baseline_ok}",
+                    raw_sha=None, text_sha=None)
+                if stype == "technical_noindex":
+                    self.dash.add_recent(f"✓ De-indexed crime article  {entity['name']}: {page.title[:50]}")
+        self.db.conn.commit()
+        return used
 
     async def research(self, entity, budget_per_entity: int) -> dict:
         eid = int(entity["id"])
@@ -622,14 +739,22 @@ class EntityResearcher:
             u3, _ = await self._search_tier(entity, plan_queries(self.settings, entity, 3), budget_per_entity - used)
             used += u3
         await self._fetch_targets(entity)
+        dig = self.settings.research_practice_dig
+        if entity["cohort"] not in GUIDANCE_COHORTS and dig != "never" and not self.stop.force:
+            has_policy = bool(self.db.scalar(
+                "SELECT COUNT(*) FROM evidence_items WHERE run_id=? AND entity_id=? AND first_party=1 "
+                "AND evidence_class IN ('written_policy','editorial_statement') AND statement_type NOT IN ('mention','harm_consideration')",
+                (self.run_id, eid)))
+            if dig == "always" or not has_policy:
+                used += await self._dig_practice(entity, budget_per_entity - used)
         self.dash.update(phase="classifying")
         result = classify_entity(self.db, self.settings, self.run_id, entity)
         store_stance(self.db, self.run_id, eid, result)
         enqueue_entity_review(self.db, self.run_id, entity, result)
         self.db.conn.commit()
         return {"stance": result.stance, "confidence": result.confidence, "queries": used, "escalated": escalate,
-                "max_similarity": result.max_similarity, "supportive": result.supportive, "adverse": result.adverse}
-
+                "max_similarity": result.max_similarity, "supportive": result.supportive, "adverse": result.adverse,
+                "relief_mode": result.relief_mode}
 
 STANCE_BADGE = {
     "SUPPORTS_RELIEF": "✓ Relief policy", "SUPPORTS_CHANGED_CIRCUMSTANCES": "✓ Changed-circumstance policy",
