@@ -731,9 +731,14 @@ class EntityResearcher:
         depth = self.settings.research_depth
         searching = self.broker.provider.name != "none"
         used, signal = 0, False
+        steps = iter(range(1, 9))
+        step = lambda: self.dash.update(step_done=next(steps, 8), step_total=8)  # noqa: E731
+        self.dash.update(step_done=0, step_total=8)
         if searching:
             used, signal = await self._search_tier(entity, plan_queries(self.settings, entity, 1), budget_per_entity)
+        step()
         await self._homepage_links(entity)
+        step()
         escalate = searching and (depth == "deep" or signal or entity["cohort"] in GUIDANCE_COHORTS)
         if depth != "quick" and escalate and not self.stop.force:
             u2, _ = await self._search_tier(entity, plan_queries(self.settings, entity, 2), budget_per_entity - used)
@@ -741,7 +746,9 @@ class EntityResearcher:
         if searching and depth == "deep" and not self.stop.force:
             u3, _ = await self._search_tier(entity, plan_queries(self.settings, entity, 3), budget_per_entity - used)
             used += u3
+        step()
         await self._fetch_targets(entity)
+        step()
         dig = self.settings.research_practice_dig
         if entity["cohort"] not in GUIDANCE_COHORTS and dig != "never" and not self.stop.force:
             has_policy = bool(self.db.scalar(
@@ -750,13 +757,16 @@ class EntityResearcher:
                 (self.run_id, eid)))
             if dig == "always" or not has_policy:
                 used += await self._dig_practice(entity, budget_per_entity - used)
+        step()
         if entity["cohort"] not in GUIDANCE_COHORTS and not self.stop.force:
             await wayback_for_entity(self, entity)
+        step()
         self.dash.update(phase="classifying")
         result = classify_entity(self.db, self.settings, self.run_id, entity)
         store_stance(self.db, self.run_id, eid, result)
         enqueue_entity_review(self.db, self.run_id, entity, result)
         self.db.conn.commit()
+        self.dash.update(step_done=8, step_total=8)
         return {"stance": result.stance, "confidence": result.confidence, "queries": used, "escalated": escalate,
                 "max_similarity": result.max_similarity, "supportive": result.supportive, "adverse": result.adverse,
                 "relief_mode": result.relief_mode}
@@ -805,7 +815,8 @@ async def research_all(db: Database, settings: Settings, run_id: str, cohort: st
     stop = stop or StopController()
     universe = {"student_media": "Student Journalism", "professional_newsroom": "Professional Newsrooms",
                 "support_org": "Support / Standards Organizations"}.get(cohort or "", cohort or "All cohorts")
-    dash = dashboard or RunDashboard("NSMPA National Research", len(rows), quiet=quiet, verbose=verbose, universe=universe)
+    dash = dashboard or RunDashboard("NSMPA National Research", len(rows), quiet=quiet, verbose=verbose, universe=universe,
+                                     db=db, run_id=run_id, persist_seconds=settings.heartbeat_seconds)
     counts = {"entities": len(rows), "already_done": len(rows) - len(todo), "completed": 0, "failed": 0}
     stop_reason = ""
     own_fetcher = fetcher is None

@@ -780,11 +780,105 @@ def migrate_v5(conn: sqlite3.Connection) -> None:
     _create_views(conn)
 
 
+V6_TABLES = r"""
+CREATE TABLE IF NOT EXISTS run_heartbeats (
+  run_id TEXT PRIMARY KEY,
+  title TEXT,
+  state_json TEXT NOT NULL,
+  pid INTEGER,
+  finished INTEGER NOT NULL DEFAULT 0,
+  started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS contacts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entity_id INTEGER NOT NULL REFERENCES research_entities(id) ON DELETE CASCADE,
+  email TEXT NOT NULL,
+  name TEXT,
+  role TEXT,
+  source_url TEXT,
+  source TEXT NOT NULL DEFAULT 'harvested',
+  do_not_contact INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(entity_id, email)
+);
+
+CREATE TABLE IF NOT EXISTS outreach_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  campaign TEXT NOT NULL,
+  entity_id INTEGER NOT NULL REFERENCES research_entities(id) ON DELETE CASCADE,
+  contact_id INTEGER REFERENCES contacts(id) ON DELETE SET NULL,
+  status TEXT NOT NULL DEFAULT 'drafted',
+  draft_path TEXT,
+  subject TEXT,
+  drafted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  sent_at TEXT,
+  responded_at TEXT,
+  response_path TEXT,
+  response_sha256 TEXT,
+  note TEXT,
+  UNIQUE(campaign, entity_id, contact_id)
+);
+
+CREATE TABLE IF NOT EXISTS legal_context (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  key TEXT NOT NULL UNIQUE,
+  jurisdiction TEXT NOT NULL,
+  topic TEXT NOT NULL,
+  title TEXT NOT NULL,
+  claim TEXT NOT NULL,
+  citation TEXT,
+  primary_url TEXT,
+  verification_query TEXT,
+  prior_confidence TEXT NOT NULL DEFAULT 'lead',
+  status TEXT NOT NULL DEFAULT 'unverified',
+  status_note TEXT,
+  best_excerpt TEXT,
+  best_source TEXT,
+  last_checked_at TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS policy_watch (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entity_id INTEGER NOT NULL REFERENCES research_entities(id) ON DELETE CASCADE,
+  url TEXT NOT NULL,
+  baseline_text_sha256 TEXT,
+  last_text_sha256 TEXT,
+  last_checked_at TEXT,
+  last_status TEXT,
+  changes INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(entity_id, url)
+);
+
+CREATE TABLE IF NOT EXISTS policy_changes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  watch_id INTEGER NOT NULL REFERENCES policy_watch(id) ON DELETE CASCADE,
+  detected_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  old_text_sha256 TEXT,
+  new_text_sha256 TEXT,
+  similarity REAL,
+  added_relief_statements INTEGER NOT NULL DEFAULT 0,
+  removed_relief_statements INTEGER NOT NULL DEFAULT 0,
+  summary TEXT
+);
+"""
+
+
+def migrate_v6(conn: sqlite3.Connection) -> None:
+    """v0.6: run heartbeats (GUI/watch), outreach, legal context, policy re-checks; AI discovery picks."""
+    run_script(conn, V6_TABLES)
+    _add_column(conn, "publication_candidates", "ai_pick_json", "TEXT")
+    _create_views(conn)
+
+
 MIGRATIONS: list[tuple[int, str, Callable[[sqlite3.Connection], None]]] = [
     (2, "baseline v0.1/v0.2 schema", migrate_v2),
     (3, "v0.3 checkpoints, unique evidence, review queue, provenance, views", migrate_v3),
     (4, "v0.4 action positions, case match, expert voices, precedent seeds", migrate_v4),
     (5, "v0.5 AI review, Wayback comparisons, accuracy audits", migrate_v5),
+    (6, "v0.6 heartbeats, outreach, legal context, policy re-checks", migrate_v6),
 ]
 
 LATEST_VERSION = MIGRATIONS[-1][0]

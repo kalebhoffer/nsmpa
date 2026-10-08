@@ -256,7 +256,8 @@ async def run_ai_review(db: Database, settings: Settings, *, run_id: str | None 
              "findings": 0, "verified": 0, "unverified_discarded": 0, "disagreements": 0, "ai_only": 0}
     status, reason = "completed", None
     dash = RunDashboard("NSMPA AI second opinion", len(pages), quiet=quiet, verbose=verbose,
-                        universe=f"{settings.ai_provider}:{settings.ai_model} · {PROMPT_VERSION}")
+                        universe=f"{settings.ai_provider}:{settings.ai_model} · {PROMPT_VERSION}", db=db, run_id=rid,
+                        persist_seconds=settings.heartbeat_seconds)
     if client is None and todo:
         client = make_client(settings)
     sem = asyncio.Semaphore(settings.ai_concurrency)

@@ -261,3 +261,32 @@ async def test_audit_sample_label_report(tmp_path, db):
     wb = load_workbook(res["workbook"])
     assert {"Archive Changes", "AI Second Opinion", "Accuracy"} <= set(wb.sheetnames)
     assert "Direction accuracy" in [c.value for c in wb["Accuracy"]["A"]]
+
+
+# ============================================================================ v0.6 stage 1: heartbeats, notify
+
+async def test_research_writes_heartbeat_with_entity_steps(tmp_path, db):
+    s = make_settings(tmp_path)
+    tp.seed_newsrooms(tmp_path, db)
+    rid, _ = await tp.run_research(db, s, tp.FakeSearch(tp.SEARCH_ROUTES))
+    hb = db.execute("SELECT * FROM run_heartbeats WHERE run_id=?", (rid,)).fetchone()
+    assert hb and hb["finished"] == 1
+    state = json.loads(hb["state_json"])
+    assert state["completed"] == 4 and state["step_total"] == 8 and state["pages_fetched"] > 0
+    from nsmpa.progress import HeartbeatView
+    from rich.console import Console
+    c = Console(record=True, width=120)
+    c.print(HeartbeatView(state, hb["title"]).render())
+    out = c.export_text()
+    assert "4 / 4" in out and "Entity steps" in out
+
+
+def test_notify_escapes_and_is_platform_safe(monkeypatch):
+    import nsmpa.notify as n
+    calls = []
+    monkeypatch.setattr(n.subprocess, "run", lambda args, **kw: calls.append(args))
+    monkeypatch.setattr(n.sys, "platform", "darwin")
+    assert n.notify('Done "now"', "x", enabled=True) and '\\"now\\"' in calls[0][2]
+    assert n.notify("t", "m", enabled=False) is False
+    monkeypatch.setattr(n.sys, "platform", "linux")
+    assert n.notify("t", "m") is False

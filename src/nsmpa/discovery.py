@@ -564,7 +564,8 @@ async def discover_all(
     stats = {"candidates": 0, "high": 0, "processed": 0, "failed": 0}
     stop_reason = ""
     dash = RunDashboard("NSMPA Publication Discovery", len(rows), quiet=quiet, verbose=verbose,
-                        universe="Student Journalism (IPEDS four-year)")
+                        universe="Student Journalism (IPEDS four-year)", db=db, run_id=rid,
+                        persist_seconds=settings.heartbeat_seconds)
     own_fetcher = fetcher is None
     fetcher = fetcher or HardenedFetcher(settings, on_event=dash.log)
     queue: deque = deque(todo)

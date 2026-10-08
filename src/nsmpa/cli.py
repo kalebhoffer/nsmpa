@@ -25,6 +25,7 @@ from .ingest import import_ipeds
 from .research import (COHORTS, import_entities_csv, merge_duplicate_entities, research_all, start_research,
                        sync_student_entities)
 from .runs import item_counts, latest_resumable_run
+from .notify import run_finished
 from .support_orgs import seed_support_orgs
 from .utils import normalize_url, registrableish_domain
 
@@ -136,6 +137,7 @@ def discover_cmd(
                                          max_searches=max_searches, refresh_search=refresh_search, fresh=fresh,
                                          states=state or None, unitids=unitid or None, command=_cmdline()))
         console.print_json(json.dumps(stats))
+        run_finished(settings, "discovery", stats)
         _print_stop(stats, f"nsmpa discover --run-id {stats['run_id']}" + (f" --max-searches {max_searches}" if max_searches is not None else ""))
     finally:
         db.close()
@@ -370,6 +372,7 @@ def research_cmd(
             stats["exported"] = export_research(db, rid, settings.output_dir)
             stats["export_dir"] = str(settings.output_dir / f"research_{rid}")
         console.print_json(json.dumps(stats, default=str))
+        run_finished(settings, "research", stats)
         _print_stop(stats, f"nsmpa research --run-id {rid}" + (f" --cohort {cohort}" if cohort else "")
                     + (f" --limit {limit}" if limit else "") + (f" --max-searches {max_searches}" if max_searches is not None else ""))
     finally:
@@ -407,6 +410,7 @@ def resume_cmd(
             stats_cmd = f"nsmpa research --run-id {run['id']}"
         stats["run_id"] = run["id"]
         console.print_json(json.dumps(stats, default=str))
+        run_finished(settings, "resumed run", stats)
         _print_stop(stats, stats_cmd)
     finally:
         db.close()
@@ -661,6 +665,7 @@ def verify_precedents_cmd(
         res = asyncio.run(run_seeds(db, settings, "precedents", run_id=run_id, max_searches=max_searches, quiet=quiet,
                                     verbose=verbose, command=_cmdline()))
         console.print_json(json.dumps(res, default=str))
+        run_finished(settings, "precedent verification", res)
         _print_stop(res, f"nsmpa verify-precedents --run-id {res['run_id']}")
     finally:
         db.close()
@@ -714,6 +719,7 @@ def research_experts_cmd(
         res = asyncio.run(run_seeds(db, settings, "experts", run_id=run_id, max_searches=max_searches, quiet=quiet,
                                     verbose=verbose, command=_cmdline()))
         console.print_json(json.dumps(res, default=str))
+        run_finished(settings, "expert voices", res)
         _print_stop(res, f"nsmpa research-experts --run-id {res['run_id']}")
     finally:
         db.close()
@@ -815,6 +821,7 @@ def wayback_cmd(run_id: str = typer.Option(..., "--run-id", help="Research run w
     try:
         res = asyncio.run(run_wayback(db, settings, run_id, quiet=quiet, verbose=verbose, entity_ids=entity_id or None))
         console.print_json(json.dumps(res))
+        run_finished(settings, "Wayback comparison", res)
     finally:
         db.close()
 
@@ -845,6 +852,7 @@ def ai_review_cmd(
         res = asyncio.run(run_ai_review(db, settings, run_id=run_id, cohort=cohort, max_calls=max_calls, limit=limit,
                                         quiet=quiet, verbose=verbose, review_run_id=resume_id, command=_cmdline()))
         console.print_json(json.dumps(res, default=str))
+        run_finished(settings, "AI review", res)
         if res["status"] in {"budget_exhausted", "interrupted"}:
             console.print(f"[yellow]Resume with: nsmpa ai-review --resume {res['run_id']}"
                           + (f" --run-id {run_id}" if run_id else "") + "[/yellow]")
@@ -944,6 +952,47 @@ def exclude_run_cmd(run_id: str = typer.Argument(...), reason: str = typer.Optio
                    ("completed" if undo else "excluded", None if undo else f"excluded: {reason}", run_id))
         db.conn.commit()
         console.print(f"Run {run_id} {'restored' if undo else 'excluded from reports'}")
+    finally:
+        db.close()
+
+
+@app.command("watch")
+def watch_cmd(run_id: str | None = typer.Option(None, "--run-id", help="Run to follow (default: most recently active)"),
+              interval: float = typer.Option(1.0, "--interval", min=0.2), config: Path | None = ConfigOpt) -> None:
+    """Follow a running job from another terminal (reads its heartbeat; Ctrl+C stops watching, not the job)."""
+    import time as _time
+    from rich.live import Live
+    from .progress import HeartbeatView
+    settings = load_settings(config)
+    db = Database(settings.database_path)
+
+    def latest():
+        if run_id:
+            return db.execute("SELECT * FROM run_heartbeats WHERE run_id=?", (run_id,)).fetchone()
+        return db.execute("SELECT * FROM run_heartbeats ORDER BY finished, updated_at DESC LIMIT 1").fetchone()
+
+    row = latest()
+    if not row:
+        console.print("No runs have reported progress yet. Start one (e.g. `nsmpa research ...`) and try again.")
+        db.close()
+        return
+    try:
+        with Live(console=console, refresh_per_second=4) as live:
+            while True:
+                row = latest()
+                view = HeartbeatView(json.loads(row["state_json"]), row["title"] or "NSMPA")
+                age = db.scalar("SELECT CAST((julianday('now') - julianday(?)) * 86400 AS INTEGER)", (row["updated_at"],), 0)
+                stale = "" if row["finished"] or age < 30 else f"  [yellow](no heartbeat for {age}s — process may have stopped)[/yellow]"
+                from rich.console import Group
+                from rich.text import Text
+                header = Text.from_markup(f"[dim]Watching {row['run_id']} · pid {row['pid']} · "
+                                          f"{'finished' if row['finished'] else 'running'}[/dim]{stale}")
+                live.update(Group(header, view.render()))
+                if row["finished"]:
+                    break
+                _time.sleep(interval)
+    except KeyboardInterrupt:
+        pass
     finally:
         db.close()
 
