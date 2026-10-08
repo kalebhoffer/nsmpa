@@ -68,6 +68,21 @@ class Redactor:
         self.keep |= frags
         self.redacted_tokens: set[str] = set()   # tokens redacted from the current row (reset per row)
         self.count = 0
+        self.common_words: set[str] = set()      # words seen in lowercase in the shared text (see learn_common_words)
+
+    def learn_common_words(self, texts, *, min_count: int = 2) -> None:
+        """Learn ordinary words from the text being shared: words that also occur in lowercase.
+
+        Headlines capitalize ordinary phrases ("A Case Study of Ten College Newspapers", "Publishing Principles").
+        A capitalized pair counts as a name only if at least one of its words never appears in lowercase in the corpus;
+        first names almost never do, so "John Brown" is still withheld even though "brown" is an ordinary word.
+        """
+        counts: dict[str, int] = {}
+        for t in texts:
+            if isinstance(t, str):
+                for w in re.findall(r"(?<![A-Za-z'’])([a-z][a-z'’-]{2,})", t):
+                    counts[w] = counts.get(w, 0) + 1
+        self.common_words |= {w for w, n in counts.items() if n >= min_count}
 
     @classmethod
     def from_db(cls, db: Database) -> Redactor:
@@ -79,7 +94,13 @@ class Redactor:
                 names |= {r[0] for r in db.execute(sql) if r[0]}
             except sqlite3.OperationalError:  # table may not exist in very old databases; redaction must still work
                 continue
-        return cls(names)
+        r = cls(names)
+        try:  # ordinary vocabulary from everything collected (thousands of sentences of journalism-policy prose)
+            r.learn_common_words(t for row in db.execute("SELECT excerpt, context FROM evidence_items") for t in row)
+            r.learn_common_words(row[0] for row in db.execute("SELECT quote FROM voices"))
+        except sqlite3.OperationalError:
+            pass
+        return r
 
     def _is_person(self, cand: str) -> bool:
         words = cand.split()
@@ -87,6 +108,8 @@ class Redactor:
             return False  # "Walla Walla", "Sing Sing": repeated-word place names
         if any(w.rstrip(".") in NOT_PERSON for w in words):
             return False
+        if self.common_words and all(w.rstrip(".").lower() in self.common_words for w in words):
+            return False  # every word is ordinary language: a capitalized headline phrase, not a person
         return _norm(cand) not in self.keep
 
     def text(self, value, *, speaker: str | None = None):
@@ -149,8 +172,18 @@ def redact_rows(rows: list[dict], r: Redactor) -> list[dict]:
     return out
 
 
+def _payload_texts(data: dict):
+    for val in data.values():
+        if isinstance(val, list) and val and isinstance(val[0], dict):
+            for row in val:
+                for k, v in row.items():
+                    if k in TEXT_FIELDS and isinstance(v, str):
+                        yield v
+
+
 def redact_packet_data(data: dict, r: Redactor) -> dict:
     """Apply redaction to every row list in a packet/dashboard payload (in place) and return it."""
+    r.learn_common_words(_payload_texts(data))
     for key, val in list(data.items()):
         if isinstance(val, list) and val and isinstance(val[0], dict):
             data[key] = redact_rows(val, r)

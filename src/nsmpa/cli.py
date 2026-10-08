@@ -872,13 +872,16 @@ def packet_cmd(run_id: str | None = typer.Option(None, "--run-id"), out_dir: Pat
                title: str = typer.Option("Post-publication relief in U.S. journalism: the evidence", "--title"),
                ai_summaries: bool = typer.Option(False, "--ai-summaries", help="Add AI-drafted, citation-checked section summaries"),
                redact_names: bool = typer.Option(False, "--redact-names", help="Withhold names of private individuals (use before sharing)"),
+               withhold: list[str] = typer.Option([], "--withhold", help="Drop rows whose URL contains this text (repeatable)"),
+               withhold_reason: str = typer.Option("withheld by the researcher", "--withhold-reason",
+                                                   help="Stated in the packet's Read Me alongside the count"),
                config: Path | None = ConfigOpt) -> None:
     """Build the shareable case packet: Excel evidence workbook + PowerPoint deck + summary."""
     from .packet import build_packet
     db, settings = _db(config)
     try:
         res = build_packet(db, settings, out_dir or settings.output_dir, run_id=run_id, title=title, ai_summaries_on=ai_summaries,
-                           redact=redact_names)
+                           redact=redact_names, withhold=withhold, withhold_reason=withhold_reason)
         if not redact_names:
             console.print("[yellow]Not redacted: excerpts may name private individuals. Use --redact-names before sharing.[/yellow]")
         console.print_json(json.dumps(res))
@@ -1255,6 +1258,7 @@ def import_evidence_index_cmd(path: Path = typer.Argument(..., exists=True, read
 @app.command("evidence-index-report")
 def evidence_index_report_cmd(name: str | None = typer.Option(None, "--name"),
                               out: Path = typer.Option(Path("output/evidence_index_check.csv"), "--out"),
+                              redact_names: bool = typer.Option(False, "--redact-names", help="Withhold private individuals' names"),
                               config: Path | None = ConfigOpt) -> None:
     """Compare each imported entry (its tier) with what NSMPA found when it read the source."""
     import csv
@@ -1266,6 +1270,11 @@ def evidence_index_report_cmd(name: str | None = typer.Option(None, "--name"),
         rows = index_report(db, name)
         if not rows:
             raise typer.BadParameter("no imported evidence-index entries")
+        if redact_names:
+            from .redact import Redactor, redact_rows
+            r = Redactor.from_db(db)
+            rows = [{**row, "best_supportive": redact_rows([{"excerpt": row["best_supportive"]}], r)[0]["excerpt"]}
+                    for row in rows]
         out.parent.mkdir(parents=True, exist_ok=True)
         with out.open("w", newline="", encoding="utf-8") as fh:
             w = csv.DictWriter(fh, fieldnames=list(rows[0]))
