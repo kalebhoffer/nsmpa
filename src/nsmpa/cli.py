@@ -16,7 +16,7 @@ from rich.table import Table
 from . import __version__
 from .benchmarks import seed_benchmark_newsrooms
 from .classify import classify_all
-from .config import load_settings
+from .config import load_settings, resolve_config_path
 from .crawl import complete_run, crawl_all, create_run
 from .db import Database
 from .discovery import discover_all, promote_candidates
@@ -994,6 +994,53 @@ def legal_cmd(key: str | None = typer.Option(None, "--key"), status: str | None 
         console.print(t)
     finally:
         db.close()
+
+
+@app.command("recheck")
+def recheck_cmd(limit: int | None = typer.Option(None, "--limit"), quiet: bool = QuietOpt, verbose: bool = VerboseOpt,
+                config: Path | None = ConfigOpt) -> None:
+    """Re-fetch known policy pages and record any changes (free; no search credits)."""
+    from .recheck import run_recheck
+    db, settings = _db(config)
+    try:
+        res = asyncio.run(run_recheck(db, settings, limit=limit, quiet=quiet, verbose=verbose))
+        console.print_json(json.dumps(res))
+        if res["changed"]:
+            from .notify import notify
+            notify("NSMPA: policy pages changed", f"{res['changed']} page(s) changed; see the review queue",
+                   enabled=settings.notify_on_finish)
+    finally:
+        db.close()
+
+
+@app.command("schedule")
+def schedule_cmd(install: bool = typer.Option(False, "--install", help="Write and load the weekly launchd job"),
+                 uninstall: bool = typer.Option(False, "--uninstall", help="Unload and remove the job"),
+                 weekday: int = typer.Option(1, "--weekday", min=0, max=7, help="0/7=Sunday, 1=Monday ..."),
+                 hour: int = typer.Option(3, "--hour", min=0, max=23), config: Path | None = ConfigOpt) -> None:
+    """Weekly automatic `nsmpa recheck` via macOS launchd. Without flags, just prints the job definition."""
+    import plistlib
+    import subprocess
+    from .recheck import LABEL, launchd_plist, plist_path, write_plist
+    target = plist_path()
+    uid = os.getuid()
+    if uninstall:
+        subprocess.run(["launchctl", "bootout", f"gui/{uid}", str(target)], capture_output=True)
+        target.unlink(missing_ok=True)
+        console.print(f"Removed {LABEL}")
+        return
+    plist = launchd_plist(Path.cwd(), resolve_config_path(config), weekday=weekday, hour=hour)
+    if not install:
+        console.print(plistlib.dumps(plist).decode())
+        console.print(f"[dim]Install with: nsmpa schedule --install  (writes {target})[/dim]")
+        return
+    write_plist(plist, target)
+    subprocess.run(["launchctl", "bootout", f"gui/{uid}", str(target)], capture_output=True)
+    res = subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(target)], capture_output=True, text=True)
+    if res.returncode != 0:
+        console.print(f"[yellow]Wrote {target} but launchctl reported: {res.stderr.strip()}[/yellow]")
+    else:
+        console.print(f"Installed {LABEL}: weekly recheck (weekday {weekday}, {hour:02d}:00). Logs: output/logs/")
 
 
 outreach_app = typer.Typer(help="Ask newsrooms directly (drafts only; you send) and record their replies as evidence")
