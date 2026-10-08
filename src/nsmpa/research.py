@@ -33,6 +33,7 @@ from .runs import (StopController, create_or_resume_run, done_keys, finish_run, 
 from .search import SearchAuthError, SearchBroker, SearchBudgetExceeded, get_search_provider
 from .practice import choose_samples, site_article_urls
 from .wayback import wayback_for_entity
+from .identity import check_identity
 from .similarity import score_case_match, score_similarity
 from .snapshots import store_raw, store_text
 from .stance import classify_entity, store_stance
@@ -47,12 +48,19 @@ GUIDANCE_COHORTS = {"support_org", "press_association", "journalism_school"}
 POLICY_PAGE_RE = re.compile(
     r"(?:polic(?:y|ies)|ethic|standards|guidelines|code[-_ ]of|corrections?|unpublish|takedown|take-down|removal|"
     r"remove|de-?index|anonymi|archive[-_ ]polic|editorial[-_ ]polic|handbook|bylaws|faq|principles|"
-    r"right[-_ ]to[-_ ]be[-_ ]forgotten|fresh[-_ ]start|privacy)", re.I)
+    r"right[-_ ]to[-_ ]be[-_ ]forgotten|fresh[-_ ]start)", re.I)
+# Website legal boilerplate (data privacy, cookies, terms of use) is about the site's handling of user data, not about
+# journalism: never treated as editorial policy evidence.
+LEGAL_BOILERPLATE_RE = re.compile(
+    r"(?:privacy|cookie|terms[-_ ]of[-_ ](?:use|service)|terms[-_ ]and[-_ ]conditions|\bterms\b|gdpr|ccpa|do[-_ ]not[-_ ]sell|"
+    r"accessibility|disclaimer|copyright[-_ ]policy|dmca|user[-_ ]agreement|advertis)", re.I)
 ABOUT_PAGE_RE = re.compile(r"(?:^|/)(?:about|about-us|who-we-are|masthead|staff|contact|mission|our-team)(?:/|$|\.)", re.I)
 ARTICLE_PATH_RE = re.compile(r"/(?:19|20)\d{2}/\d{1,2}/|/\d{4}-\d{2}-\d{2}|/article_|/story/|/news/[^/]{25,}", re.I)
-SIGNAL_RE = re.compile(r"\b(?:unpublish|de-?index|anonymi[sz]|take ?down|removal|remove (?:an? |the )?(?:article|story|name)|"
-                       r"editorial polic|ethics|corrections polic|archive polic|historical record|case[- ]by[- ]case|"
-                       r"right to be forgotten|expung|charges (?:were )?dismissed)\b", re.I)
+SIGNAL_RE = re.compile(r"\b(?:unpublish\w*|de-?index\w*|anonymi[sz]\w*|take ?downs?|removal|"
+                       r"(?:remove|delete)[sd]? (?:an? |the |old |our )?(?:articles?|stor(?:y|ies)|names?|content|posts?)|"
+                       r"editorial polic\w*|ethics|corrections polic\w*|archive polic\w*|historical record|case[- ]by[- ]case|"
+                       r"right to be forgotten|expung\w*|charges (?:were )?(?:dismissed|dropped)|do not remove|never unpublish|"
+                       r"editor'?s note|from the editor)\b", re.I)
 KNOWN_JOURNALISM_DOMAINS = {
     "poynter.org", "splc.org", "rcfp.org", "niemanlab.org", "niemanreports.org", "cjr.org", "spj.org",
     "journalists.org", "americanpressinstitute.org", "rjionline.org", "studentpress.org", "collegemedia.org",
@@ -179,8 +187,13 @@ def page_kind(url: str, title: str, is_pdf: bool, is_listing: bool) -> str:
         path = "/"
     if path in {"", "/"}:
         return "homepage"
+    if LEGAL_BOILERPLATE_RE.search(f"{path} {title[:120]}"):
+        return "legal_boilerplate"
     if is_listing:
         return "listing"
+    # Dated or /article/ URLs are stories even when the slug mentions ethics or policy (coverage *of* a topic).
+    if re.search(r"/(?:19|20)\d{2}/\d{1,2}/|/\d{4}-\d{2}-\d{2}|/article[s]?/|/story/", path, re.I):
+        return "article"
     hay = f"{path} {title}"
     if POLICY_PAGE_RE.search(hay):
         return "policy"
@@ -376,8 +389,12 @@ def score_target(entity, url: str, title: str, snippet: str, rank: int, spec: Qu
     hay = f"{title} {snippet} {url}"
     fp = is_first_party(entity, url)
     score = 0.0
+    kind_guess = page_kind(url, title, url.lower().endswith(".pdf"), False)
+    if kind_guess == "legal_boilerplate":
+        return 0.0, ["legal_boilerplate_page"]
     if fp:
-        score += 0.4
+        # Being on the organization's own site is necessary, not sufficient: require a policy signal or policy page.
+        score += 0.25 if (SIGNAL_RE.search(hay) or kind_guess in {"policy", "about"}) else 0.05
         reasons.append("first_party")
     else:
         mentions = any(t.lower() in hay.lower() for t in entity_terms(entity))
@@ -394,6 +411,13 @@ def score_target(entity, url: str, title: str, snippet: str, rank: int, spec: Qu
         reasons.append("policy_page")
     if spec and spec.purpose == "precedent":
         score += 0.05
+    # A dated news story found by a policy/adverse query is usually coverage *of* someone else's ethics, not the
+    # organization's own policy, unless it speaks in the first person or names the organization.
+    if (fp and spec and spec.purpose in {"policy", "adverse"} and kind_guess == "article"
+            and not re.search(r"\b(?:our|we|editor'?s note|from the editor|letter from the editor)\b", f"{title} {snippet}", re.I)
+            and not any(t.lower() in title.lower() for t in entity_terms(entity))):
+        reasons.append("news_story_not_policy")
+        return round(min(score, 0.15), 3), reasons
     if rank:
         score += max(0.0, 0.08 - (rank - 1) * 0.01)
         reasons.append(f"rank:{rank}")
@@ -463,17 +487,17 @@ class EntityResearcher:
         self.dash.update(robots_blocked=st.robots_blocked, access_blocked=st.access_blocked,
                          malformed_skipped=st.malformed_skipped, retries=st.retries)
 
-    async def _homepage_links(self, entity) -> None:
-        """Free first-party discovery: homepage plus policy/about links found on it."""
+    async def _homepage_links(self, entity):
+        """Free first-party discovery: homepage plus policy/about links found on it. Returns (fetch result, page)."""
         home = prepare_request_url(entity["homepage_url"] or "")
         if not home:
-            return
-        self.dash.update(phase="homepage + policy links")
+            return None, None
+        self.dash.update(phase="homepage + identity check")
         self._store_target_direct(entity, home, "homepage", 0.9)
         r = await self.fetcher.fetch_safe(home)
         await self._record_page(entity, r, target_id=None, query_id=None, topic="homepage", forced_kind="homepage")
         if r.access_class != "ok":
-            return
+            return r, None
         page = extract_main_text(r.content, r.content_type, r.final_url, r.headers)
         picked = 0
         for text, href in page.links:
@@ -481,9 +505,12 @@ class EntityResearcher:
                 break
             if not is_first_party(entity, href) or href == r.final_url:
                 continue
+            if LEGAL_BOILERPLATE_RE.search(f"{text} {urlsplit(href).path}"):
+                continue
             if POLICY_PAGE_RE.search(f"{text} {urlsplit(href).path}") or ABOUT_PAGE_RE.search(urlsplit(href).path):
                 if self._store_target_direct(entity, href, "first_party_link", 0.85 if POLICY_PAGE_RE.search(text + href) else 0.6):
                     picked += 1
+        return r, page
 
     def _store_target_direct(self, entity, url: str, topic: str, score: float) -> bool:
         req = prepare_request_url(url)
@@ -514,6 +541,10 @@ class EntityResearcher:
             if first and fp_budget <= 0 or (not first and tp_budget <= 0):
                 self.db.execute("UPDATE research_targets SET status='not_fetched_budget' WHERE id=?", (t["id"],))
                 continue
+            host = (urlsplit(t["url"]).hostname or "").lower()
+            if self.fetcher.host_failures.get(host, 0) >= self.settings.host_failure_threshold:
+                self.db.execute("UPDATE research_targets SET status='skipped_host_unavailable' WHERE id=?", (t["id"],))
+                continue
             seen.add(t["url"])
             if first:
                 fp_budget -= 1
@@ -540,7 +571,8 @@ class EntityResearcher:
             if page.main_text:
                 text_sha = store_text(self.db, self.snapshot_root, page.main_text, r.final_url)
         if not ok:
-            self.dash.increment(errors=1 if r.access_class not in {"robots_disallowed", "not_found", "gone"} else 0)
+            self.dash.increment(errors=1 if r.access_class not in {"robots_disallowed", "not_found", "gone", "host_unavailable",
+                                                                    "blocked", "unsupported_content"} else 0)
             self.dash.log(f"  ! {r.access_class} {r.requested_url} {r.error or ''}")
         else:
             self.dash.increment(pages_fetched=1)
@@ -568,7 +600,7 @@ class EntityResearcher:
         )
         page_id = int(self.db.execute("SELECT id FROM research_pages WHERE run_id=? AND entity_id=? AND requested_url=?",
                                       (self.run_id, entity["id"], r.requested_url)).fetchone()["id"])
-        if page and page.main_text:
+        if page and page.main_text and kind != "legal_boilerplate":
             n_useful = self._store_evidence(entity, page, page_id, query_id, topic, first, kind, raw_sha, text_sha,
                                             substantive_only=substantive_only)
             n_useful += self._store_voices(entity, page, page_id)
@@ -724,7 +756,89 @@ class EntityResearcher:
         self.db.conn.commit()
         return used
 
-    async def research(self, entity, budget_per_entity: int) -> dict:
+    def _note_identity(self, entity, ident) -> None:
+        meta = json.loads(entity["metadata_json"] or "{}")
+        meta["website_identity"] = {"status": ident.status, "reason": ident.reason, "signals": ident.signals}
+        self.db.execute("UPDATE research_entities SET metadata_json=? WHERE id=?", (json.dumps(meta), entity["id"]))
+
+    def _stop_for_identity(self, entity, ident) -> dict:
+        """No credits are spent and nothing from the site is attributed to the organization."""
+        from .stance import StanceResult
+        self.db.execute("UPDATE research_targets SET status='skipped_identity' WHERE run_id=? AND entity_id=? AND status='candidate'",
+                        (self.run_id, entity["id"]))
+        self.db.execute("UPDATE evidence_items SET about_entity=0, evidence_class='unattributable_site' WHERE run_id=? AND entity_id=?",
+                        (self.run_id, entity["id"]))
+        label = {"mismatch": "website_no_longer_this_publication", "unreachable": "homepage_unreachable",
+                 "blocked": "site_blocks_automated_access"}[ident.status]
+        result = StanceResult(stance="UNDETERMINED", confidence=0.0, rationale=f"Not researched: {ident.reason}.",
+                              coverage={"identity": ident.status, **ident.signals}, review_reasons=[label])
+        store_stance(self.db, self.run_id, int(entity["id"]), result)
+        enqueue_entity_review(self.db, self.run_id, entity, result)
+        self.db.conn.commit()
+        self.dash.update(step_done=8, step_total=8)
+        self.dash.add_recent(f"· {entity['name']}: {label.replace('_', ' ')}")
+        return {"stance": "UNDETERMINED", "confidence": 0.0, "queries": 0, "escalated": False, "max_similarity": 0.0,
+                "supportive": 0, "adverse": 0, "relief_mode": "UNADDRESSED", "identity": ident.status}
+
+    async def _recover_site(self, entity, ident, budget: int):
+        """The directory URL is dead or repurposed: look for where the publication lives now (1 search)."""
+        from .discovery import score_candidate
+        from .models import SearchResult as _SR
+        meta = json.loads(entity["metadata_json"] or "{}")
+        old_dom = entity["domain"] or registrableish_domain(entity["homepage_url"] or "")
+        if entity["cohort"] == "student_media" and entity["parent_name"]:
+            query = f'"{entity["parent_name"]}" student newspaper'
+        elif entity["cohort"] == "professional_newsroom":
+            name = re.sub(r"\(\d+ titles\)$", "", entity["name"]).strip()
+            if "." in name:
+                return None
+            query = f'"{name}" newspaper {entity["state"] or ""}'.strip()
+        else:
+            return None
+        self.dash.update(phase="finding the publication's current website")
+        results, qid, _ = await self.broker.search(query, purpose="research:recover_site", entity_id=int(entity["id"]))
+        self._sync_search_counters()
+        inst_site = None
+        if entity["cohort"] == "student_media":
+            inst_site = self.db.scalar("SELECT website FROM institutions WHERE name=? LIMIT 1", (entity["parent_name"],), None)
+        ranked = []
+        for res in results:
+            url = prepare_request_url(res.url)
+            if not url or registrableish_domain(url) == old_dom or is_blocked_social_or_aggregator(url):
+                continue
+            if entity["cohort"] == "student_media":
+                sc, _ = score_candidate(entity["parent_name"], inst_site, _SR(url=url, title=res.title, snippet=res.snippet,
+                                                                           rank=res.rank, provider="serper", query=query))
+            else:
+                names = [n for n in [re.sub(r"\(\d+ titles\)$", "", entity["name"]).strip()] if n]
+                sc = 0.7 if any(n.lower().replace("the ", "") in (res.title or "").lower() for n in names) else 0.0
+            if sc >= 0.6:
+                ranked.append((sc, url))
+        for sc, url in sorted(ranked, reverse=True)[:2]:
+            root = f"{urlsplit(url).scheme}://{urlsplit(url).netloc}/"
+            r = await self.fetcher.fetch_safe(root)
+            page = extract_main_text(r.content, r.content_type, r.final_url, r.headers) if r.access_class == "ok" else None
+            trial = dict(entity)
+            trial["homepage_url"], trial["domain"] = root, registrableish_domain(root)
+            if check_identity(trial, meta, r.access_class, page).status == "ok":
+                meta.setdefault("previous_urls", []).append(entity["homepage_url"])
+                meta["recovered"] = {"from": entity["homepage_url"], "to": root, "query_id": qid, "reason": ident.reason}
+                self.db.execute("UPDATE research_entities SET homepage_url=?, domain=?, metadata_json=?, updated_at=CURRENT_TIMESTAMP "
+                                "WHERE id=?", (root, trial["domain"], json.dumps(meta), entity["id"]))
+                if (entity["source_key"] or "").startswith("student_publication:"):
+                    try:
+                        self.db.execute("UPDATE publications SET homepage_url=?, domain=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                                        (root, trial["domain"], int(entity["source_key"].split(":")[1])))
+                    except Exception as exc:  # unique (unitid, domain) clash: the new site is already recorded
+                        self.dash.log(f"publication update skipped: {exc}")
+                self.db.execute("UPDATE evidence_items SET about_entity=0, evidence_class='unattributable_site' WHERE run_id=? AND entity_id=?",
+                                (self.run_id, entity["id"]))
+                self.db.conn.commit()
+                self.dash.add_recent(f"↪ {entity['name']}: moved to {trial['domain']}")
+                return self.db.execute("SELECT * FROM research_entities WHERE id=?", (entity["id"],)).fetchone()
+        return None
+
+    async def research(self, entity, budget_per_entity: int, _recovered: bool = False) -> dict:
         eid = int(entity["id"])
         if not entity_site(entity):
             return {"stance": "UNDETERMINED", "reason": "no homepage/domain"}
@@ -734,10 +848,21 @@ class EntityResearcher:
         steps = iter(range(1, 9))
         step = lambda: self.dash.update(step_done=next(steps, 8), step_total=8)  # noqa: E731
         self.dash.update(step_done=0, step_total=8)
+        # 1. Free homepage fetch + identity check BEFORE any search credits are spent.
+        r_home, home_page = await self._homepage_links(entity)
+        meta = json.loads(entity["metadata_json"] or "{}")
+        ident = check_identity(entity, meta, r_home.access_class if r_home else "invalid_url", home_page)
+        self._note_identity(entity, ident)
+        step()
+        if not ident.proceed:
+            recovered = None
+            if searching and self.settings.research_recover_stale_sites and not _recovered and ident.status in {"mismatch", "unreachable"}:
+                recovered = await self._recover_site(entity, ident, budget_per_entity)
+            if recovered is not None:
+                return await self.research(recovered, budget_per_entity, _recovered=True)
+            return self._stop_for_identity(entity, ident)
         if searching:
             used, signal = await self._search_tier(entity, plan_queries(self.settings, entity, 1), budget_per_entity)
-        step()
-        await self._homepage_links(entity)
         step()
         escalate = searching and (depth == "deep" or signal or entity["cohort"] in GUIDANCE_COHORTS)
         if depth != "quick" and escalate and not self.stop.force:
