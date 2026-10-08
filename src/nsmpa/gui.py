@@ -15,7 +15,7 @@ import socketserver
 import sqlite3
 import threading
 import webbrowser
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -27,7 +27,7 @@ from .db import Database
 
 TEMPLATE = Path(__file__).with_name("gui_template.html")
 ACTIVE_SECONDS = 60
-EXCL = "(SELECT id FROM research_runs WHERE status='excluded')"
+EXCL = "(SELECT id FROM v_excluded_runs)"
 
 
 def _rows(cur) -> list[dict]:
@@ -54,7 +54,7 @@ def api_overview(db: Database, settings: Settings) -> dict:
                             (SELECT COUNT(*) FROM run_items i WHERE i.run_id=r.id) AS total
                      FROM research_runs r ORDER BY COALESCE(last_checkpoint_at, started_at) DESC LIMIT 15""")
     return {
-        "version": __version__, "generated": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "version": __version__, "generated": datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC"),
         "database": str(settings.database_path), "schema": db.schema_version(),
         "counts": {
             "institutions": s("SELECT COUNT(*) FROM institutions WHERE included=1"),
@@ -73,14 +73,14 @@ def api_overview(db: Database, settings: Settings) -> dict:
 
 
 def api_results(db: Database, settings: Settings) -> dict:
-    from .validate import all_cohorts, cohort_metrics, latest_stances_sql
+    from .validate import all_cohorts, cohort_metrics, counted_in_rates, latest_stances_sql
     sub, sp = latest_stances_sql(None)
     out = []
     for c in all_cohorts(db):
         m = cohort_metrics(db, settings, c)
         modes = {r["relief_mode"] or "UNADDRESSED": r["n"] for r in db.execute(
             f"SELECT s.relief_mode, COUNT(*) n FROM ({sub}) s JOIN research_entities re ON re.id=s.entity_id "
-            f"WHERE re.cohort=? AND COALESCE(json_extract(re.metadata_json,'$.excluded_from_rates'), 0) IN (0, 'false') "
+            f"WHERE re.cohort=? AND {counted_in_rates('re')} "
             f"GROUP BY s.relief_mode", sp + [c])}
         out.append({"cohort": c, "label": m.label, "denominator": m.denominator, "researched": m.researched,
                     "valid": m.valid_for_percentages, "stances": m.stance_counts, "relief_modes": modes,
@@ -91,7 +91,7 @@ def api_results(db: Database, settings: Settings) -> dict:
 
 def api_evidence(db: Database, params: dict) -> dict:
     where = ["e.duplicate_of IS NULL", "e.statement_type!='mention'",
-             "e.run_id NOT IN (SELECT id FROM research_runs WHERE status='excluded')"]
+             "e.run_id NOT IN (SELECT id FROM v_excluded_runs)"]
     args: list = []
     if params.get("q"):
         where.append("(e.excerpt LIKE ? OR re.name LIKE ?)")
@@ -323,7 +323,7 @@ class _Handler(BaseHTTPRequestHandler):
     port: int
     server_version = "NSMPA-GUI"
 
-    def log_message(self, fmt, *args):  # quiet by default
+    def log_message(self, *args):  # quiet by default
         return
 
     def _host_ok(self) -> bool:
@@ -353,7 +353,7 @@ class _Handler(BaseHTTPRequestHandler):
     def _db(self) -> Database:
         return Database(self.settings.database_path, migrate=False)
 
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:
         if not self._host_ok():
             return self._send(HTTPStatus.FORBIDDEN, b"forbidden host", "text/plain")
         url = urlsplit(self.path)
@@ -398,7 +398,7 @@ class _Handler(BaseHTTPRequestHandler):
         finally:
             db.close()
 
-    def do_POST(self) -> None:  # noqa: N802
+    def do_POST(self) -> None:
         if not self._host_ok():
             return self._send(HTTPStatus.FORBIDDEN, b"forbidden host", "text/plain")
         if not secrets.compare_digest(self.headers.get("X-NSMPA-Token", ""), self.token):

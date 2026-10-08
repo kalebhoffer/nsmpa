@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.7.2 — polish and refactor
+
+Verified behaviour-neutral for classification: the pre- and post-refactor classifiers agree on all 77,942 sentences of
+every stored page (type, direction, confidence, tags, cues), and extraction is unchanged on a 436-page sample.
+
+- Lint: explicit ruff rule set in `pyproject.toml` (pyflakes, bugbear, async, silent-except, imports, pyupgrade,
+  simplify, comprehensions, ruff); clean. Broad `except Exception` blocks narrowed to the errors actually expected.
+- `classify_statement` restructured: signals computed once (`_Signals`), an ordered, documented scope-rule table, and
+  separate practice / relief-policy decisions. Action positions no longer computed twice per sentence.
+- Shared helpers replace copies: `v_excluded_runs` view (21 queries), `counted_in_rates()` (3), `json_meta()` (11),
+  AI cache primitives used by both the second opinion and blocked-site AI search, `EntityResearcher.offline()`.
+- Docs: architecture module table covers every module.
+- Small behaviour changes: `research_max_targets_per_entity` (documented but previously ignored) now caps unfetched
+  candidates per organization, keeping the highest scores; malformed entity metadata reads as empty instead of raising;
+  sitemap discovery uses the never-raising fetch path; packet cells and slides strip XML-illegal control characters
+  (a scraped AP excerpt previously made the whole packet fail).
+
 ## 0.7.1 — validated against a hand-built evidence index
 
 - `import-evidence-index`, `verify-precedents --only-index --no-search`, `evidence-index-report`: a researcher's list of

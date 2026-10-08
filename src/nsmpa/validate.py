@@ -14,7 +14,14 @@ from .config import Settings
 from .db import Database
 from .stance import DETERMINATE
 
-NOT_SELECTED = "COALESCE(json_extract(metadata_json,'$.excluded_from_rates'), 0) IN (0, 'false')"
+
+def counted_in_rates(alias: str = "") -> str:
+    """SQL condition: the entity may enter denominators and percentages (not selected from an evidence index)."""
+    col = f"{alias}.metadata_json" if alias else "metadata_json"
+    return f"COALESCE(json_extract({col},'$.excluded_from_rates'), 0) IN (0, 'false')"
+
+
+NOT_SELECTED = counted_in_rates()
 
 COHORT_LABELS = {
     "student_media": "Student journalism",
@@ -33,7 +40,7 @@ def latest_stances_sql(run_id: str | None) -> tuple[str, list]:
         return ("SELECT s.* FROM entity_stances s WHERE s.run_id=? AND s.stance_version='0.3'", [run_id])
     return ("""SELECT s.* FROM entity_stances s
                JOIN (SELECT entity_id, MAX(id) mid FROM entity_stances
-                     WHERE stance_version='0.3' AND run_id NOT IN (SELECT id FROM research_runs WHERE status='excluded')
+                     WHERE stance_version='0.3' AND run_id NOT IN (SELECT id FROM v_excluded_runs)
                      GROUP BY entity_id) m
                  ON m.mid=s.id""", [])
 
@@ -129,12 +136,12 @@ def cohort_metrics(db: Database, settings: Settings, cohort: str, run_id: str | 
     # Student percentages are per IPEDS institution: count primary publications only. Secondary and unmatched student
     # papers are researched and reported separately ("additional_student_publications_researched").
     coverage_filter = ("AND COALESCE(json_extract(re.metadata_json,'$.excluded_from_ipeds_coverage'), 0) IN (0, 'false')"
-                       if cohort == "student_media" else "") + f" AND {NOT_SELECTED.replace('metadata_json', 're.metadata_json')}"
+                       if cohort == "student_media" else "") + f" AND {counted_in_rates('re')}"
     # Organizations added because a researcher's evidence index lists them were *selected for having policies*:
     # researched and catalogued, never part of a percentage.
     selected = db.scalar(
         f"SELECT COUNT(*) FROM ({sub}) s JOIN research_entities re ON re.id=s.entity_id WHERE re.cohort=? AND re.active=1 "
-        f"AND NOT ({NOT_SELECTED.replace('metadata_json', 're.metadata_json')})", params + [cohort])
+        f"AND NOT ({counted_in_rates('re')})", params + [cohort])
     rows = db.execute(
         f"SELECT s.* FROM ({sub}) s JOIN research_entities re ON re.id=s.entity_id WHERE re.cohort=? AND re.active=1 {coverage_filter}",
         params + [cohort]).fetchall()
@@ -149,7 +156,7 @@ def cohort_metrics(db: Database, settings: Settings, cohort: str, run_id: str | 
     undetermined = counts.get("UNDETERMINED", 0)
     reviewed = sum(1 for r in rows if r["stance"] in DETERMINATE and (r["review_status"] or "unreviewed") != "unreviewed")
     mean_conf = (sum(r["confidence"] for r in rows if r["stance"] in DETERMINATE) / determinate) if determinate else None
-    excluded = "(SELECT id FROM research_runs WHERE status='excluded')"
+    excluded = "(SELECT id FROM v_excluded_runs)"
     run_filter = "AND e.run_id=?" if run_id else f"AND e.run_id NOT IN {excluded}"
     rp = [run_id] if run_id else []
     ev_total = db.scalar(f"SELECT COUNT(*) FROM evidence_items e WHERE e.cohort=? {run_filter}", [cohort] + rp)

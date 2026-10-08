@@ -3,9 +3,10 @@ from __future__ import annotations
 import contextlib
 import json
 import sqlite3
-from datetime import datetime, timezone
+from collections.abc import Iterable
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from .migrations import LATEST_VERSION, MIGRATIONS
 
@@ -76,7 +77,7 @@ class Database:
             raise RuntimeError("Cannot back up an in-memory database")
         dest_dir = dest_dir or Path(self.path).parent / "backups"
         dest_dir.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         dest = dest_dir / f"{Path(self.path).stem}-{label}-{stamp}.sqlite3"
         target = sqlite3.connect(str(dest))
         try:
@@ -112,6 +113,7 @@ class Database:
         # Views may reference newly added columns: refresh them when their definition changed (fingerprint in meta).
         # Opening a database must stay write-free otherwise, so read-only commands never wait on a running job.
         import hashlib
+
         from .migrations import VIEWS, _create_views
         digest = hashlib.sha256(VIEWS.encode()).hexdigest()[:16]
         have = self.conn.execute("SELECT value FROM meta WHERE key='views_sha'").fetchone()
@@ -135,7 +137,7 @@ class Database:
     def close(self) -> None:
         self.conn.close()
 
-    def __enter__(self) -> "Database":
+    def __enter__(self) -> Database:
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:

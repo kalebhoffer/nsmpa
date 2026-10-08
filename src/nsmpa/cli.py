@@ -6,6 +6,7 @@ import json
 import os
 import shlex
 import sys
+from datetime import UTC
 from pathlib import Path
 
 import typer
@@ -22,10 +23,16 @@ from .db import Database
 from .discovery import discover_all, promote_candidates
 from .export import export_research, export_run
 from .ingest import import_ipeds
-from .research import (COHORTS, import_entities_csv, merge_duplicate_entities, research_all, start_research,
-                       sync_student_entities)
-from .runs import item_counts, latest_resumable_run
 from .notify import run_finished
+from .research import (
+    COHORTS,
+    import_entities_csv,
+    merge_duplicate_entities,
+    research_all,
+    start_research,
+    sync_student_entities,
+)
+from .runs import item_counts, latest_resumable_run
 from .support_orgs import seed_support_orgs
 from .utils import normalize_url, registrableish_domain
 
@@ -322,7 +329,7 @@ def import_directory_cmd(path: Path = typer.Argument(..., exists=True, readable=
         console.print_json(json.dumps(import_directory(db, path, promote=not no_promote, report_dir=settings.output_dir), default=str))
     except ValueError as exc:
         console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
     finally:
         db.close()
 
@@ -613,9 +620,9 @@ def status_cmd(config: Path | None = ConfigOpt) -> None:
             ("Research", "v0.3 runs", q("SELECT COUNT(*) FROM research_runs WHERE engine_version!='0.2'")),
             ("Research", "legacy v0.2 runs (kept, excluded from reports)", q("SELECT COUNT(*) FROM research_runs WHERE engine_version='0.2'")),
             ("Research", "entities with a v0.3 stance", q("SELECT COUNT(DISTINCT entity_id) FROM entity_stances WHERE stance_version='0.3' "
-                                                          "AND run_id NOT IN (SELECT id FROM research_runs WHERE status='excluded')")),
+                                                          "AND run_id NOT IN (SELECT id FROM v_excluded_runs)")),
             ("Research", "unique substantive excerpts", q("SELECT COUNT(DISTINCT near_dup_key) FROM evidence_items WHERE statement_type!='mention' "
-                                                          "AND run_id NOT IN (SELECT id FROM research_runs WHERE status='excluded')")),
+                                                          "AND run_id NOT IN (SELECT id FROM v_excluded_runs)")),
             ("Search", "live queries (all time)", q("SELECT COUNT(*) FROM search_queries WHERE was_cached=0 AND status='completed'")),
             ("Search", "cache hits (all time)", q("SELECT COUNT(*) FROM search_queries WHERE was_cached=1")),
             ("Search", "estimated credits (all time)", q("SELECT SUM(credits_estimated) FROM search_queries")),
@@ -907,7 +914,7 @@ def ai_discovery_cmd(max_calls: int = typer.Option(100, "--max-calls", min=0), l
         console.print_json(json.dumps(run_ai_discovery(db, settings, max_calls=max_calls, limit=limit, unitids=unitid or None)))
     except AIUnavailable as exc:
         console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
     finally:
         db.close()
 
@@ -944,7 +951,7 @@ def ai_review_cmd(
                           + (f" --run-id {run_id}" if run_id else "") + "[/yellow]")
     except AIUnavailable as exc:
         console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
     finally:
         db.close()
 
@@ -1088,11 +1095,12 @@ def schedule_cmd(install: bool = typer.Option(False, "--install", help="Write an
     """Weekly automatic `nsmpa recheck` via macOS launchd. Without flags, just prints the job definition."""
     import plistlib
     import subprocess
+
     from .recheck import LABEL, launchd_plist, plist_path, write_plist
     target = plist_path()
     uid = os.getuid()
     if uninstall:
-        subprocess.run(["launchctl", "bootout", f"gui/{uid}", str(target)], capture_output=True)
+        subprocess.run(["launchctl", "bootout", f"gui/{uid}", str(target)], capture_output=True, check=False)
         target.unlink(missing_ok=True)
         console.print(f"Removed {LABEL}")
         return
@@ -1102,8 +1110,8 @@ def schedule_cmd(install: bool = typer.Option(False, "--install", help="Write an
         console.print(f"[dim]Install with: nsmpa schedule --install  (writes {target})[/dim]")
         return
     write_plist(plist, target)
-    subprocess.run(["launchctl", "bootout", f"gui/{uid}", str(target)], capture_output=True)
-    res = subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(target)], capture_output=True, text=True)
+    subprocess.run(["launchctl", "bootout", f"gui/{uid}", str(target)], capture_output=True, check=False)
+    res = subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(target)], capture_output=True, text=True, check=False)
     if res.returncode != 0:
         console.print(f"[yellow]Wrote {target} but launchctl reported: {res.stderr.strip()}[/yellow]")
     else:
@@ -1160,7 +1168,7 @@ def outreach_draft(campaign: str = typer.Option(..., "--campaign"), cohort: str 
         console.print_json(json.dumps(draft_campaign(db, settings, campaign, settings.output_dir / "outreach", cohort=cohort, limit=limit)))
     except ValueError as exc:
         console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
     finally:
         db.close()
 
@@ -1251,6 +1259,7 @@ def evidence_index_report_cmd(name: str | None = typer.Option(None, "--name"),
     """Compare each imported entry (its tier) with what NSMPA found when it read the source."""
     import csv
     from collections import Counter
+
     from .evidence_index import index_report
     db, _ = _db(config)
     try:
@@ -1281,6 +1290,7 @@ def capture_cmd(entity: str = typer.Option(..., "--entity", help="Organization i
                 config: Path | None = ConfigOpt) -> None:
     """Record policy text you copied by hand from a site that blocks automated access."""
     import sys
+
     from .capture import CaptureError, add_capture
     db, settings = _db(config)
     try:
@@ -1297,7 +1307,7 @@ def capture_cmd(entity: str = typer.Option(..., "--entity", help="Organization i
         try:
             res = add_capture(db, settings, entity_id=eid, url=url, text=text, captured_by=by, title=title, note=note)
         except CaptureError as exc:
-            raise typer.BadParameter(str(exc))
+            raise typer.BadParameter(str(exc)) from None
         if res["duplicate"]:
             console.print(f"Already captured (capture #{res['capture_id']}); nothing changed.")
         else:
@@ -1350,11 +1360,12 @@ def dashboard_cmd(out: Path | None = typer.Option(None, "--out", help="Default o
                   redact_names: bool = typer.Option(False, "--redact-names", help="Withhold names of private individuals"),
                   config: Path | None = ConfigOpt) -> None:
     """Write a shareable, offline, read-only HTML dashboard (one file, data embedded)."""
-    from datetime import datetime, timezone
+    from datetime import datetime
+
     from .gui import write_dashboard
     db, settings = _db(config)
     try:
-        target = out or settings.output_dir / f"dashboard_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.html"
+        target = out or settings.output_dir / f"dashboard_{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.html"
         console.print(f"Dashboard written: {write_dashboard(db, settings, target, redact=redact_names)}")
         if not redact_names:
             console.print("[yellow]Not redacted: use --redact-names before sharing outside your review team.[/yellow]")
@@ -1430,7 +1441,9 @@ def watch_cmd(run_id: str | None = typer.Option(None, "--run-id", help="Run to f
               interval: float = typer.Option(1.0, "--interval", min=0.2), config: Path | None = ConfigOpt) -> None:
     """Follow a running job from another terminal (reads its heartbeat; Ctrl+C stops watching, not the job)."""
     import time as _time
+
     from rich.live import Live
+
     from .progress import HeartbeatView
     settings = load_settings(config)
     db = Database(settings.database_path)

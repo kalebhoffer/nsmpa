@@ -9,7 +9,7 @@ Rules:
 from __future__ import annotations
 
 import sqlite3
-from typing import Callable
+from collections.abc import Callable
 
 BASELINE_V2 = r"""
 PRAGMA foreign_keys = ON;
@@ -552,6 +552,10 @@ def migrate_v3(conn: sqlite3.Connection) -> None:
 
 
 VIEWS = r"""
+-- Runs excluded from reports (smoke tests, superseded pilots). Every report query filters with
+-- "run_id NOT IN (SELECT id FROM v_excluded_runs)".
+DROP VIEW IF EXISTS v_excluded_runs;
+CREATE VIEW v_excluded_runs AS SELECT id FROM research_runs WHERE status='excluded';
 DROP VIEW IF EXISTS v_institution_peer;
 CREATE VIEW v_institution_peer AS
 SELECT i.unitid, i.name, i.state, i.included,

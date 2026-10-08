@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib
 import os
 import socket
@@ -67,10 +68,8 @@ def run_doctor(console: Console, config: Path | None, *, network: bool = True, c
         exists = settings.database_path.exists()
         probe = sqlite3.connect(str(settings.database_path))
         applied = set()
-        try:
+        with contextlib.suppress(sqlite3.OperationalError):
             applied = {r[0] for r in probe.execute("SELECT version FROM schema_migrations")}
-        except sqlite3.OperationalError:
-            pass
         integrity = probe.execute("PRAGMA quick_check").fetchone()[0]
         probe.close()
         pending = [v for v in range(2, LATEST_VERSION + 1) if v not in applied]

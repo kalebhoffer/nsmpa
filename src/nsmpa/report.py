@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import csv
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from . import __version__
@@ -54,7 +54,7 @@ def _fmt(v) -> str:
 
 def _evidence_sql(where: str, latest_only: bool) -> str:
     run_clause = ("AND e.run_id=(SELECT s2.run_id FROM entity_stances s2 WHERE s2.entity_id=e.entity_id "
-                  "AND s2.stance_version='0.3' AND s2.run_id NOT IN (SELECT id FROM research_runs WHERE status='excluded') "
+                  "AND s2.stance_version='0.3' AND s2.run_id NOT IN (SELECT id FROM v_excluded_runs) "
                   "ORDER BY s2.id DESC LIMIT 1)") if latest_only else "AND e.run_id=:run"
     return f"""
       SELECT e.id AS evidence_id, e.cohort, re.name AS entity, re.parent_name, e.evidence_class, e.statement_type,
@@ -114,7 +114,7 @@ def peer_group_rows(db: Database, settings: Settings, run_id: str | None) -> lis
 
 
 def build_report(db: Database, settings: Settings, out_dir: Path, run_id: str | None = None) -> dict:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     out = Path(out_dir) / f"report_{stamp}"
     out.mkdir(parents=True, exist_ok=True)
     cohorts = all_cohorts(db)

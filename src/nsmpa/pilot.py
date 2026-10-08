@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .config import Settings
@@ -43,6 +43,7 @@ async def run_pilot(db: Database, settings: Settings, *, budget: int = 25, ai_ca
                     provider=None, fetcher_factory=None, ai_client=None, out_dir: Path | None = None) -> dict:
     from .ai_review import AIUnavailable, run_ai_review
     from .audit import create_sample
+    from .benchmarks import seed_benchmark_newsrooms
     from .discovery import discover_all, promote_candidates
     from .estimate import estimate_all
     from .gui import write_dashboard
@@ -51,9 +52,8 @@ async def run_pilot(db: Database, settings: Settings, *, budget: int = 25, ai_ca
     from .research import research_all, start_research, sync_student_entities
     from .seeds import seed_experts, seed_precedents
     from .support_orgs import seed_support_orgs
-    from .benchmarks import seed_benchmark_newsrooms
 
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     out = Path(out_dir or settings.output_dir) / f"pilot_{stamp}"
     out.mkdir(parents=True, exist_ok=True)
     steps: list[dict] = []

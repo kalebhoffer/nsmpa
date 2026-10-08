@@ -14,7 +14,7 @@ import json
 import os
 import random
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import httpx
 
@@ -251,8 +251,8 @@ class SearchBroker:
         try:
             dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
             if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return datetime.now(timezone.utc) - dt <= timedelta(days=self.settings.search_cache_days)
+                dt = dt.replace(tzinfo=UTC)
+            return datetime.now(UTC) - dt <= timedelta(days=self.settings.search_cache_days)
         except Exception:
             return False
 

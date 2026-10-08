@@ -6,9 +6,11 @@ import json
 from types import SimpleNamespace
 
 import httpx
+import test_pipeline as tp
+import test_practice as pr
+from conftest import make_settings, public_resolver
 from openpyxl import load_workbook
 
-from conftest import make_settings, public_resolver
 from nsmpa.ai_review import run_ai_review, verify_quote
 from nsmpa.audit import cohen_kappa, create_sample, export_csv, import_csv, report, wilson
 from nsmpa.fetch import HardenedFetcher
@@ -16,15 +18,13 @@ from nsmpa.packet import build_packet
 from nsmpa.research import import_entities_csv, research_all, start_research
 from nsmpa.utils import normalize_for_hash
 from nsmpa.wayback import compare_versions, person_names
-import test_pipeline as tp
-import test_practice as pr
 
-OLD = ("<html><head><title>Student John Smithers arrested for assault</title></head><body><main>"
-       "<p>Police arrested John Smithers, a junior, on Tuesday near campus. Smithers was charged with assault.</p>"
-       "</main></body></html>").encode()
-NEW_NOINDEX = ("<html><head><title>Student arrested for assault</title><meta name='robots' content='noindex'></head><body><main>"
-               "<p>Editor's note: charges were dismissed. This story has been updated to remove the student's name.</p>"
-               "<p>Police arrested a junior on Tuesday near campus. The student was charged with assault.</p></main></body></html>").encode()
+OLD = (b"<html><head><title>Student John Smithers arrested for assault</title></head><body><main>"
+       b"<p>Police arrested John Smithers, a junior, on Tuesday near campus. Smithers was charged with assault.</p>"
+       b"</main></body></html>")
+NEW_NOINDEX = (b"<html><head><title>Student arrested for assault</title><meta name='robots' content='noindex'></head><body><main>"
+               b"<p>Editor's note: charges were dismissed. This story has been updated to remove the student's name.</p>"
+               b"<p>Police arrested a junior on Tuesday near campus. The student was charged with assault.</p></main></body></html>")
 
 
 # ============================================================================ Wayback
@@ -282,8 +282,9 @@ async def test_research_writes_heartbeat_with_entity_steps(tmp_path, db):
     assert hb and hb["finished"] == 1
     state = json.loads(hb["state_json"])
     assert state["completed"] == 4 and state["step_total"] == 8 and state["pages_fetched"] > 0
-    from nsmpa.progress import HeartbeatView
     from rich.console import Console
+
+    from nsmpa.progress import HeartbeatView
     c = Console(record=True, width=120)
     c.print(HeartbeatView(state, hb["title"]).render())
     out = c.export_text()

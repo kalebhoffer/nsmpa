@@ -6,6 +6,7 @@ never overwritten, so a stored hash always identifies exactly the bytes that wer
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import tempfile
 from pathlib import Path
@@ -24,10 +25,8 @@ def _atomic_write(path: Path, data: bytes) -> None:
             f.write(data)
         os.replace(tmp, path)
     except BaseException:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(tmp)
-        except OSError:
-            pass
         raise
 
 

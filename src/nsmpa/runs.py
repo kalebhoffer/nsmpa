@@ -11,8 +11,9 @@ import json
 import signal
 import subprocess
 import uuid
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable
+from typing import Any
 
 from . import __version__
 from .config import Settings
@@ -25,9 +26,9 @@ RESUMABLE_STATUSES = ("running", "interrupted", "budget_exhausted", "failed")
 
 def _git_sha() -> str | None:
     try:
-        out = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True, timeout=3)
+        out = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True, timeout=3, check=False)
         return out.stdout.strip() or None
-    except Exception:
+    except (OSError, subprocess.SubprocessError):  # no git, or not a checkout: provenance just omits the SHA
         return None
 
 

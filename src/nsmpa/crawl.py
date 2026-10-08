@@ -106,11 +106,8 @@ async def _sitemap_candidates(fetcher: HardenedFetcher, homepage: str, settings:
     pages: list[str] = []
     nested_seen: set[str] = set()
     for sitemap in sitemap_urls:
-        try:
-            r = await fetcher.fetch(sitemap)
-        except Exception:
-            continue
-        if r.status_code >= 400:
+        r = await fetcher.fetch_safe(sitemap)  # failures are counted in fetcher.stats
+        if r.access_class != "ok" or r.status_code >= 400:
             continue
         urls, nested = extract_sitemap_urls(r.content, settings.sitemap_max_urls)
         pages.extend(urls)
@@ -119,11 +116,8 @@ async def _sitemap_candidates(fetcher: HardenedFetcher, homepage: str, settings:
             if not n or n in nested_seen or not same_site(homepage, n):
                 continue
             nested_seen.add(n)
-            try:
-                nr = await fetcher.fetch(n)
-            except Exception:
-                continue
-            if nr.status_code < 400:
+            nr = await fetcher.fetch_safe(n)
+            if nr.access_class == "ok" and nr.status_code < 400:
                 child_urls, _ = extract_sitemap_urls(nr.content, settings.sitemap_max_urls)
                 pages.extend(child_urls)
         if pages:

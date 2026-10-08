@@ -3,13 +3,13 @@ from __future__ import annotations
 import json
 
 import httpx
-
+import test_pipeline as tp
 from conftest import make_settings, public_resolver
+from test_v05 import FakeAI
+
 from nsmpa.estimate import estimate_all
 from nsmpa.fetch import HardenedFetcher
 from nsmpa.pilot import run_pilot
-import test_pipeline as tp
-from test_v05 import FakeAI
 
 
 def test_estimate_counts_cached_queries_as_free(tmp_path, db):

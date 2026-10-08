@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import httpx
 import pytest
-
 from conftest import make_settings, public_resolver
+from test_pipeline import PAGE, FakeSearch
+
 from nsmpa.fetch import HardenedFetcher
 from nsmpa.legal import best_excerpt, run_legal_research, seed_legal, set_legal_status
-from test_pipeline import PAGE, FakeSearch
 
 GDPR = PAGE.format(title="Regulation (EU) 2016/679", body=(
     "<p>Article 17. Right to erasure ('right to be forgotten'). The data subject shall have the right to obtain from the "
