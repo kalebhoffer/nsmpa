@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.7.4 — classifier fixes from the Stage 1 national run
+
+Stage 1 (all 50 standards and support organizations, 361 credits) showed removal language used about things other than
+news stories being read as policy. New scope rules, each checked against all 118,267 stored sentences with every
+changed sentence reviewed:
+
+- people removed from roles ("an Editor is removed", "remove an Editor"); reporters' unpublished notes and material;
+  "case-by-case" without a removal/update topic in the sentence or its neighbours; government, court and legal
+  records (including courts and legislatures sealing or redacting them); codes of conduct and abuse reports;
+  removal named as a topic ("challenges related to unpublishing"); anonymity of sources or contributors; removing
+  criteria, fields or URLs; third parties ("private parties") demanding removal.
+- "Editorial" counts as a news object only as a noun ("editorial committee/discretion/standards" do not).
+- "Rarely granted" removal requests are a narrow exception (restrictive), not neutral.
+- Relief vocabulary adds "fresh start", "right to be forgotten" and "take-down".
+- Five genuine findings that early versions of these rules suppressed are restored and kept as tests. Recall on the 10
+  Tier-A organizations remains 10/10. 329 tests.
+
 ## 0.7.3 — prepared for public release
 
 - Public README (purpose, author's disclosure, findings so far with their limits, how it works), MIT license,
