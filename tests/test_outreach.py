@@ -30,6 +30,7 @@ async def test_harvest_draft_never_send_and_dnc(tmp_path, db, monkeypatch):
         "<a href='mailto:someone@gmail.com'>x</a>"))))
     rid2, _ = await tp.run_research(db, s, tp.FakeSearch(tp.SEARCH_ROUTES), fresh=True)
     res = harvest_contacts(db)
+    assert res["contacts_added"] >= 1 and res["entities_with_contacts"] >= 1
     emails = {r["email"] for r in db.execute("SELECT email FROM contacts")}
     assert "editor@quiet.example" in emails and "ads@quiet.example" not in emails and "someone@gmail.com" not in emails
     out = draft_campaign(db, s, "pilot", s.output_dir / "outreach")
