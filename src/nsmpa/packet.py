@@ -304,6 +304,8 @@ def build_workbook(data: dict, path: Path) -> None:
           "available on request by evidence ID.") if data.get("redacted") else
          "This copy is NOT redacted: excerpts may contain names of private individuals. Use `nsmpa packet --redact-names` "
          "before sharing outside your review team.", data.get("redacted", False)),
+        *([(f"{data['withheld']['rows']} row(s) across all sheets were withheld from this copy: {data['withheld']['reason']}.",
+            True)] if data.get("withheld", {}).get("rows") else []),
         ("", False),
         ("Rules used", True),
         ("• Student media, professional newsrooms and standards organizations are separate groups with separate denominators; "
@@ -852,13 +854,38 @@ def ai_summaries(db: Database, settings: Settings, data: dict, client=None) -> d
 
 # =========================================================================== entry point
 
+_URL_KEYS = ("source_url", "final_url", "requested_url", "url", "strongest_supportive_url", "strongest_adverse_url",
+             "confirmed_url", "claimed_url", "archive_url")
+
+
+def withhold_rows(data: dict, patterns: list[str], reason: str) -> int:
+    """Drop rows whose URLs contain any pattern from every table of a shared packet; return how many were dropped.
+
+    The packet's Read Me states the count and the reason, so readers know material was held back.
+    """
+    pats = [p.lower() for p in patterns if p]
+    if not pats:
+        return 0
+    dropped = 0
+    for key, val in list(data.items()):
+        if isinstance(val, list) and val and isinstance(val[0], dict):
+            keep = [r for r in val if not any(p in str(r.get(k) or "").lower() for k in _URL_KEYS for p in pats)]
+            dropped += len(val) - len(keep)
+            data[key] = keep
+    data["withheld"] = {"rows": dropped, "reason": reason}
+    return dropped
+
+
 def build_packet(db: Database, settings: Settings, out_dir: Path, *, run_id: str | None = None,
                  title: str = "Post-publication relief in U.S. journalism: the evidence", ai_summaries_on: bool = False,
-                 ai_client=None, redact: bool = False) -> dict:
+                 ai_client=None, redact: bool = False, withhold: list[str] | None = None,
+                 withhold_reason: str = "withheld by the researcher") -> dict:
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     out = Path(out_dir) / f"packet_{stamp}"
     out.mkdir(parents=True, exist_ok=True)
     data = gather(db, settings, run_id)
+    if withhold:
+        withhold_rows(data, withhold, withhold_reason)
     data["ai_summaries"] = ai_summaries(db, settings, data, ai_client) if ai_summaries_on else {}
     if redact:
         from .redact import Redactor, redact_packet_data
@@ -873,6 +900,8 @@ def build_packet(db: Database, settings: Settings, out_dir: Path, *, run_id: str
           f"- Workbook: `{xlsx.name}` ({len(data['all_evidence'])} evidence rows, {len(data['voices'])} voices, "
           f"{len(data['precedents'])} precedent leads, {len(data['opposing'])} opposing excerpts)",
           f"- Presentation: `{pptx.name}` ({slides} slides)", ""]
+    if data.get("withheld", {}).get("rows"):
+        md += [f"{data['withheld']['rows']} row(s) withheld from this copy: {data['withheld']['reason']}.", ""]
     for c in data["cohorts"]:
         a = data["actions"].get(c, {})
         m = data["metrics"][c]
@@ -883,4 +912,5 @@ def build_packet(db: Database, settings: Settings, out_dir: Path, *, run_id: str
     (out / "case_packet.md").write_text("\n".join(md) + "\n", encoding="utf-8")
     return {"out_dir": str(out), "workbook": str(xlsx), "presentation": str(pptx), "slides": slides,
             "redacted": bool(data.get("redacted")), "redactions": data.get("redaction_count", 0),
+            "withheld_rows": data.get("withheld", {}).get("rows", 0),
             "evidence_rows": len(data["all_evidence"]), "voices": len(data["voices"]), "precedents": len(data["precedents"])}

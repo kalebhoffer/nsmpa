@@ -1,169 +1,123 @@
-# NSMPA v0.3 — National Journalism Post-Publication Policy & Precedent Research
+# NSMPA — How U.S. newsrooms handle requests to unpublish, de-index or anonymize old stories
 
-NSMPA (originally the *National Student Media Policy Audit*) is a local-first, reproducible evidence engine. It asks how U.S. journalism organizations handle requests for post-publication relief — unpublishing, de-indexing, anonymization, name removal, updates and editor's notes — when truthful historical reporting causes continuing harm, especially after criminal allegations end in dismissal, acquittal, expungement, sealing, vacatur or exoneration.
+[![CI](https://github.com/kalebhoffer/nsmpa/actions/workflows/ci.yml/badge.svg)](https://github.com/kalebhoffer/nsmpa/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-It searches deliberately for evidence **for and against** discretionary relief, keeps every excerpt traceable to a source URL, page hash and search query, and refuses to report national percentages until coverage and review thresholds are met.
+Old news stories follow people for decades. When a criminal charge is later dismissed, ends in acquittal, or is
+expunged, the original article usually stays online and stays at the top of a name search. More and more newsrooms
+now have a policy for that moment: some de-index old stories from Google while keeping them in the archive, some
+remove names, some unpublish, and some refuse anything beyond an editor's note.
 
-## The three-cohort rule
+**NSMPA is an open, reproducible evidence engine that documents those policies and practices across U.S. journalism**:
+student newspapers (every four-year college, from federal IPEDS data), professional newsrooms, broadcasters, and the
+standards organizations that advise them. It searches with equal effort for evidence *for and against* post-publication
+relief, quotes every finding word for word with its source, and refuses to report percentages until coverage and
+review thresholds are met.
 
-| Cohort | Universe | Denominator |
-|---|---|---|
-| `student_media` | Primary student newspaper of each IPEDS four-year institution | IPEDS included institutions (2,517 in the current DB), plus a *core stratum* (Carnegie 2021 basic 15–23, 1,627) |
-| `professional_newsroom` | Sourced union of directories/membership lists + labeled benchmark panel | Active, de-duplicated entities in the cohort — a **panel, not a census** |
-| `support_org` (and `press_association`, `journalism_school`) | Ethics, legal, standards, training and advisory organizations — analyzed as *guidance*, not newsrooms | Active entities in the cohort |
+- **The evidence collected so far** is in [`evidence/`](evidence/): a redacted Excel workbook and slide deck,
+  with every excerpt linked to its source.
+- **How it decides** what counts as a policy is in [`docs/methodology.md`](docs/methodology.md) and
+  [`docs/classification_rubric.md`](docs/classification_rubric.md).
+- **Found an error?** See [CONTRIBUTING.md](CONTRIBUTING.md). Corrections are welcome, especially from the
+  organizations described.
 
-Cohorts may be compared. **Their percentages are never pooled.**
+## Why this exists (disclosure)
 
-## Install
+<!-- DRAFT: the author reviews and edits this section before publishing. -->
+I built this tool while preparing my own request to a student newspaper to de-index coverage about me. I have a
+personal interest in the answer, so the tool is designed to make that interest irrelevant: it looks for opposing
+evidence as hard as supporting evidence, it publishes the opposing evidence alongside the rest, it labels every
+excerpt with how it was obtained, and it withholds conclusions until the data supports them. Anyone can rerun it and
+check the results.
 
-```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e '.[dev]'
-cp config.example.yml config.yml        # then set user_agent with real contact info
-nsmpa doctor
-```
+## What the evidence shows so far
 
-`config.yml` in the working directory is used automatically; `--config PATH` overrides it.
+This is an early snapshot, not a national result. As of 8 October 2026:
 
-### Search API key
+- **21 organizations have been researched; 19 have a determined position.** Among them are clear relief programs:
+  the Associated Press considers requests to block old minor-crime stories and asks Google to de-index them; the
+  Philadelphia Inquirer's "Up for Review" makes de-indexing its main remedy; the Chicago Sun-Times, Bangor Daily News,
+  Atlanta Journal-Constitution and four broadcasters (NBC Chicago, News4JAX, NewsChannel 5 Nashville, WCBU) review
+  requests. Five student papers say they update stories but do not remove them, and the Student Press Law Center
+  advises against discretionary takedowns. Both sides are in the workbook, and 104 further named precedents (such as
+  the Boston Globe's Fresh Start) are listed with the sources NSMPA read.
+- **A hand-built index of 130 organizations was used as a check on the tool.** NSMPA read every linked source itself:
+  it confirmed 63 of the 69 strongest entries, and from only each organization's name and homepage it found the policy
+  page for 10 of 10 tested organizations.
+- **Percentages are withheld.** Each group (student media, professional newsrooms, broadcasters, standards
+  organizations) has its own denominator and its own validation gates; none has been researched widely enough yet.
+  Organizations added *because* they were known to have policies are shown but never counted in a rate.
+- **No excerpt has been human-verified yet.** Classification is automated and audited, but every excerpt should be
+  checked against its source before it is quoted. The workbook marks each row's verification status.
 
-NSMPA reads `SERPER_API_KEY` from the environment, or from a local `.env` file (gitignored) in the working directory:
+## How it works
 
-```bash
-# from a shell where SERPER_API_KEY is already exported (keeps the key out of shell history):
-printf 'SERPER_API_KEY=%s\n' "$SERPER_API_KEY" > .env && chmod 600 .env
-```
-
-The key is never printed, logged, stored in the database, or written to exports; provider error messages are redacted. `nsmpa doctor` reports only whether it is set. `nsmpa doctor --check-serper` spends exactly one credit to verify it.
-
-Without a key, discovery and research still run (site inspection, homepage policy links), but **no entity can be classified `NO_RELEVANT_GUIDANCE`** — without targeted searches, inspection is incomplete and the result is `UNDETERMINED`.
-
-## Quickstart (small, controlled)
-
-```bash
-nsmpa init                                     # migrate schema (auto-backup first)
-nsmpa status
-nsmpa research-setup                           # seed support orgs + benchmark panel, sync student pubs
-nsmpa research --cohort support_org --limit 3 --max-searches 25
-nsmpa discover --state WA --limit 5 --max-searches 25
-nsmpa promote
-nsmpa query-stats
-nsmpa review
-```
-
-The default terminal mode is a live dashboard. `--verbose` adds queries, URLs, scoring decisions, retries and errors; `--quiet` prints only the final summary.
-
-Ctrl+C once: finish in-flight items, checkpoint, print the resume command. Ctrl+C twice: cancel immediately (completed items are already saved). `nsmpa resume` continues the most recent interrupted or budget-stopped run; cached searches are never paid for twice.
-
-## First live test
-
-```bash
-nsmpa estimate --cohort support_org          # credits, page requests, time and AI calls before you spend anything
-nsmpa pilot --budget 25 --ai-calls 10        # capped end-to-end trial; report in output/pilot_<UTC>/pilot_report.md
-```
-
-## Watching it run
-
-```bash
-nsmpa gui          # local web monitor: live progress, results, evidence, review queue (see docs/gui.md)
-nsmpa watch        # same live view in a second terminal
-nsmpa dashboard    # one offline HTML file to share
-```
-
-## Evidence packet (Excel + PowerPoint)
-
-```bash
-nsmpa my-case --init                      # describe your situation (gitignored)
-nsmpa verify-precedents --max-searches 15 # named programs: find sources (you verify)
-nsmpa research-experts --max-searches 15  # attributed opinions, both directions
-nsmpa packet --redact-names               # output/packet_<UTC>/NSMPA_evidence.xlsx + NSMPA_presentation.pptx
-```
-
-See `docs/evidence_packet.md`. Newsrooms without written policies are still examined: their archived crime
-stories are sampled for editor's notes, name removals and targeted noindex tags.
-
-## Archive evidence, AI second opinion, measured accuracy
-
-```bash
-nsmpa wayback --run-id RUN                  # archived vs. current crime articles (also runs inside `research`)
-nsmpa ai-review --run-id RUN --max-calls 50 # optional; needs GEMINI_API_KEY
-nsmpa audit sample --n 50 && nsmpa audit export --out audit.csv   # label in Excel, then `audit import`
-nsmpa audit report
-```
-
-## Outreach, legal context, re-checks
-
-```bash
-nsmpa outreach harvest && nsmpa outreach draft --campaign pilot --limit 20   # drafts only; you send them
-nsmpa outreach response --entity-id 12 --file reply.eml --campaign pilot     # reply becomes first-party evidence
-nsmpa legal-research --max-searches 60 && nsmpa legal
-nsmpa recheck && nsmpa schedule            # weekly re-check (prints the launchd job; --install to enable)
-```
-
-## Reproducing the national run
-
-See `docs/scale_runbook.md` for credit estimates. The sequence is:
-
-```bash
-nsmpa doctor && nsmpa init
-nsmpa import-ipeds HD2024.zip --source-year 2024
-# 1. Student publication discovery (staged by budget; resumable)
-nsmpa discover --max-searches 2000            # repeat / `nsmpa resume` until remaining = 0
-nsmpa promote
-nsmpa review --cohort student_media           # verify ambiguous / near-threshold publications
-nsmpa sync-student-entities
-# 2. Universes
-nsmpa research-setup
-nsmpa import-entities inn.csv  --cohort professional_newsroom --source inn_directory_2026  --membership "INN member"
-nsmpa import-entities lion.csv --cohort professional_newsroom --source lion_members_2026   --membership "LION member"
-nsmpa merge-duplicates
-# 3. Research, one cohort at a time
-nsmpa research --cohort support_org --max-searches 1000
-nsmpa research --cohort professional_newsroom --max-searches 5000
-nsmpa research --cohort student_media --max-searches 15000
-# 4. Human review and source verification
-nsmpa review ; nsmpa review --decide ID --decision accept --note "checked live page + snapshot"
-nsmpa verify-evidence EVIDENCE_ID --status verified
-# 5. Gates and report
-nsmpa validate
-nsmpa report
-```
-
-Every run records its configuration, engine version and git commit in `research_runs`.
-
-## Outputs
-
-| Location | Contents |
-|---|---|
-| `output/nsmpa.sqlite3` | All data (WAL mode). Never deleted by NSMPA. |
-| `output/backups/` | Automatic pre-migration backups |
-| `output/research_<RUN_ID>/` | Per-run `entities`, `search_queries`, `research_targets`, `research_pages`, `evidence`, `entity_stances`, `human_review_queue` (each `.csv` + `.jsonl`), `run_manifest.json`, `summary.md` |
-| `output/report_<UTC>/` | `report.md`, `report.json`, precedent tables as CSV |
-| `output/research_snapshots/raw/ab/<sha256>.html|.pdf` | Immutable, content-addressed source bytes |
-| `output/research_snapshots/text/ab/<sha256>.txt` | Normalized main text that was analyzed |
+1. **Universe**: IPEDS four-year institutions and their student newspapers; sourced lists of professional and
+   broadcast newsrooms; standards and support organizations. Each group is counted separately.
+2. **Search**: a small set of targeted, cached searches per organization, aimed equally at relief policies and at
+   refusals ("we never unpublish", "historical record").
+3. **Read**: a hardened crawler (robots.txt honored, SSRF-safe) reads policy pages and samples archived crime stories
+   for editor's notes and removed names. Sites that block robots are never bypassed: their archived copies, search
+   snippets (as leads only), AI web search (quotes confirmed word for word) and researcher captures are used instead,
+   each labelled with how it was obtained.
+4. **Classify**: sentence-level rules separate written policy, documented practice, technical signals (noindex tags,
+   Wayback Machine changes) and professional guidance, and record the position on each action (de-index, anonymize,
+   unpublish, update).
+5. **Review and publish**: a human review queue, an accuracy audit with confidence intervals, and a packet whose
+   shared copy withholds private individuals' names.
 
 ## Research-integrity guardrails
 
 - Supportive and adverse evidence are searched for with equal effort (`docs/query_strategy.md`).
-- Keyword hits are not findings. A statement requires a journalism object + an action + (for direction) a modality (`docs/classification_rubric.md`).
-- Written policy, documented practice, technical implementation and professional guidance are separate concepts and never inferred from one another.
-- `UNDETERMINED` (not adequately inspected) is never converted into a negative finding; blocked, robots-disallowed, and failed sources count against coverage, not as "no policy."
-- One sentence is one evidence item regardless of how many concepts it touches; near-duplicates and boilerplate are collapsed.
-- Search snippets are discovery aids only; findings come from fetched text, with snapshots and hashes.
-- Absence from Google is not evidence of de-indexing.
-- Reports withhold cohort percentages until validation gates pass (`docs/validation.md`).
-- Sites that block robots are never bypassed: archived copies, search snippets (leads only), AI search (quotes confirmed
-  word for word) and researcher captures, each labelled with how it was obtained (`docs/blocked_sites.md`).
-- Every finding intended for external use should be human-verified against the live page and snapshot.
+- Keyword hits are not findings: a statement needs a journalism object, an action and (for direction) a modality.
+- Written policy, documented practice, technical implementation and professional guidance are never inferred from
+  one another.
+- "Undetermined" (not adequately inspected) is never counted as "no policy"; blocked sites count against coverage.
+- Every excerpt keeps its source URL, fetch time, page hash and the search that found it.
+- Reports withhold percentages until each group passes its validation gates (`docs/validation.md`).
+- Shared files withhold names of private individuals (automated redaction; originals stay in the private database).
+
+## Running it
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e '.[dev,ai]'
+cp config.example.yml config.yml        # set user_agent to include your own contact address
+nsmpa doctor
+```
+
+Search uses [Serper](https://serper.dev) (`SERPER_API_KEY`); the optional AI features use Gemini (`GEMINI_API_KEY`).
+Put keys in a local `.env` (git-ignored); they are never printed, logged or stored.
+
+```bash
+nsmpa estimate --cohort support_org          # credits, requests, time and AI calls before spending anything
+nsmpa pilot --budget 25 --ai-calls 10        # capped end-to-end trial with a plain-language report
+nsmpa gui                                    # local monitor: live progress, results, evidence, review, capture
+nsmpa packet --redact-names                  # Excel workbook + PowerPoint deck for sharing
+```
+
+The full sequence for a national run is in [`docs/scale_runbook.md`](docs/scale_runbook.md); every command is listed in
+[`docs/commands.md`](docs/commands.md). Runs are resumable (Ctrl+C checkpoints), budgeted, and cached, so no search is
+paid for twice.
 
 ## Documentation
 
-`docs/methodology.md` · `docs/architecture.md` · `docs/classification_rubric.md` · `docs/validation.md` · `docs/schema.md` · `docs/query_strategy.md` · `docs/scale_runbook.md` · `docs/commands.md` · `docs/blocked_sites.md` · `docs/evidence_index.md` · `docs/professional_universe.md` · `CHANGELOG.md`
+[methodology](docs/methodology.md) · [classification rubric](docs/classification_rubric.md) ·
+[validation](docs/validation.md) · [architecture](docs/architecture.md) · [schema](docs/schema.md) ·
+[query strategy](docs/query_strategy.md) · [scale runbook](docs/scale_runbook.md) · [commands](docs/commands.md) ·
+[blocked sites](docs/blocked_sites.md) · [evidence index](docs/evidence_index.md) · [evidence packet](docs/evidence_packet.md) ·
+[GUI](docs/gui.md) · [changelog](CHANGELOG.md)
 
 ## Tests
 
 ```bash
-python -m pytest -q
+ruff check src tests && python -m pytest -q
 ```
 
-All external HTTP and search calls in tests use deterministic mocks; tests remove `SERPER_API_KEY` from the environment and never spend credits.
+All network and search calls in tests are mocked; tests need no API keys and never spend credits.
+
+## License
+
+Code: [MIT](LICENSE). The compiled evidence in `evidence/` (selection, classification, notes) is shared under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); quoted excerpts remain the work of their publishers and are
+quoted for research and commentary, each with a link to its source.

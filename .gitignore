@@ -12,3 +12,7 @@ my_case.yml
 
 # personal research inputs (evidence indexes, case files)
 inputs/
+
+# local configuration (copy config.example.yml; set your crawler contact)
+config.yml
+my_case.yml

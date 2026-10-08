@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.3 — prepared for public release
+
+- Public README (purpose, author's disclosure, findings so far with their limits, how it works), MIT license,
+  CONTRIBUTING (how to report an evidence error), CI (ruff + tests on Python 3.12–3.14), project metadata.
+- `evidence/2026-10-08/`: redacted workbook and deck, the hand-built evidence index and NSMPA's check of it.
+- Redaction no longer withholds capitalized headline phrases ("A Case Study of Ten College Newspapers", "Publishing
+  Principles"): a phrase counts as a name only if at least one word never appears in lowercase in the collected text.
+  Replacements on the current data fell from 2,448 to 536 with no private names exposed (audited).
+- `nsmpa packet --withhold URL_FRAGMENT --withhold-reason TEXT`: drop rows from a shared copy and state the count and
+  reason in the Read Me. `evidence-index-report --redact-names`.
+- `config.yml` is no longer tracked (copy `config.example.yml`); test fixtures use invented names.
+
 ## 0.7.2 — polish and refactor
 
 Verified behaviour-neutral for classification: the pre- and post-refactor classifiers agree on all 77,942 sentences of

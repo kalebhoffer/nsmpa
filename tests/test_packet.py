@@ -98,3 +98,12 @@ def test_control_characters_never_break_the_workbook():
     from nsmpa.packet import _xlsx_safe
     assert _xlsx_safe("FIX logo \x1eCor bug") == "FIX logo  Cor bug"
     assert _xlsx_safe("line\nbreak\ttab") == "line\nbreak\ttab"      # newlines and tabs are legal and kept
+
+
+def test_withheld_rows_are_dropped_everywhere_and_counted():
+    from nsmpa.packet import withhold_rows
+    data = {"all_evidence": [{"source_url": "https://paper.example/973/news/arrest-story/"}, {"source_url": "https://x.example/policy"}],
+            "sources": [{"final_url": "https://paper.example/973/news/arrest-story/"}], "metrics": {}}
+    n = withhold_rows(data, ["/973/news/arrest-story"], "concerns the researcher's own case")
+    assert n == 2 and len(data["all_evidence"]) == 1 and data["sources"] == []
+    assert data["withheld"] == {"rows": 2, "reason": "concerns the researcher's own case"}
