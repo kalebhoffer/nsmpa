@@ -108,19 +108,18 @@ def _user_text(page_text: str, entity_name: str) -> str:
     return f"Organization: {entity_name}\n\nPage text:\n<page>\n{page_text}\n</page>"
 
 
-def _call_gemini(client, settings: Settings, page_text: str, entity_name: str) -> tuple[dict, dict]:
+def _call_gemini(client, settings: Settings, user_text: str, system: str, schema: dict) -> tuple[dict, dict]:
     from google.genai import types
     config = types.GenerateContentConfig(
-        system_instruction=SYSTEM,
+        system_instruction=system,
         response_mime_type="application/json",
-        response_json_schema=SCHEMA,
+        response_json_schema=schema,
         max_output_tokens=16000,
     )
     last: Exception | None = None
     for attempt in range(settings.ai_max_retries + 1):
         try:
-            response = client.models.generate_content(model=settings.ai_model, contents=_user_text(page_text, entity_name),
-                                                      config=config)
+            response = client.models.generate_content(model=settings.ai_model, contents=user_text, config=config)
             break
         except Exception as exc:  # google.genai.errors.APIError carries .code
             last = exc
@@ -149,13 +148,13 @@ def _call_gemini(client, settings: Settings, page_text: str, entity_name: str) -
     return json.loads(text), meta
 
 
-def _call_anthropic(client, settings: Settings, page_text: str, entity_name: str) -> tuple[dict, dict]:
+def _call_anthropic(client, settings: Settings, user_text: str, system: str, schema: dict) -> tuple[dict, dict]:
     kwargs: dict[str, Any] = dict(
         model=settings.ai_model,
         max_tokens=16000,
-        system=SYSTEM,
-        output_config={"effort": settings.ai_effort, "format": {"type": "json_schema", "schema": SCHEMA}},
-        messages=[{"role": "user", "content": _user_text(page_text, entity_name)}],
+        system=system,
+        output_config={"effort": settings.ai_effort, "format": {"type": "json_schema", "schema": schema}},
+        messages=[{"role": "user", "content": user_text}],
     )
     if settings.ai_refusal_fallback:
         response = client.beta.messages.create(betas=["server-side-fallback-2026-07-01"], fallbacks="default", **kwargs)
@@ -172,11 +171,31 @@ def _call_anthropic(client, settings: Settings, page_text: str, entity_name: str
     return json.loads(text), meta
 
 
-def call_model(client, settings: Settings, page_text: str, entity_name: str) -> tuple[dict, dict]:
-    """One structured-output request. Returns (parsed JSON, usage/meta). Raises AIUnavailable on blocks/refusals."""
+def call_json(client, settings: Settings, user_text: str, system: str, schema: dict) -> tuple[dict, dict]:
+    """Provider-neutral structured-output request used by every AI feature."""
     if settings.ai_provider == "gemini":
-        return _call_gemini(client, settings, page_text, entity_name)
-    return _call_anthropic(client, settings, page_text, entity_name)
+        return _call_gemini(client, settings, user_text, system, schema)
+    return _call_anthropic(client, settings, user_text, system, schema)
+
+
+def call_model(client, settings: Settings, page_text: str, entity_name: str) -> tuple[dict, dict]:
+    """Page review request. Returns (parsed JSON, usage/meta). Raises AIUnavailable on blocks/refusals."""
+    return call_json(client, settings, _user_text(page_text, entity_name), SYSTEM, SCHEMA)
+
+
+def cached_call(db: Database, client, settings: Settings, prompt_version: str, payload_key: str, user_text: str,
+                system: str, schema: dict) -> tuple[dict, bool]:
+    """call_json with the shared ai_cache (keyed by provider, model, prompt version and payload)."""
+    key = sha256_text(f"{settings.ai_provider}|{settings.ai_model}|{prompt_version}|{payload_key}")
+    row = db.execute("SELECT response_json FROM ai_cache WHERE cache_key=?", (key,)).fetchone()
+    if row:
+        return json.loads(row["response_json"]), True
+    data, meta = call_json(client, settings, user_text, system, schema)
+    db.execute("INSERT OR REPLACE INTO ai_cache(cache_key,model,prompt_version,response_json,input_tokens,output_tokens,stop_reason) "
+               "VALUES(?,?,?,?,?,?,?)", (key, meta["model"], prompt_version, json.dumps(data), meta["input_tokens"],
+                                         meta["output_tokens"], meta["stop_reason"]))
+    db.conn.commit()
+    return data, False
 
 
 def verify_quote(quote: str, page_text_norm: str) -> bool:
@@ -324,6 +343,7 @@ async def run_ai_review(db: Database, settings: Settings, *, run_id: str | None 
                          f.get("position"), f.get("direction"), f.get("conditions") or None, f.get("speaker") or None,
                          f.get("speaker_role") or None, ev["id"] if ev else None, agreement))
                 db.execute("UPDATE ai_reviews SET findings_total=?, findings_verified=? WHERE id=?", (total, verified, review_id))
+                stats["voices"] = stats.get("voices", 0) + _voices_from_findings(db, review_id, p, settings)
                 stats["findings"] += total
                 stats["verified"] += verified
                 stats["reviewed"] += 1
@@ -362,6 +382,40 @@ async def run_ai_review(db: Database, settings: Settings, *, run_id: str | None 
                  prompt_version=PROMPT_VERSION,
                  remaining=len(pages) - len(done_keys(db, rid, "page")))
     return stats
+
+
+def _voices_from_findings(db: Database, review_id: int, page, settings: Settings) -> int:
+    """Verified AI findings with a named speaker become Expert Voices (attribution_method='ai:<model>').
+
+    Only quotes found verbatim in the page qualify. If the same quote was already captured by the pattern
+    extractor, the existing voice is kept and only a missing role is filled in.
+    """
+    from .evidence import classify_statement, person_key
+    n = 0
+    for f in db.execute("SELECT * FROM ai_findings WHERE review_id=? AND quote_verified=1 AND speaker IS NOT NULL AND speaker!=''",
+                        (review_id,)):
+        name = f["speaker"].strip()
+        if len(name.split()) < 2 or len(name) > 80:
+            continue  # need a full name to attribute responsibly
+        key = person_key(name)
+        expert = db.execute("SELECT id, role, affiliation FROM experts WHERE person_key=?", (key,)).fetchone()
+        st = classify_statement(f["quote"])
+        actions = {f["action"]: f["position"]} if f["action"] and f["action"] != "none" else {}
+        qsha = sha256_text(normalize_for_hash(f["quote"]))
+        cur = db.execute(
+            """INSERT OR IGNORE INTO voices(person_key,person_name,role,affiliation,expert_id,quote,quote_sha256,context,source_url,
+                 source_title,source_domain,page_id,run_id,entity_id,statement_type,direction,actions_json,attribution_method,
+                 attribution_confidence,case_match_score)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)""",
+            (key, name, f["speaker_role"] or (expert["role"] if expert else None), expert["affiliation"] if expert else None,
+             expert["id"] if expert else None, f["quote"], qsha, f["conditions"], page["final_url"] or page["requested_url"],
+             page["title"], None, page["id"], page["run_id"], page["entity_id"], st.statement_type, f["direction"],
+             json.dumps(actions), f"ai:{settings.ai_model}", 0.75 + (0.1 if expert else 0.0)))
+        if cur.rowcount:
+            n += 1
+        elif f["speaker_role"]:
+            db.execute("UPDATE voices SET role=COALESCE(role, ?) WHERE person_key=? AND quote_sha256=?", (f["speaker_role"], key, qsha))
+    return n
 
 
 def _flag_for_review(db: Database, ai_run_id: str, page) -> None:
