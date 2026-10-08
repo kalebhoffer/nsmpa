@@ -23,7 +23,7 @@ def _open_ipeds_csv(path: Path) -> tuple[io.TextIOBase, zipfile.ZipFile | None]:
         preferred = exact[0] if exact else sorted(csv_names, key=len)[0]
         raw = zf.open(preferred, "r")
         return io.TextIOWrapper(raw, encoding="utf-8-sig", errors="replace", newline=""), zf
-    return open(path, "r", encoding="utf-8-sig", errors="replace", newline=""), None
+    return open(path, encoding="utf-8-sig", errors="replace", newline=""), None
 
 
 def _to_int(value: str | None) -> int | None:

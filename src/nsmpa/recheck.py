@@ -35,7 +35,7 @@ def build_watchlist(db: Database) -> int:
            SELECT p.entity_id, COALESCE(p.final_url, p.requested_url), p.text_sha256, p.text_sha256, p.fetched_at, 'baseline'
            FROM research_pages p
            WHERE p.first_party=1 AND p.access_class='ok' AND p.text_sha256 IS NOT NULL
-             AND p.run_id NOT IN (SELECT id FROM research_runs WHERE status='excluded')
+             AND p.run_id NOT IN (SELECT id FROM v_excluded_runs)
              AND p.final_url NOT LIKE 'outreach://%'
              AND (p.page_kind IN ('policy','about')
                   OR EXISTS (SELECT 1 FROM evidence_items e WHERE e.page_id=p.id AND e.first_party=1

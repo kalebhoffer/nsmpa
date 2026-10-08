@@ -4,15 +4,15 @@ from __future__ import annotations
 import json
 
 import httpx
-
 from conftest import make_settings, public_resolver
+from test_pipeline import PAGE, FakeSearch
+
 from nsmpa.config import MyCase
 from nsmpa.evidence import action_positions, extract_voices
 from nsmpa.fetch import HardenedFetcher
 from nsmpa.practice import choose_samples, evenly
 from nsmpa.research import import_entities_csv, research_all, start_research
 from nsmpa.similarity import score_case_match
-from test_pipeline import PAGE, FakeSearch
 
 
 def article(title: str, body: str, noindex: bool = False) -> str:

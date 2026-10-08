@@ -23,7 +23,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from .db import Database
-from .utils import normalize_url, prepare_request_url, registrableish_domain
+from .utils import json_meta, normalize_url, prepare_request_url, registrableish_domain
 
 PLATFORM_HOSTS = ("issuu.com", "blogspot.com", "wordpress.com", "weebly.com", "sites.google.com", "wixsite.com", "squarespace.com")
 GENERIC = {"university", "college", "the", "of", "at", "and", "state", "community", "institute", "technology", "school",
@@ -289,7 +289,7 @@ def import_directory(db: Database, path: Path, *, promote: bool = True, threshol
                 db.conn.execute("INSERT OR IGNORE INTO entity_sources(entity_id,source,source_key,source_url,raw_json) VALUES(?,?,?,?,?)",
                                 (eid, _source_label(r), r["Publication ID"], r["_url"], json.dumps(r, default=str)))
 
-    result = {k: v for k, v in sorted(stats.items())}
+    result = dict(sorted(stats.items()))
     result["rows"] = len(rows)
     if promote:
         result["promotion"] = promote_candidates(db, threshold)
@@ -448,7 +448,7 @@ async def match_from_homepages(db: Database, settings, *, limit: int | None = No
 
     async def one(e):
         r = await fetcher.fetch_safe(e["homepage_url"])
-        meta = json.loads(e["metadata_json"] or "{}")
+        meta = json_meta(e)
         meta["homepage_access"] = r.access_class
         if r.access_class != "ok" or not r.content:
             results.append((e, meta, None, "unreachable", 0.0, f"homepage {r.access_class}"))
@@ -467,7 +467,7 @@ async def match_from_homepages(db: Database, settings, *, limit: int | None = No
                 try:
                     await one(e)
                 except Exception as exc:  # one bad page never stops the run
-                    results.append((e, json.loads(e["metadata_json"] or "{}"), None, "error", 0.0, f"{type(exc).__name__}: {exc}"[:200]))
+                    results.append((e, json_meta(e), None, "error", 0.0, f"{type(exc).__name__}: {exc}"[:200]))
                 dash.increment(completed=1)
 
         await _asyncio.gather(*(worker() for _ in range(max(1, min(16, len(rows))))))
@@ -542,16 +542,16 @@ def export_directory(db: Database, template: Path, out: Path) -> dict:
                            (row["Publication ID"],)).fetchone()
             row["IPEDS UNITID"] = c["unitid"] if c else ""
             row["IPEDS match method"] = json.loads(c["verification_json"] or "{}").get("match_method", "") if c else \
-                (json.loads(ent["metadata_json"] or "{}").get("ipeds_match", "unmatched") if ent else "")
+                (json_meta(ent).get("ipeds_match", "unmatched") if ent else "")
         if not ent:
             continue
         row["NSMPA entity ID"] = ent["id"]
         st = db.execute("""SELECT s.* FROM entity_stances s WHERE s.entity_id=? AND s.stance_version='0.3'
-                           AND s.run_id NOT IN (SELECT id FROM research_runs WHERE status='excluded') ORDER BY s.id DESC LIMIT 1""",
+                           AND s.run_id NOT IN (SELECT id FROM v_excluded_runs) ORDER BY s.id DESC LIMIT 1""",
                         (ent["id"],)).fetchone()
         home = db.execute("""SELECT access_class, fetched_at FROM research_pages WHERE entity_id=? AND page_kind='homepage'
                              ORDER BY id DESC LIMIT 1""", (ent["id"],)).fetchone()
-        meta = json.loads(ent["metadata_json"] or "{}")
+        meta = json_meta(ent)
         ident = (meta.get("website_identity") or {}).get("status")
         if meta.get("recovered"):
             row["Operating status"] = f"Moved: now at {meta['recovered']['to']} (directory URL {meta['recovered']['from']})"

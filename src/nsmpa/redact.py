@@ -11,6 +11,7 @@ shared files say "automated redaction". The private database keeps original text
 from __future__ import annotations
 
 import re
+import sqlite3
 
 from .db import Database
 
@@ -27,7 +28,7 @@ NOT_PERSON = {
     "May", "June", "July", "August", "September", "October", "November", "December", "Editor", "Editors", "Staff",
     "Sheriff", "Superior", "Associated", "United", "States", "America", "American", "Federal", "Supreme", "Circuit",
     "Prosecuting", "Attorney", "Judge", "Officer", "Sergeant", "Detective", "Chief", "President", "Dean", "Professor",
-    "Board", "Council", "Committee", "Association", "Society", "Foundation", "Center", "Media", "Washington", "Oregon",
+    "Board", "Council", "Committee", "Association", "Society", "Foundation", "Media", "Washington", "Oregon",
     "California", "Texas", "Ohio", "Florida", "Google", "Facebook", "Twitter", "Bing", "Wayback", "Machine", "Internet",
     "Archive", "Code", "Ethics", "Policy", "Standards", "Guidelines", "Read", "More", "Related", "Share", "Comments",
     "Contact", "Advertise", "Subscribe", "Update", "Editor's", "Note", "Fresh", "Start", "Clean", "Slate", "Act", "Law",
@@ -46,11 +47,7 @@ NOT_PERSON |= {
     "Toronto", "London", "Chicago", "Boston", "Philadelphia", "Seattle", "Spokane", "Portland", "Denver", "Phoenix",
     "Atlanta", "Miami", "Houston", "Dallas", "Austin", "Detroit", "Cleveland", "Baltimore", "Pittsburgh", "Minneapolis",
 }
-NOT_PERSON |= {w for state in (
-    "Alabama Alaska Arizona Arkansas California Colorado Connecticut Delaware Florida Georgia Hawaii Idaho Illinois Indiana "
-    "Iowa Kansas Kentucky Louisiana Maine Maryland Massachusetts Michigan Minnesota Mississippi Missouri Montana Nebraska "
-    "Nevada Hampshire Jersey Mexico York Carolina Dakota Ohio Oklahoma Oregon Pennsylvania Rhode Island Tennessee Texas Utah "
-    "Vermont Virginia Washington Wisconsin Wyoming Columbia").split() for w in [state]}
+NOT_PERSON |= {w for state in ["Alabama", "Alaska", "Arizona", "Arkansas", "California", "Colorado", "Connecticut", "Delaware", "Florida", "Georgia", "Hawaii", "Idaho", "Illinois", "Indiana", "Iowa", "Kansas", "Kentucky", "Louisiana", "Maine", "Maryland", "Massachusetts", "Michigan", "Minnesota", "Mississippi", "Missouri", "Montana", "Nebraska", "Nevada", "Hampshire", "Jersey", "Mexico", "York", "Carolina", "Dakota", "Ohio", "Oklahoma", "Oregon", "Pennsylvania", "Rhode", "Island", "Tennessee", "Texas", "Utah", "Vermont", "Virginia", "Washington", "Wisconsin", "Wyoming", "Columbia"] for w in [state]}
 URL_SAFE_PLACEHOLDER = "[URL withheld: contains a redacted name; available on request with evidence ID]"
 
 
@@ -73,20 +70,20 @@ class Redactor:
         self.count = 0
 
     @classmethod
-    def from_db(cls, db: Database) -> "Redactor":
+    def from_db(cls, db: Database) -> Redactor:
         names: set[str] = set()
         for sql in ("SELECT name FROM research_entities", "SELECT parent_name FROM research_entities WHERE parent_name IS NOT NULL",
                     "SELECT name FROM experts", "SELECT person_name FROM voices", "SELECT organization FROM precedent_seeds",
                     "SELECT name FROM institutions WHERE included=1", "SELECT jurisdiction FROM legal_context"):
             try:
                 names |= {r[0] for r in db.execute(sql) if r[0]}
-            except Exception:  # table may not exist in very old databases; redaction must still work
+            except sqlite3.OperationalError:  # table may not exist in very old databases; redaction must still work
                 continue
         return cls(names)
 
     def _is_person(self, cand: str) -> bool:
         words = cand.split()
-        if len(set(w.lower() for w in words)) == 1:
+        if len({w.lower() for w in words}) == 1:
             return False  # "Walla Walla", "Sing Sing": repeated-word place names
         if any(w.rstrip(".") in NOT_PERSON for w in words):
             return False

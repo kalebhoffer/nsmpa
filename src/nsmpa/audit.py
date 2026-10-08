@@ -23,7 +23,7 @@ from .db import Database
 
 DIRECTIONS = ("supportive", "adverse", "neutral")
 SAMPLE_WHERE = ("e.duplicate_of IS NULL AND e.statement_type NOT IN ('mention','technical_sitewide_noindex') "
-                "AND e.run_id NOT IN (SELECT id FROM research_runs WHERE status='excluded')")
+                "AND e.run_id NOT IN (SELECT id FROM v_excluded_runs)")
 
 
 def wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float, float] | None:

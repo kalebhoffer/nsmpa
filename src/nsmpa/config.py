@@ -180,7 +180,7 @@ class Settings(BaseModel):
     no_guidance_min_first_party_pages: int = Field(2, ge=1, le=50)
     no_guidance_max_inaccessible_ratio: float = Field(0.5, ge=0, le=1)
     # --- v0.3 validation gates (reports refuse national percentages below these) ----------
-    validation: "ValidationThresholds" = Field(default_factory=lambda: ValidationThresholds())
+    validation: ValidationThresholds = Field(default_factory=lambda: ValidationThresholds())
     peer_groups: dict[str, PeerGroup] = Field(default_factory=default_peer_groups)
     # --- v0.4 deep practice digging -------------------------------------------------------
     research_practice_dig: Literal["never", "auto", "always"] = "always"
@@ -228,7 +228,7 @@ class Settings(BaseModel):
     ai_concurrency: int = Field(4, ge=1, le=32)
 
     @model_validator(mode="after")
-    def normalize_paths(self) -> "Settings":
+    def normalize_paths(self) -> Settings:
         self.database_path = Path(self.database_path)
         self.output_dir = Path(self.output_dir)
         self.snapshot_dir = Path(self.snapshot_dir)
@@ -278,11 +278,11 @@ def load_settings(path: str | Path | None = None) -> Settings:
     path = resolve_config_path(path)
     data: dict = {}
     if path:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
     case_file = Path(os.getenv("NSMPA_MY_CASE", "my_case.yml"))
     if case_file.is_file() and "my_case" not in data:
-        with open(case_file, "r", encoding="utf-8") as f:
+        with open(case_file, encoding="utf-8") as f:
             data["my_case"] = (yaml.safe_load(f) or {}).get("my_case", {})
     if os.getenv("NSMPA_USER_AGENT"):
         data["user_agent"] = os.environ["NSMPA_USER_AGENT"]

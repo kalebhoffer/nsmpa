@@ -98,7 +98,7 @@ class RunDashboard:
         self._last_persist = 0.0
 
     # ------------------------------------------------------------------ lifecycle
-    def __enter__(self) -> "RunDashboard":
+    def __enter__(self) -> RunDashboard:
         if not self.quiet and self.console.is_terminal:
             self._live = Live(self.render(), console=self.console, refresh_per_second=4, transient=False,
                               redirect_stdout=True, redirect_stderr=True)
@@ -170,7 +170,7 @@ class RunDashboard:
         self._refresh()
 
     def checkpoint(self) -> None:
-        self.state.checkpoint = datetime.now().strftime("%H:%M:%S")
+        self.state.checkpoint = datetime.now().astimezone().strftime("%H:%M:%S")  # local wall-clock for the display
         self._refresh()
 
     def add_recent(self, message: str) -> None:

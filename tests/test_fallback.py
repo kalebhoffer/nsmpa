@@ -7,12 +7,12 @@ from urllib.parse import unquote
 
 import httpx
 import pytest
-
 from conftest import make_settings, public_resolver
+from test_pipeline import PAGE, FakeSearch
+
 from nsmpa.capture import CaptureError, add_capture, capture_queue
 from nsmpa.fetch import HardenedFetcher
 from nsmpa.research import import_entities_csv, research_all, start_research
-from test_pipeline import PAGE, FakeSearch
 
 HOME = PAGE.format(title="The Daily | Student newspaper of the University of Example", body=(
     "<p>The Daily is the independent student newspaper of the University of Example. Editor-in-chief: A. Writer.</p>"
@@ -95,7 +95,7 @@ async def run(db, s, routes, handler):
 async def test_blocked_site_is_researched_from_archive_with_provenance(tmp_path, db, fake_ai):
     s = make_settings(tmp_path, research_recover_stale_sites=False, max_retries=0)
     eid = entity(db, tmp_path)
-    rid, stats, provider = await run(db, s, ROUTES, make_handler())
+    rid, stats, _provider = await run(db, s, ROUTES, make_handler())
     assert stats["failed"] == 0
     st = db.execute("SELECT * FROM entity_stances WHERE run_id=? AND entity_id=?", (rid, eid)).fetchone()
     assert st["stance"] in {"STRICT_ARCHIVE", "UPDATE_ONLY"}, st["rationale"]
@@ -115,7 +115,7 @@ async def test_blocked_site_is_researched_from_archive_with_provenance(tmp_path,
 async def test_ai_quotes_are_leads_until_found_word_for_word(tmp_path, db, fake_ai):
     s = make_settings(tmp_path, research_recover_stale_sites=False, max_retries=0)
     eid = entity(db, tmp_path)
-    rid, _, provider = await run(db, s, ROUTES, make_handler())
+    _rid, _, provider = await run(db, s, ROUTES, make_handler())
     assert fake_ai == [True]                                    # one grounded (web-search) call
     leads = {r["quote"]: r for r in db.execute("SELECT * FROM ai_leads WHERE entity_id=?", (eid,))}
     assert leads[REAL_QUOTE]["status"] == "confirmed" and leads[REAL_QUOTE]["confirmed_via"] == "archive"
@@ -192,8 +192,9 @@ async def test_capture_without_prior_run_creates_capture_run(tmp_path, db):
 
 
 async def test_gui_capture_routes(tmp_path, db):
-    from nsmpa.gui import make_server
     from test_gui import req
+
+    from nsmpa.gui import make_server
     s = make_settings(tmp_path)
     eid = entity(db, tmp_path)
     httpd, token = make_server(s, port=0)
@@ -245,7 +246,7 @@ async def test_news_story_snippets_are_not_kept_and_recitation_falls_back(tmp_pa
     monkeypatch.setattr(ar, "make_client", lambda settings: object())
     monkeypatch.setattr(ar, "call_json", recites)
     s = make_settings(tmp_path, research_recover_stale_sites=False, max_retries=0)
-    eid = entity(db, tmp_path)
+    entity(db, tmp_path)
     routes = {"site:dailyex.com (unpublish": [
         ("https://www.dailyex.com/2022/04/27/google-removal-demands", "Google now takes removal demands",
          "Apr 27, 2022 — Google will not remove information that appears as part of a news article.")]}
@@ -281,3 +282,18 @@ async def test_single_blocked_policy_page_is_read_from_archive(tmp_path, db):
                      "AND acquisition='archive'", (rid,)).fetchone()
     assert row is not None
     assert db.scalar("SELECT status FROM research_targets WHERE run_id=? AND url LIKE '%help.dailyopen.com%'", (rid,)) == "archive_fallback"
+
+
+def test_candidate_cap_keeps_highest_scores(tmp_path, db):
+    from nsmpa.research import EntityResearcher
+    from nsmpa.runs import create_or_resume_run
+    s = make_settings(tmp_path, research_max_targets_per_entity=2)
+    eid = entity(db, tmp_path)
+    create_or_resume_run(db, s, "full_research", "run-cap")
+    for i, score in enumerate([0.3, 0.9, 0.5, 0.7]):
+        db.execute("INSERT INTO research_targets(run_id,entity_id,purpose,topic,url,domain,score,status) "
+                   "VALUES('run-cap',?,?,?,?,?,?,'candidate')", (eid, "policy", "t", f"https://x.example/{i}", "x.example", score))
+    ent = db.execute("SELECT * FROM research_entities WHERE id=?", (eid,)).fetchone()
+    EntityResearcher.offline(db, s, "run-cap")._trim_candidates(ent)
+    kept = [r[0] for r in db.execute("SELECT score FROM research_targets WHERE status='candidate' ORDER BY score DESC")]
+    assert kept == [0.9, 0.7]

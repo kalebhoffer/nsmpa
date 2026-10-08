@@ -6,14 +6,14 @@ import json
 
 import httpx
 import pytest
-
 from conftest import make_settings, public_resolver
+from test_pipeline import PAGE, FakeSearch
+
 from nsmpa.evidence_index import import_evidence_index, index_report
 from nsmpa.fetch import HardenedFetcher
 from nsmpa.research import import_entities_csv
 from nsmpa.seeds import run_seeds
 from nsmpa.validate import cohort_metrics
-from test_pipeline import PAGE, FakeSearch
 
 COLS = ["index_id", "organization", "tier", "evidence_focus", "source_url", "kind", "homepage", "group", "country", "state",
         "source_kind"]
@@ -95,6 +95,7 @@ async def test_verify_index_reads_sources_and_secondary_reports_must_name_the_or
 def test_opening_the_database_never_waits_on_a_running_job(tmp_path):
     import sqlite3
     import threading
+
     from nsmpa.db import Database
     path = tmp_path / "busy.sqlite3"
     Database(path).close()                     # create + migrate + record the views fingerprint
@@ -142,14 +143,14 @@ def test_errors_only_permission_is_a_narrow_exception(sentence, stype):
 
 
 def test_news_story_about_others_is_not_the_newsrooms_policy(tmp_path, db):
+    from nsmpa.capture import _Page
     from nsmpa.research import EntityResearcher
-    from nsmpa.capture import _QuietDash, _Page
     s = make_settings(tmp_path)
     existing = tmp_path / "e.csv"
     existing.write_text("name,url\nAtlanta Paper,https://atl.example/\n")
     import_entities_csv(db, existing, "professional_newsroom", "directory")
     ent = db.execute("SELECT * FROM research_entities WHERE name='Atlanta Paper'").fetchone()
-    r = EntityResearcher(db, s, None, None, "run-x", _QuietDash(), None)
+    r = EntityResearcher.offline(db, s, "run-x")
     page = _Page("https://atl.example/education/emory-to-remove-honors", "Emory to remove honors",
                  "Emory University announced Thursday it will remove the names of two men from buildings and professorships. "
                  "Editor's note: This story has been updated to remove the name of a student after charges were dismissed.")

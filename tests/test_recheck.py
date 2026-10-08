@@ -3,11 +3,11 @@ from __future__ import annotations
 import plistlib
 
 import httpx
-
+import test_pipeline as tp
 from conftest import make_settings, public_resolver
+
 from nsmpa.fetch import HardenedFetcher
 from nsmpa.recheck import compare_texts, launchd_plist, run_recheck, write_plist
-import test_pipeline as tp
 
 
 async def test_recheck_detects_policy_change(tmp_path, db, monkeypatch):

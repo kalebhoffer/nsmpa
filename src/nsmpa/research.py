@@ -23,22 +23,36 @@ from urllib.parse import urlsplit
 
 from .config import Settings
 from .db import Database
-from .evidence import (STATEMENT_DIRECTION, STATEMENT_RELEVANCE, action_positions, extract_evidence, extract_voices,
-                       person_key)
+from .evidence import (
+    STATEMENT_DIRECTION,
+    STATEMENT_RELEVANCE,
+    action_positions,
+    extract_evidence,
+    extract_voices,
+    person_key,
+)
 from .extract import extract_main_text
 from .fetch import HardenedFetcher
+from .identity import check_identity
+from .practice import choose_samples, site_article_urls
 from .progress import RunDashboard
 from .review import enqueue_entity_review
-from .runs import (StopController, create_or_resume_run, done_keys, finish_run, mark_item, register_items)
+from .runs import StopController, create_or_resume_run, done_keys, finish_run, mark_item, register_items
 from .search import SearchAuthError, SearchBroker, SearchBudgetExceeded, get_search_provider
-from .practice import choose_samples, site_article_urls
-from .wayback import wayback_for_entity
-from .identity import check_identity
 from .similarity import score_case_match, score_similarity
 from .snapshots import store_raw, store_text
 from .stance import classify_entity, store_stance
-from .utils import (is_blocked_social_or_aggregator, normalize_for_hash, normalize_url, prepare_request_url,
-                    registrableish_domain, same_site, sha256_text)
+from .utils import (
+    is_blocked_social_or_aggregator,
+    json_meta,
+    normalize_for_hash,
+    normalize_url,
+    prepare_request_url,
+    registrableish_domain,
+    same_site,
+    sha256_text,
+)
+from .wayback import wayback_for_entity
 
 COHORTS = {"student_media", "professional_newsroom", "broadcast_newsroom", "support_org", "press_association",
            "journalism_school", "other"}
@@ -159,7 +173,7 @@ def entity_site(entity) -> str:
 def alt_domains(entity) -> list[str]:
     """Other domains the organization itself publishes on (metadata ``alt_domains``), e.g. ap.org for AP News."""
     try:
-        meta = json.loads(entity["metadata_json"] or "{}")
+        meta = json_meta(entity)
     except (KeyError, IndexError, TypeError, ValueError):
         return []
     return [d.lower().removeprefix("www.") for d in meta.get("alt_domains") or [] if d]
@@ -309,7 +323,7 @@ def import_entities_csv(db: Database, path: str | Path, cohort: str, source: str
     if cohort not in COHORTS:
         raise ValueError(f"Unknown cohort {cohort!r}; choose from {sorted(COHORTS)}")
     inserted = merged = updated = skipped = 0
-    with open(path, "r", encoding="utf-8-sig", newline="") as f:
+    with open(path, encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
             row = {(k or "").strip(): (v or "").strip() for k, v in row.items()}
@@ -455,7 +469,19 @@ RECOVERY_SKIP = re.compile(r"(?:wikipedia\.org|//(?:news|library|libraries|conte
                            r"onlinebooks\.|niche\.com|podbean\.com|archive\.org|/digital/collection/)", re.I)
 
 
+class _SilentDashboard:
+    """Stands in for RunDashboard when nothing is displayed: every call is a no-op."""
+
+    def __getattr__(self, name):
+        return lambda *a, **k: None
+
+
 class EntityResearcher:
+    @classmethod
+    def offline(cls, db: Database, settings: Settings, run_id: str) -> EntityResearcher:
+        """A researcher that only classifies and stores text it is given (no search, no fetch, no dashboard)."""
+        return cls(db, settings, None, None, run_id, _SilentDashboard(), None)
+
     def __init__(self, db: Database, settings: Settings, broker: SearchBroker, fetcher: HardenedFetcher, run_id: str,
                  dash: RunDashboard, stop: StopController):
         self.db, self.settings, self.broker, self.fetcher = db, settings, broker, fetcher
@@ -496,15 +522,24 @@ class EntityResearcher:
             purpose = f"research:t{spec.tier}:{spec.purpose}:{spec.topic}"
             self.dash.update(phase=f"search t{spec.tier} {spec.purpose}/{spec.topic}")
             self.dash.log(f"  query [{purpose}] {query}")
-            results, qid, cached = await self.broker.search(query, purpose=purpose, entity_id=int(entity["id"]))
+            results, qid, _cached = await self.broker.search(query, purpose=purpose, entity_id=int(entity["id"]))
             used += 1
             self._sync_search_counters()
             for r in results:
-                if self._store_target(entity, r.url, r.title, r.snippet, r.rank, spec, qid or None, spec.purpose, spec.topic):
-                    if is_first_party(entity, r.url) and SIGNAL_RE.search(f"{r.title} {r.snippet} {r.url}"):
-                        signal = True
+                stored = self._store_target(entity, r.url, r.title, r.snippet, r.rank, spec, qid or None, spec.purpose, spec.topic)
+                if stored and is_first_party(entity, r.url) and SIGNAL_RE.search(f"{r.title} {r.snippet} {r.url}"):
+                    signal = True
+            self._trim_candidates(entity)
             self.db.conn.commit()
         return used, signal
+
+    def _trim_candidates(self, entity) -> None:
+        """Keep at most ``research_max_targets_per_entity`` unfetched candidates, highest scores first."""
+        self.db.execute(
+            """UPDATE research_targets SET status='not_fetched_cap' WHERE id IN (
+                 SELECT id FROM research_targets WHERE run_id=? AND entity_id=? AND status='candidate'
+                 ORDER BY score DESC, id LIMIT -1 OFFSET ?)""",
+            (self.run_id, entity["id"], self.settings.research_max_targets_per_entity))
 
     def _sync_search_counters(self) -> None:
         b = self.broker
@@ -536,9 +571,11 @@ class EntityResearcher:
                 continue
             if LEGAL_BOILERPLATE_RE.search(f"{text} {urlsplit(href).path}"):
                 continue
-            if POLICY_PAGE_RE.search(f"{text} {urlsplit(href).path}") or ABOUT_PAGE_RE.search(urlsplit(href).path):
-                if self._store_target_direct(entity, href, "first_party_link", 0.85 if POLICY_PAGE_RE.search(text + href) else 0.6):
-                    picked += 1
+            path = urlsplit(href).path
+            wanted = POLICY_PAGE_RE.search(f"{text} {path}") or ABOUT_PAGE_RE.search(path)
+            if wanted and self._store_target_direct(entity, href, "first_party_link",
+                                                    0.85 if POLICY_PAGE_RE.search(text + href) else 0.6):
+                picked += 1
         return r, page
 
     def _store_target_direct(self, entity, url: str, topic: str, score: float) -> bool:
@@ -556,8 +593,8 @@ class EntityResearcher:
         rows = self.db.execute(
             "SELECT * FROM research_targets WHERE run_id=? AND entity_id=? AND status='candidate' ORDER BY score DESC, id",
             (self.run_id, entity["id"])).fetchall()
-        seen: set[str] = set(r["requested_url"] for r in self.db.execute(
-            "SELECT requested_url FROM research_pages WHERE run_id=? AND entity_id=?", (self.run_id, entity["id"])))
+        seen: set[str] = {r["requested_url"] for r in self.db.execute(
+            "SELECT requested_url FROM research_pages WHERE run_id=? AND entity_id=?", (self.run_id, entity["id"]))}
         fp_budget = self.settings.research_fetch_top_targets
         tp_budget = self.settings.research_third_party_fetch_limit
         for t in rows:
@@ -567,7 +604,7 @@ class EntityResearcher:
             if t["url"] in seen:
                 self.db.execute("UPDATE research_targets SET status='duplicate' WHERE id=?", (t["id"],))
                 continue
-            if first and fp_budget <= 0 or (not first and tp_budget <= 0):
+            if (first and fp_budget <= 0) or (not first and tp_budget <= 0):
                 self.db.execute("UPDATE research_targets SET status='not_fetched_budget' WHERE id=?", (t["id"],))
                 continue
             host = (urlsplit(t["url"]).hostname or "").lower()
@@ -751,7 +788,7 @@ class EntityResearcher:
             used += u
             await self._fetch_targets(entity)
         home = prepare_request_url(entity["homepage_url"] or "")
-        if not home or self.stop.force or entity_site(entity) != registrableish_domain(home) and "/" in entity_site(entity):
+        if not home or self.stop.force or (entity_site(entity) != registrableish_domain(home) and "/" in entity_site(entity)):
             return used  # path-scoped hubs on a university site are not newsroom archives
         if self.settings.research_crime_article_sample <= 0:
             return used
@@ -766,7 +803,7 @@ class EntityResearcher:
                 return used
             self.dash.update(phase="archive: baseline articles")
             r = await self.fetcher.fetch_safe(u)
-            status, page, _ = await self._record_page(entity, r, target_id=None, query_id=None, topic="baseline_article",
+            _status, page, _ = await self._record_page(entity, r, target_id=None, query_id=None, topic="baseline_article",
                                                       forced_kind="baseline_article", substantive_only=True)
             if page:
                 baseline_ok += 1
@@ -777,7 +814,7 @@ class EntityResearcher:
                 return used
             self.dash.update(phase="archive: crime/arrest articles")
             r = await self.fetcher.fetch_safe(u)
-            status, page, page_id = await self._record_page(entity, r, target_id=None, query_id=None, topic="crime_article",
+            _status, page, page_id = await self._record_page(entity, r, target_id=None, query_id=None, topic="crime_article",
                                                             forced_kind="crime_article", substantive_only=True)
             if page and page.noindex:
                 directive = "; ".join(x for x in (page.meta_robots and f"meta robots={page.meta_robots}",
@@ -804,7 +841,7 @@ class EntityResearcher:
         return used
 
     def _note_identity(self, entity, ident) -> None:
-        meta = json.loads(entity["metadata_json"] or "{}")
+        meta = json_meta(entity)
         meta["website_identity"] = {"status": ident.status, "reason": ident.reason, "signals": ident.signals}
         self.db.execute("UPDATE research_entities SET metadata_json=? WHERE id=?", (json.dumps(meta), entity["id"]))
 
@@ -834,7 +871,7 @@ class EntityResearcher:
         carries the publication's own name beats an umbrella page (e.g. a university's student-media hub).
         """
         from .identity import institution_base_name
-        meta = json.loads(entity["metadata_json"] or "{}")
+        meta = json_meta(entity)
         old_dom = entity["domain"] or registrableish_domain(entity["homepage_url"] or "")
         pub = re.sub(r"\(\d+ titles\)$", "", entity["name"] or "").strip()
         if entity["cohort"] == "student_media" and entity["parent_name"]:
@@ -941,7 +978,7 @@ class EntityResearcher:
         self.dash.update(step_done=0, step_total=8)
         # 1. Free homepage fetch + identity check BEFORE any search credits are spent.
         r_home, home_page = await self._homepage_links(entity)
-        meta = json.loads(entity["metadata_json"] or "{}")
+        meta = json_meta(entity)
         ident = check_identity(entity, meta, r_home.access_class if r_home else "invalid_url", home_page)
         self._note_identity(entity, ident)
         step()

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import httpx
-
 from conftest import make_settings, public_resolver
+from test_pipeline import PAGE, FakeSearch
+
 from nsmpa.fetch import HardenedFetcher
 from nsmpa.seeds import run_seeds, set_precedent_status
-from test_pipeline import PAGE, FakeSearch
 
 WEB = {
     "https://www.spj.org/ethicscode.asp": PAGE.format(title="SPJ Code of Ethics", body=(

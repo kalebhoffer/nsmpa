@@ -7,10 +7,10 @@ from pathlib import Path
 
 import httpx
 import pytest
-
 from conftest import make_settings, public_resolver
+
 from nsmpa.db import Database
-from nsmpa.discovery import discover_all, promote_candidates, clean_publication_name
+from nsmpa.discovery import clean_publication_name, discover_all, promote_candidates
 from nsmpa.export import export_research
 from nsmpa.fetch import HardenedFetcher
 from nsmpa.models import SearchResult
@@ -401,7 +401,7 @@ def test_parse_serper_response_is_defensive():
 
 
 async def test_serper_provider_with_mock_transport_never_leaks_key(monkeypatch):
-    from nsmpa.search import SerperSearchProvider, SearchRetryable
+    from nsmpa.search import SearchRetryable, SerperSearchProvider
     secret = "sk-test-SECRET-123456"
     monkeypatch.setenv("SERPER_API_KEY", secret)
 
@@ -438,7 +438,7 @@ async def test_broker_retries_retryable_errors_and_ledgers_failures(tmp_path, db
 
     rid, _ = create_or_resume_run(db, settings, "full_research")
     b = SearchBroker(db, settings, rid, Flaky())
-    res, qid, cached = await b.search("x", purpose="t")
+    res, qid, _cached = await b.search("x", purpose="t")
     assert len(res) == 1 and Flaky.n == 3 and b.credits_used == 1
     row = db.execute("SELECT * FROM search_queries WHERE id=?", (qid,)).fetchone()
     assert row["status"] == "completed" and row["latency_ms"] is not None
@@ -446,6 +446,7 @@ async def test_broker_retries_retryable_errors_and_ledgers_failures(tmp_path, db
 
 async def test_concurrent_identical_queries_spend_once(tmp_path, db):
     import asyncio
+
     from nsmpa.runs import create_or_resume_run
     settings = make_settings(tmp_path)
 

@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 import httpx
-
 from conftest import make_settings, public_resolver
+from test_pipeline import PAGE, FakeSearch
+
 from nsmpa.evidence import classify_statement
 from nsmpa.fetch import HardenedFetcher
 from nsmpa.research import import_entities_csv, page_kind, research_all, score_target, start_research
-from test_pipeline import PAGE, FakeSearch
 
 TRAVEL = PAGE.format(title="The Easterner Online", body=(
     "<p>Seattle travel and tourism guide. What to wear to underground parties in Munich. Reasons Hotel Andra stands out. "
@@ -75,7 +75,7 @@ async def test_recovery_finds_current_site_and_researches_it(tmp_path, db):
         ("https://easterneronline.com/", "The Easterner Online", "travel guide"),
         ("https://theeasterner.example/", "The Easterner | Eastern Washington University's student newspaper",
          "Independent student newspaper of Eastern Washington University")]}
-    rid, stats, provider = await run(db, s, routes)
+    rid, _stats, _provider = await run(db, s, routes)
     ent = db.execute("SELECT * FROM research_entities WHERE name='The Easterner Online'").fetchone()
     assert ent["homepage_url"] == "https://theeasterner.example/"
     st = db.execute("SELECT * FROM entity_stances WHERE run_id=?", (rid,)).fetchone()
@@ -86,7 +86,7 @@ async def test_recovery_finds_current_site_and_researches_it(tmp_path, db):
 async def test_dead_homepage_spends_no_search_credits(tmp_path, db):
     s = make_settings(tmp_path, research_recover_stale_sites=False, max_retries=0)
     student_entity(db, tmp_path, "https://deadpaper.example/")
-    rid, stats, provider = await run(db, s, {})
+    rid, _stats, provider = await run(db, s, {})
     assert provider.calls == []
     assert "homepage could not be fetched" in db.scalar("SELECT rationale FROM entity_stances WHERE run_id=?", (rid,))
 

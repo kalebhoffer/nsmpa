@@ -42,7 +42,7 @@ def guess_role(local: str) -> tuple[str, int]:
 
 
 def emails_in(html: str) -> set[str]:
-    found = set(m.lower() for m in re.findall(r"mailto:([^\"'?>\s]+)", html, re.I))
+    found = {m.lower() for m in re.findall(r"mailto:([^\"'?>\s]+)", html, re.I)}
     found |= {m.lower() for m in EMAIL_RE.findall(html)}
     return {e.strip(".;,") for e in found if "@" in e and not e.endswith((".png", ".jpg", ".gif", ".svg", ".webp"))}
 

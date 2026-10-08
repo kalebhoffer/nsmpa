@@ -5,11 +5,15 @@ from pathlib import Path
 
 from nsmpa.classify import classify_publication
 from nsmpa.config import Settings
+from nsmpa.crawl import crawl_publication
 from nsmpa.db import Database
 from nsmpa.discovery import score_candidate
 from nsmpa.extract import analyze_page
 from nsmpa.ingest import import_ipeds
-from nsmpa.models import SearchResult
+from nsmpa.models import FetchResult, SearchResult
+from nsmpa.research import create_research_run, import_entities_csv, similarity_score, sync_student_entities
+from nsmpa.search import SearchBroker, SearchProvider
+from nsmpa.support_orgs import seed_support_orgs
 from nsmpa.utils import host_is_public, normalize_url
 
 
@@ -160,8 +164,6 @@ def test_url_security_helpers():
     assert host_is_public("example.com") is True
     assert normalize_url("HTTPS://Example.COM/a/?utm_source=x&b=2#frag") == "https://example.com/a?b=2"
 
-from nsmpa.crawl import crawl_publication
-from nsmpa.models import FetchResult
 
 
 class FakeFetcher:
@@ -250,9 +252,6 @@ def test_candidate_scoring_accepts_independent_student_paper():
     assert score >= 0.50
     assert "explicit_student_journalism_signal" in reasons
 
-from nsmpa.research import import_entities_csv, similarity_score, sync_student_entities, create_research_run
-from nsmpa.search import SearchBroker, SearchProvider
-from nsmpa.support_orgs import seed_support_orgs
 
 
 class FakeSearchProvider(SearchProvider):
@@ -270,8 +269,8 @@ async def test_search_broker_caches_and_ledgers(tmp_path: Path):
     rid = create_research_run(db, settings, "test", "research1")
     provider = FakeSearchProvider()
     broker = SearchBroker(db, settings, rid, provider)
-    r1, q1, cached1 = await broker.search('site:paper.example unpublish', purpose="policy")
-    r2, q2, cached2 = await broker.search('site:paper.example unpublish', purpose="policy")
+    r1, _q1, cached1 = await broker.search('site:paper.example unpublish', purpose="policy")
+    r2, _q2, cached2 = await broker.search('site:paper.example unpublish', purpose="policy")
     assert len(r1) == 1 and len(r2) == 1
     assert cached1 is False and cached2 is True
     assert provider.calls == 1
@@ -318,3 +317,34 @@ def test_case_similarity_ranks_close_fact_pattern(tmp_path: Path):
     generic = similarity_score(settings, "We maintain a permanent archive of published stories.", "professional_newsroom")
     assert close > 50
     assert close > generic
+
+
+async def test_sitemap_candidates_follow_index_and_skip_failures(tmp_path: Path):
+    import httpx
+    from conftest import make_settings, public_resolver
+
+    from nsmpa.crawl import _sitemap_candidates
+    from nsmpa.fetch import HardenedFetcher
+    index = (b'<?xml version="1.0"?><sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+             b'<sitemap><loc>https://news.example.edu/posts.xml</loc></sitemap>'
+             b'<sitemap><loc>https://news.example.edu/broken.xml</loc></sitemap></sitemapindex>')
+    posts = (b'<?xml version="1.0"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+             b'<url><loc>https://news.example.edu/editorial-policy</loc></url></urlset>')
+
+    def handler(req):
+        if req.url.path == "/robots.txt":
+            return httpx.Response(404)
+        if req.url.path == "/sitemap.xml":
+            return httpx.Response(200, headers={"content-type": "application/xml"}, content=index)
+        if req.url.path == "/posts.xml":
+            return httpx.Response(200, headers={"content-type": "application/xml"}, content=posts)
+        if req.url.path == "/broken.xml":
+            raise httpx.ConnectError("boom", request=req)
+        return httpx.Response(404)
+    s = make_settings(tmp_path, max_retries=0)
+    f = HardenedFetcher(s, transport=httpx.MockTransport(handler), resolver=public_resolver)
+    try:
+        urls = await _sitemap_candidates(f, "https://news.example.edu/", s)
+    finally:
+        await f.close()
+    assert "https://news.example.edu/editorial-policy" in urls     # nested sitemap followed; broken one skipped

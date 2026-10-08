@@ -10,8 +10,16 @@ from __future__ import annotations
 from .config import Settings
 from .db import Database
 from .discovery import DISCOVERY_LADDER
-from .research import (GUIDANCE_COHORTS, PRACTICE_SPECS, TIER1, TIER3, entity_site, plan_queries, render_query,
-                       select_entities)
+from .research import (
+    GUIDANCE_COHORTS,
+    PRACTICE_SPECS,
+    TIER1,
+    TIER3,
+    entity_site,
+    plan_queries,
+    render_query,
+    select_entities,
+)
 from .search import cache_key
 from .utils import registrableish_domain
 

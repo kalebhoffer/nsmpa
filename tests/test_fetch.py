@@ -1,18 +1,27 @@
 from __future__ import annotations
 
+import ipaddress
 import time
 
 import httpx
 import pytest
-
 from conftest import make_settings, public_resolver
+
 from nsmpa.fetch import (
-    HardenedFetcher, HostCircuitOpen, InvalidURL, RedirectError, TooLarge, UnsafeDestination,
+    HardenedFetcher,
+    HostCircuitOpen,
+    InvalidURL,
+    RedirectError,
+    TooLarge,
+    UnsafeDestination,
 )
 from nsmpa.utils import (
-    host_is_public, ip_is_public, near_duplicate_key, normalize_url, prepare_request_url,
+    host_is_public,
+    ip_is_public,
+    near_duplicate_key,
+    normalize_url,
+    prepare_request_url,
 )
-import ipaddress
 
 
 def fetcher_for(tmp_path, handler, **overrides) -> HardenedFetcher:

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import contextlib
 import csv
 import json
-
 from pathlib import Path
 
 from .db import Database
@@ -13,24 +13,18 @@ def _write_query_csv(db: Database, path: Path, sql: str, params: tuple = (), *, 
     cur = db.execute(sql, params)
     headers = [d[0] for d in cur.description or []]
     n = 0
-    jf = open(json_path, "w", encoding="utf-8") if json_path else None
-    try:
-        with open(path, "w", encoding="utf-8", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(headers)
-            while True:
-                batch = cur.fetchmany(2000)
-                if not batch:
-                    break
-                for row in batch:
-                    vals = [row[h] for h in headers]
-                    writer.writerow(vals)
-                    if jf:
-                        jf.write(json.dumps(dict(zip(headers, vals)), ensure_ascii=False, default=str) + "\n")
-                    n += 1
-    finally:
-        if jf:
-            jf.close()
+    with contextlib.ExitStack() as stack:
+        f = stack.enter_context(open(path, "w", encoding="utf-8", newline=""))
+        jf = stack.enter_context(open(json_path, "w", encoding="utf-8")) if json_path else None
+        writer = csv.writer(f)
+        writer.writerow(headers)
+        while batch := cur.fetchmany(2000):
+            for row in batch:
+                vals = [row[h] for h in headers]
+                writer.writerow(vals)
+                if jf:
+                    jf.write(json.dumps(dict(zip(headers, vals, strict=True)), ensure_ascii=False, default=str) + "\n")
+                n += 1
     return n
 
 

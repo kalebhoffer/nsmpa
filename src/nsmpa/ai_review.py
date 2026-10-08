@@ -28,8 +28,8 @@ from typing import Any
 from .config import Settings
 from .db import Database
 from .progress import RunDashboard
-from .search import _redact
 from .runs import StopController, create_or_resume_run, done_keys, finish_run, mark_item, register_items
+from .search import _redact
 from .utils import normalize_for_hash, sha256_text
 
 PROMPT_VERSION = "ai-review-v1"
@@ -202,20 +202,37 @@ def call_model(client, settings: Settings, page_text: str, entity_name: str) -> 
     return call_json(client, settings, _user_text(page_text, entity_name), SYSTEM, SCHEMA)
 
 
+def ai_cache_key(settings: Settings, prompt_version: str, payload_key: str) -> str:
+    return sha256_text(f"{settings.ai_provider}|{settings.ai_model}|{prompt_version}|{payload_key}")
+
+
+def ai_cache_get(db: Database, key: str) -> dict | None:
+    row = db.execute("SELECT response_json FROM ai_cache WHERE cache_key=?", (key,)).fetchone()
+    return json.loads(row["response_json"]) if row else None
+
+
+def ai_cache_put(db: Database, key: str, prompt_version: str, data: dict, meta: dict) -> None:
+    db.execute("INSERT OR REPLACE INTO ai_cache(cache_key,model,prompt_version,response_json,input_tokens,output_tokens,stop_reason) "
+               "VALUES(?,?,?,?,?,?,?)", (key, meta.get("model"), prompt_version, json.dumps(data), meta.get("input_tokens"),
+                                         meta.get("output_tokens"), meta.get("stop_reason")))
+    db.conn.commit()
+
+
+def with_grounding(data: dict, meta: dict) -> dict:
+    """Keep a grounded answer's search sources and queries alongside it (for the audit trail)."""
+    return {**data, "_sources": meta.get("sources", []), "_search_queries": meta.get("search_queries", [])}
+
+
 def cached_call(db: Database, client, settings: Settings, prompt_version: str, payload_key: str, user_text: str,
                 system: str, schema: dict, *, grounded: bool = False) -> tuple[dict, bool]:
     """call_json with the shared ai_cache (keyed by provider, model, prompt version and payload)."""
-    key = sha256_text(f"{settings.ai_provider}|{settings.ai_model}|{prompt_version}|{payload_key}")
-    row = db.execute("SELECT response_json FROM ai_cache WHERE cache_key=?", (key,)).fetchone()
-    if row:
-        return json.loads(row["response_json"]), True
+    key = ai_cache_key(settings, prompt_version, payload_key)
+    if (hit := ai_cache_get(db, key)) is not None:
+        return hit, True
     data, meta = call_json(client, settings, user_text, system, schema, grounded=grounded)
     if grounded:
-        data = {**data, "_sources": meta.get("sources", []), "_search_queries": meta.get("search_queries", [])}
-    db.execute("INSERT OR REPLACE INTO ai_cache(cache_key,model,prompt_version,response_json,input_tokens,output_tokens,stop_reason) "
-               "VALUES(?,?,?,?,?,?,?)", (key, meta["model"], prompt_version, json.dumps(data), meta["input_tokens"],
-                                         meta["output_tokens"], meta["stop_reason"]))
-    db.conn.commit()
+        data = with_grounding(data, meta)
+    ai_cache_put(db, key, prompt_version, data, meta)
     return data, False
 
 
@@ -255,7 +272,7 @@ def candidate_pages(db: Database, run_id: str | None, cohort: str | None, limit:
     and archived crime articles (where practice notes hide)."""
     sql = """SELECT p.*, re.name AS entity_name, re.cohort FROM research_pages p JOIN research_entities re ON re.id=p.entity_id
              WHERE p.access_class='ok' AND p.text_sha256 IS NOT NULL
-               AND p.run_id NOT IN (SELECT id FROM research_runs WHERE status='excluded')
+               AND p.run_id NOT IN (SELECT id FROM v_excluded_runs)
                AND (p.page_kind IN ('policy','about','crime_article')
                     OR EXISTS (SELECT 1 FROM evidence_items e WHERE e.page_id=p.id AND e.statement_type NOT IN ('mention')))"""
     params: list = []

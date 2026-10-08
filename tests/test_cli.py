@@ -59,8 +59,9 @@ def test_reports_and_exports(cfg, tmp_path):
 
 def test_offline_research_command(cfg, monkeypatch):
     import httpx
-    import nsmpa.research as research_mod
     from conftest import public_resolver
+
+    import nsmpa.research as research_mod
     real = research_mod.HardenedFetcher
     calls = []
 

@@ -9,15 +9,17 @@ Design rules:
 """
 from __future__ import annotations
 
+import functools
 import json
-from datetime import datetime, timezone
+import re
+from datetime import UTC, datetime
 from pathlib import Path
 
 from . import __version__
 from .config import Settings
 from .db import Database
 from .utils import sha256_text
-from .validate import all_cohorts, cohort_metrics, latest_stances_sql
+from .validate import all_cohorts, cohort_metrics, counted_in_rates, latest_stances_sql
 
 # Validated categorical slots (dataviz reference palette, light mode; first three validate all-pairs).
 SERIES = ["2A78D6", "EB6834", "1BAF7A"]
@@ -35,13 +37,26 @@ COHORT_SHORT = {"student_media": "Student media", "professional_newsroom": "Prof
 SEED_COHORTS = ("expert", "precedent_case")
 
 
+# Control characters (e.g. U+001E in a scraped "FIX logo ^Cor bug") are illegal in .xlsx cells.
+_XLSX_ILLEGAL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _xlsx_safe(text: str) -> str:
+    return _XLSX_ILLEGAL.sub(" ", text)
+
+
+def _pct(x: int, *, n: int, valid: bool) -> str:
+    """Cohort percentage, or 'withheld' until the cohort passes validation."""
+    return f"{100 * x / n:.1f}%" if valid and n else "withheld"
+
+
 # =========================================================================== data
 
 def _evidence_scope(alias: str = "e") -> str:
     """Evidence from non-excluded runs; for population cohorts only the run that produced the entity's current stance."""
-    return (f"{alias}.run_id NOT IN (SELECT id FROM research_runs WHERE status='excluded') AND ({alias}.cohort IN ('expert','precedent_case') "
+    return (f"{alias}.run_id NOT IN (SELECT id FROM v_excluded_runs) AND ({alias}.cohort IN ('expert','precedent_case') "
             f"OR {alias}.run_id=(SELECT s2.run_id FROM entity_stances s2 WHERE s2.entity_id={alias}.entity_id AND s2.stance_version='0.3' "
-            f"AND s2.run_id NOT IN (SELECT id FROM research_runs WHERE status='excluded') ORDER BY s2.id DESC LIMIT 1))")
+            f"AND s2.run_id NOT IN (SELECT id FROM v_excluded_runs) ORDER BY s2.id DESC LIMIT 1))")
 
 
 EVIDENCE_COLS = """e.id AS evidence_id, e.cohort, re.name AS entity, re.parent_name AS parent_or_institution, e.evidence_class,
@@ -67,13 +82,13 @@ def gather(db: Database, settings: Settings, run_id: str | None = None) -> dict:
                f"ORDER BY {order} LIMIT ?")
         return [dict(r) for r in db.execute(sql, sparams + (extra or []) + [limit])]
 
-    cohorts = [c for c in all_cohorts(db)]
+    cohorts = list(all_cohorts(db))
     metrics = {c: cohort_metrics(db, settings, c, run_id) for c in cohorts}
     entities = [dict(r) for r in db.execute(
         f"""SELECT re.id AS entity_id, re.cohort, re.name, re.parent_name, re.state, re.homepage_url, s.stance, s.confidence,
                    s.relief_mode, s.preserves_archive_relief, s.action_positions_json, s.rationale, s.practice_summary,
                    s.technical_summary, s.review_status, s.review_reasons_json, s.run_id,
-                   CASE WHEN COALESCE(json_extract(re.metadata_json,'$.excluded_from_rates'), 0) IN (0, 'false')
+                   CASE WHEN {counted_in_rates('re')}
                         THEN 'yes' ELSE 'no (selected from evidence index)' END AS counted_in_rates,
                    sup.excerpt AS strongest_supportive, sup.source_url AS strongest_supportive_url,
                    adv.excerpt AS strongest_adverse, adv.source_url AS strongest_adverse_url
@@ -110,7 +125,7 @@ def gather(db: Database, settings: Settings, run_id: str | None = None) -> dict:
 
     substantive = "e.statement_type NOT IN ('mention','technical_sitewide_noindex')"
     data = {
-        "generated": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        "generated": datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
         "version": __version__, "scope": run_id or "latest stance per entity (excluded runs omitted)",
         "my_case": settings.my_case, "cohorts": cohorts, "metrics": metrics, "entities": entities,
         "modes": modes, "actions": actions,
@@ -138,7 +153,7 @@ def gather(db: Database, settings: Settings, run_id: str | None = None) -> dict:
                       v.direction, v.statement_type, v.actions_json AS action_positions, v.case_match_score, v.verification_status,
                       v.quote, v.source_url, v.source_title, v.attribution_method, v.attribution_confidence, v.run_id
                FROM voices v LEFT JOIN experts x ON x.id=v.expert_id
-               WHERE v.run_id IS NULL OR v.run_id NOT IN (SELECT id FROM research_runs WHERE status='excluded')
+               WHERE v.run_id IS NULL OR v.run_id NOT IN (SELECT id FROM v_excluded_runs)
                ORDER BY CASE WHEN x.id IS NULL THEN 1 ELSE 0 END, CASE v.verification_status WHEN 'verified' THEN 0 ELSE 1 END,
                         CASE v.direction WHEN 'supportive' THEN 0 WHEN 'adverse' THEN 1 ELSE 2 END, v.case_match_score DESC""")],
         "sources": [dict(r) for r in db.execute(
@@ -147,7 +162,7 @@ def gather(db: Database, settings: Settings, run_id: str | None = None) -> dict:
                       p.snapshot_path, p.meta_robots, p.x_robots_tag, p.noindex, p.run_id,
                       COALESCE(p.acquisition, 'live') AS acquisition, p.archive_url
                FROM research_pages p JOIN research_entities re ON re.id=p.entity_id
-               WHERE p.run_id NOT IN (SELECT id FROM research_runs WHERE status='excluded') ORDER BY re.cohort, re.name, p.id LIMIT ?""", (lim,))],
+               WHERE p.run_id NOT IN (SELECT id FROM v_excluded_runs) ORDER BY re.cohort, re.name, p.id LIMIT ?""", (lim,))],
         "legal": [dict(r) for r in db.execute(
             """SELECT jurisdiction, topic, title, citation, status, prior_confidence, claim, best_excerpt, best_source, primary_url,
                       status_note, last_checked_at FROM legal_context
@@ -157,7 +172,7 @@ def gather(db: Database, settings: Settings, run_id: str | None = None) -> dict:
             """SELECT re.cohort, re.name AS entity, w.url, w.status, w.snapshots, w.earliest_ts, w.compared_ts, w.archive_url,
                       w.observations_json, w.run_id
                FROM wayback_checks w JOIN research_entities re ON re.id=w.entity_id
-               WHERE w.run_id NOT IN (SELECT id FROM research_runs WHERE status='excluded')
+               WHERE w.run_id NOT IN (SELECT id FROM v_excluded_runs)
                ORDER BY CASE w.status WHEN 'changed' THEN 0 ELSE 1 END, re.name LIMIT ?""", (lim,))],
         "ai": [dict(r) for r in db.execute(
             """SELECT re.cohort, re.name AS entity, f.agreement, f.kind, f.action, f.position, f.direction, f.conditions,
@@ -175,13 +190,13 @@ def gather(db: Database, settings: Settings, run_id: str | None = None) -> dict:
             """SELECT l.id AS lead_id, re.cohort, re.name AS entity, l.status, l.confirmed_via, l.confirmed_url, l.claimed_url,
                       l.quote, l.summary, l.evidence_id, l.model, l.created_at
                FROM ai_leads l JOIN research_entities re ON re.id=l.entity_id
-               WHERE l.run_id IS NULL OR l.run_id NOT IN (SELECT id FROM research_runs WHERE status='excluded')
+               WHERE l.run_id IS NULL OR l.run_id NOT IN (SELECT id FROM v_excluded_runs)
                ORDER BY CASE l.status WHEN 'confirmed' THEN 0 WHEN 'unconfirmed' THEN 1 ELSE 2 END, re.name LIMIT ?""", (lim,))],
         "ledger": [dict(r) for r in db.execute(
             """SELECT q.id AS query_id, q.created_at, q.run_id, re.name AS entity, q.purpose, q.query, q.status, q.was_cached,
                       q.credits_estimated, q.result_count, q.produced_evidence
                FROM search_queries q LEFT JOIN research_entities re ON re.id=q.entity_id
-               WHERE q.run_id NOT IN (SELECT id FROM research_runs WHERE status='excluded') ORDER BY q.id LIMIT ?""", (lim,))],
+               WHERE q.run_id NOT IN (SELECT id FROM v_excluded_runs) ORDER BY q.id LIMIT ?""", (lim,))],
     }
     from .audit import summary_for_packet
     data["audit"] = summary_for_packet(db)
@@ -249,6 +264,8 @@ def build_workbook(data: dict, path: Path) -> None:
                     v = _fmt_actions(v)
                 if isinstance(v, float):
                     v = round(v, 2)
+                elif isinstance(v, str):
+                    v = _xlsx_safe(v)
                 c = ws.cell(row=i, column=j, value=v)
                 if width >= 40:
                     c.alignment = wrap
@@ -316,9 +333,7 @@ def build_workbook(data: dict, path: Path) -> None:
         a = data["actions"].get(c, {})
         valid = m.valid_for_percentages
         n = a.get("researched", 0)
-
-        def pct(x: int) -> str:
-            return f"{100 * x / n:.1f}%" if valid and n else "withheld"
+        pct = functools.partial(_pct, n=n, valid=valid)
         summary.append({
             "cohort": COHORT_SHORT.get(c, c), "status": "VALIDATED" if valid else "PRELIMINARY (counts only)",
             "denominator": m.denominator, "researched": n,
@@ -479,7 +494,7 @@ def build_deck(data: dict, path: Path, *, title: str, max_precedent_slides: int)
     from pptx import Presentation
     from pptx.chart.data import CategoryChartData
     from pptx.dml.color import RGBColor
-    from pptx.enum.chart import XL_CHART_TYPE, XL_LEGEND_POSITION, XL_LABEL_POSITION
+    from pptx.enum.chart import XL_CHART_TYPE, XL_LABEL_POSITION, XL_LEGEND_POSITION
     from pptx.util import Inches, Pt
 
     prs = Presentation()
@@ -494,7 +509,7 @@ def build_deck(data: dict, path: Path, *, title: str, max_precedent_slides: int)
         for i, line in enumerate(lines if isinstance(lines, list) else [lines]):
             p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
             run = p.add_run()
-            run.text = line
+            run.text = _xlsx_safe(line)  # XML forbids control characters in slides too
             run.font.size = Pt(size)
             run.font.name = FONT
             run.font.color.rgb = rgb(color)
@@ -658,7 +673,7 @@ def build_deck(data: dict, path: Path, *, title: str, max_precedent_slides: int)
             vals = (p["organization"], p["title"], p["approx_year"] or "", verified_tag(p["status"]))
             for j, v in enumerate(vals):
                 cell = tbl.cell(i, j)
-                cell.text = v
+                cell.text = _xlsx_safe(v)
                 for para in cell.text_frame.paragraphs:
                     for r in para.runs:
                         r.font.size = Pt(13)
@@ -686,7 +701,7 @@ def build_deck(data: dict, path: Path, *, title: str, max_precedent_slides: int)
                                        f"Matches: {factors or '—'}", verified_tag(r["verification_status"])], size=12, color=INK_2)
 
     # AI-drafted section summaries (optional)
-    for key, summ in (data.get("ai_summaries") or {}).items():
+    for summ in (data.get("ai_summaries") or {}).values():
         if not summ.get("sentences"):
             continue
         s = new(summ["title"], "AI-drafted summary — edit before presenting")
@@ -729,7 +744,7 @@ def build_deck(data: dict, path: Path, *, title: str, max_precedent_slides: int)
     footer(s, f"All {len(data['opposing'])} opposing excerpts: workbook sheet 'Opposing Evidence'.")
 
     # Legal context
-    legal = [r for r in data.get("legal", []) if r["status"] in {"human_verified", "sources_found"} and not r["topic"] == "record_clearing"]
+    legal = [r for r in data.get("legal", []) if r["status"] in {"human_verified", "sources_found"} and r["topic"] != "record_clearing"]
     if legal:
         s = new("Legal context", "Not legal advice — the law sets the floor; relief is editorial discretion")
         text(s, 0.6, 1.8, 12.1, 4.8, [f"• {r['title']}{' — ' + r['citation'] if r['citation'] else ''}: {r['claim'][:220]}"
@@ -840,7 +855,7 @@ def ai_summaries(db: Database, settings: Settings, data: dict, client=None) -> d
 def build_packet(db: Database, settings: Settings, out_dir: Path, *, run_id: str | None = None,
                  title: str = "Post-publication relief in U.S. journalism: the evidence", ai_summaries_on: bool = False,
                  ai_client=None, redact: bool = False) -> dict:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     out = Path(out_dir) / f"packet_{stamp}"
     out.mkdir(parents=True, exist_ok=True)
     data = gather(db, settings, run_id)
