@@ -141,6 +141,11 @@ def gather(db: Database, settings: Settings, run_id: str | None = None) -> dict:
                       p.snapshot_path, p.meta_robots, p.x_robots_tag, p.noindex, p.run_id
                FROM research_pages p JOIN research_entities re ON re.id=p.entity_id
                WHERE p.run_id NOT IN (SELECT id FROM research_runs WHERE status='excluded') ORDER BY re.cohort, re.name, p.id LIMIT ?""", (lim,))],
+        "legal": [dict(r) for r in db.execute(
+            """SELECT jurisdiction, topic, title, citation, status, prior_confidence, claim, best_excerpt, best_source, primary_url,
+                      status_note, last_checked_at FROM legal_context
+               ORDER BY CASE status WHEN 'human_verified' THEN 0 WHEN 'sources_found' THEN 1 ELSE 2 END,
+                        CASE WHEN key LIKE 'state_%' THEN 1 ELSE 0 END, id""")],
         "wayback": [dict(r) for r in db.execute(
             """SELECT re.cohort, re.name AS entity, w.url, w.status, w.snapshots, w.earliest_ts, w.compared_ts, w.archive_url,
                       w.observations_json, w.run_id
@@ -268,7 +273,7 @@ def build_workbook(data: dict, path: Path) -> None:
         ("", False),
         ("Sheets", True),
         ("Summary · Closest to My Case · De-index vs Unpublish · Named Precedents · Professional Guidance · Expert Voices · "
-         "Documented Practice · Opposing Evidence · Archive Changes · AI Second Opinion · Accuracy · Entities · All Evidence · "
+         "Documented Practice · Opposing Evidence · Legal Context · Archive Changes · AI Second Opinion · Accuracy · Entities · All Evidence · "
          "Sources · Search Ledger", False),
     ]
     ws.column_dimensions["A"].width = 130
@@ -353,6 +358,11 @@ def build_workbook(data: dict, path: Path) -> None:
           note="What newsrooms actually did: editor's notes, name removals, noindex on archived crime articles, documented refusals.")
     sheet("Opposing Evidence", data["opposing"], ev_cols,
           note="Policies and statements against removal or de-indexing. Included deliberately; a credible case answers these.")
+    sheet("Legal Context", data["legal"], [
+        ("jurisdiction", "Jurisdiction", 22), ("title", "Law / decision", 40), ("citation", "Citation (verify)", 24),
+        ("status", "Status", 15), ("claim", "What it is said to do (to verify)", 60), ("best_excerpt", "Best excerpt found", 70),
+        ("best_source", "Source", 40), ("primary_url", "Primary source", 36), ("last_checked_at", "Checked", 18)],
+        note="Context, not legal advice. Includes authority on both sides. Only 'human_verified' rows should be presented as fact.")
     wb_rows = [dict(r, observations=_obs_text(r["observations_json"])) for r in data["wayback"]]
     sheet("Archive Changes", wb_rows, [
         ("cohort", "Group", 16), ("entity", "Organization", 26), ("status", "Result", 16), ("observations", "What changed", 50),
@@ -668,6 +678,14 @@ def build_deck(data: dict, path: Path, *, title: str, max_precedent_slides: int)
         f"published; {rej} organization(s) explicitly reject unpublishing.",
         "De-indexing and anonymization leave the published record in place."], size=16, color=INK_2)
     footer(s, f"All {len(data['opposing'])} opposing excerpts: workbook sheet 'Opposing Evidence'.")
+
+    # Legal context
+    legal = [r for r in data.get("legal", []) if r["status"] in {"human_verified", "sources_found"} and not r["topic"] == "record_clearing"]
+    if legal:
+        s = new("Legal context", "Not legal advice — the law sets the floor; relief is editorial discretion")
+        text(s, 0.6, 1.8, 12.1, 4.8, [f"• {r['title']}{' — ' + r['citation'] if r['citation'] else ''}: {r['claim'][:220]}"
+                                      + ("" if r["status"] == "human_verified" else "  (UNVERIFIED)") for r in legal[:6]], size=15)
+        footer(s, "Workbook sheet 'Legal Context' lists every lead, including state record-clearing laws and authority against a legal duty to remove.")
 
     # Accuracy
     s = new("How accurate is the automated classification?", "Measured, not assumed")
