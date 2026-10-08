@@ -3,7 +3,7 @@
 Each dated folder is a snapshot of what NSMPA has collected, generated from the research database with
 `nsmpa packet --redact-names`. Nothing in these files is edited by hand.
 
-## 2026-10-08 (NSMPA 0.7.2)
+## 2026-10-08 (NSMPA 0.7.4; includes Stage 1 of the national run)
 
 | File | What it is |
 |---|---|
@@ -15,12 +15,13 @@ Each dated folder is a snapshot of what NSMPA has collected, generated from the 
 
 ### What this snapshot is, and is not
 
-- **An early sample, not a national rate.** 21 organizations have been researched by the tool so far (19 with a
-  determined position), plus 131 listed precedents whose sources it read. Every group's percentages are withheld until
+- **An early sample, not a national rate.** 67 organizations have been researched by the tool so far (31 with a
+  determined position), including all 50 standards and support organizations (Stage 1), plus 131 listed precedents
+  whose sources it read. Every group's percentages are withheld until
   it passes its validation gates (`docs/validation.md`).
-- **Not yet human-verified.** Classification is automated. None of the 1,077 excerpts has been checked against its
+- **Not yet human-verified.** Classification is automated. None of the 1,346 excerpts has been checked against its
   source by a person yet; each row's `Verified?` column says so. Check the source before quoting any excerpt.
-- **Both directions.** 313 opposing excerpts (refusals, "historical record" principles, errors-only exceptions) are
+- **Both directions.** 336 opposing excerpts (refusals, "historical record" principles, errors-only exceptions) are
   included and have their own sheet.
 - **Selected organizations are labelled.** Organizations added because the hand-built index lists them are marked
   "Counted in rates? = no": they were chosen for having policies and are never part of a percentage.
@@ -29,7 +30,7 @@ Each dated folder is a snapshot of what NSMPA has collected, generated from the 
 
 ### Privacy and withholding
 
-- Names of private individuals are replaced with `[name withheld]` by automated redaction (536 replacements).
+- Names of private individuals are replaced with `[name withheld]` by automated redaction (781 replacements).
   Journalists, editors, experts and organizations quoted in their professional roles are kept. Links whose address
   contains a withheld name are also withheld.
 - **3 rows are withheld from this copy because they concern the researcher's own case** (see the disclosure in the
