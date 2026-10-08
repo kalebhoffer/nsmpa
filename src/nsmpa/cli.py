@@ -956,6 +956,28 @@ def exclude_run_cmd(run_id: str = typer.Argument(...), reason: str = typer.Optio
         db.close()
 
 
+@app.command("gui")
+def gui_cmd(port: int | None = typer.Option(None, "--port", help="Default from config gui_port (8765)"),
+            no_browser: bool = typer.Option(False, "--no-browser"), config: Path | None = ConfigOpt) -> None:
+    """Open the local monitor in your browser (live runs, results, evidence, review). Localhost only."""
+    from .gui import serve
+    serve(load_settings(config), port=port, open_browser=not no_browser)
+
+
+@app.command("dashboard")
+def dashboard_cmd(out: Path | None = typer.Option(None, "--out", help="Default output/dashboard_<UTC>.html"),
+                  config: Path | None = ConfigOpt) -> None:
+    """Write a shareable, offline, read-only HTML dashboard (one file, data embedded)."""
+    from datetime import datetime, timezone
+    from .gui import write_dashboard
+    db, settings = _db(config)
+    try:
+        target = out or settings.output_dir / f"dashboard_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.html"
+        console.print(f"Dashboard written: {write_dashboard(db, settings, target)}")
+    finally:
+        db.close()
+
+
 @app.command("watch")
 def watch_cmd(run_id: str | None = typer.Option(None, "--run-id", help="Run to follow (default: most recently active)"),
               interval: float = typer.Option(1.0, "--interval", min=0.2), config: Path | None = ConfigOpt) -> None:
