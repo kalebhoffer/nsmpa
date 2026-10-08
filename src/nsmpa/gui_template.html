@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NSMPA Monitor</title>
+<style>
+:root {
+  color-scheme: light;
+  --bg: #f6f6f4; --surface: #fcfcfb; --surface-2: #f0efec; --border: #e2e1dc;
+  --ink: #0b0b0b; --ink-2: #52514e; --muted: #8a8984;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a;
+  --good: #1f8a4c; --warn: #b26b00; --bad: #c43c3b;
+  --sup-bg: #e4f2ea; --adv-bg: #fbe4e2; --neu-bg: #f1f1ef;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #121211; --surface: #1a1a19; --surface-2: #232321; --border: #33332f;
+    --ink: #ffffff; --ink-2: #c3c2b7; --muted: #8f8e86;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70;
+    --good: #4cc27d; --warn: #e3a33a; --bad: #e66767;
+    --sup-bg: #1d3327; --adv-bg: #3a2120; --neu-bg: #262624;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; }
+header { display: flex; align-items: center; gap: 16px; padding: 12px 20px; background: var(--surface); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 2; flex-wrap: wrap; }
+header h1 { font-size: 16px; margin: 0; letter-spacing: .2px; }
+header .meta { color: var(--muted); font-size: 12px; }
+nav { display: flex; gap: 4px; flex-wrap: wrap; }
+nav button { background: none; border: 1px solid transparent; color: var(--ink-2); padding: 6px 12px; border-radius: 6px; cursor: pointer; font: inherit; }
+nav button.on { background: var(--surface-2); border-color: var(--border); color: var(--ink); }
+main { padding: 20px; max-width: 1400px; margin: 0 auto; }
+section { display: none; } section.on { display: block; }
+.grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+.card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+.card h3 { font-size: 15px; margin: 0 0 6px; }
+.kpi { font-size: 26px; font-weight: 650; } .kpi small { font-size: 12px; color: var(--muted); font-weight: 400; margin-left: 4px; }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 3px 14px; font-size: 13px; }
+.kv span:nth-child(odd) { color: var(--muted); }
+.bar { height: 10px; background: var(--surface-2); border-radius: 5px; overflow: hidden; margin: 6px 0 2px; }
+.bar > i { display: block; height: 100%; background: var(--s1); border-radius: 5px; transition: width .4s; }
+.bar.steps > i { background: var(--s3); }
+.badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; border: 1px solid var(--border); }
+.badge.good { color: var(--good); } .badge.warn { color: var(--warn); } .badge.bad { color: var(--bad); }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+.dot.live { background: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 25%, transparent); animation: pulse 1.6s infinite; }
+.dot.idle { background: var(--muted); } .dot.stale { background: var(--warn); }
+@keyframes pulse { 50% { opacity: .45; } }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; font-size: 12px; position: sticky; top: 0; background: var(--surface); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+tr.click { cursor: pointer; } tr.click:hover td { background: var(--surface-2); }
+.dir-supportive { background: var(--sup-bg); } .dir-adverse { background: var(--adv-bg); } .dir-neutral { background: var(--neu-bg); }
+.pill { padding: 1px 7px; border-radius: 9px; font-size: 11px; white-space: nowrap; }
+.recent { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--ink-2); max-height: 170px; overflow: auto; white-space: pre-wrap; }
+.filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+input, select, textarea { background: var(--surface); color: var(--ink); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font: inherit; }
+button.act { border: 1px solid var(--border); background: var(--surface-2); color: var(--ink); border-radius: 6px; padding: 5px 10px; cursor: pointer; font: inherit; }
+button.act.ok { border-color: var(--good); color: var(--good); } button.act.no { border-color: var(--bad); color: var(--bad); }
+.excerpt { max-width: 640px; } a { color: var(--s1); }
+.muted { color: var(--muted); } .empty { color: var(--muted); padding: 18px 0; }
+.chart text { fill: var(--ink-2); font-size: 12px; } .chart .val { fill: var(--ink); font-weight: 600; }
+.chart rect.b:hover { opacity: .8; }
+#detail { position: fixed; right: 0; top: 0; bottom: 0; width: min(560px, 100%); background: var(--surface); border-left: 1px solid var(--border); padding: 18px; overflow: auto; transform: translateX(100%); transition: transform .2s; z-index: 5; }
+#detail.on { transform: none; }
+.banner { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; margin-bottom: 14px; color: var(--ink-2); }
+@media (max-width: 640px) { main { padding: 12px 16px; } header { padding: 10px 16px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>NSMPA</h1>
+  <nav id="tabs">
+    <button data-tab="live" class="on">Live</button>
+    <button data-tab="results">Results</button>
+    <button data-tab="evidence">Evidence</button>
+    <button data-tab="review">Review</button>
+    <button data-tab="insights">Archive · AI · Accuracy</button>
+    <button data-tab="ops">Operations</button>
+  </nav>
+  <span class="meta" id="meta"></span>
+</header>
+<main>
+  <div id="static-banner" class="banner" hidden>Read-only snapshot. Generated <span id="snap-time"></span>. Every row links to its source.</div>
+
+  <section id="live" class="on">
+    <div class="grid" id="kpis"></div>
+    <h2 style="font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin:22px 0 10px">Running jobs</h2>
+    <div id="active-note"></div>
+    <div class="grid" id="active"></div>
+    <div class="card" style="margin-top:14px"><h2>Recent runs</h2><div id="runs"></div></div>
+  </section>
+
+  <section id="results"><div class="grid" id="cohorts"></div></section>
+
+  <section id="evidence">
+    <div class="filters">
+      <input id="f-q" placeholder="Search excerpt or organization" size="30">
+      <select id="f-cohort"><option value="">All groups</option><option>student_media</option><option>professional_newsroom</option><option>support_org</option><option>precedent_case</option><option>expert</option></select>
+      <select id="f-direction"><option value="">All directions</option><option>supportive</option><option>adverse</option><option>neutral</option></select>
+      <select id="f-klass"><option value="">All evidence classes</option><option>written_policy</option><option>editorial_statement</option><option>professional_guidance</option><option>documented_practice</option><option>technical</option><option>secondary_report</option></select>
+      <select id="f-sort"><option value="match">Closest to my case</option><option value="authority">Authority</option><option value="recent">Most recent</option></select>
+    </div>
+    <div class="card"><div id="ev-count" class="muted"></div><div id="ev-table"></div></div>
+  </section>
+
+  <section id="review"><div class="card"><h2>Human review queue (highest priority first)</h2><div id="rv"></div></div></section>
+  <section id="insights"><div class="grid" id="ins"></div></section>
+  <section id="ops"><div class="grid" id="opsg"></div></section>
+</main>
+<aside id="detail"></aside>
+
+<script>
+const CFG = /*__NSMPA_CONFIG__*/null;
+const DATA = /*__NSMPA_DATA__*/null;
+const $ = (s, r = document) => r.querySelector(s);
+const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmt = n => (n === null || n === undefined) ? "–" : (typeof n === "number" ? n.toLocaleString() : esc(n));
+const hms = s => { if (s == null) return "calculating…"; s = Math.max(0, Math.round(s)); return [s/3600|0, (s%3600)/60|0, s%60].map(x => String(x).padStart(2,"0")).join(":"); };
+const link = u => u ? `<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(u.replace(/^https?:\/\//,"").slice(0,70))}</a>` : "";
+const STANCE_LABEL = {SUPPORTS_RELIEF:"Supports relief",SUPPORTS_CHANGED_CIRCUMSTANCES:"Changed circumstances",CASE_BY_CASE:"Case by case",UPDATE_ONLY:"Update only",STRICT_ARCHIVE:"Strict archive",MIXED:"Mixed",NO_RELEVANT_GUIDANCE:"No guidance found",UNDETERMINED:"Undetermined"};
+const MODE_LABEL = {DEINDEX_OR_ANONYMIZE_PRESERVING_ARCHIVE:"De-index/anonymize, archive kept",UNPUBLISHING_PERMITTED:"Unpublishing permitted",UPDATE_ONLY:"Update / editor's note only",NO_RELIEF:"No relief",UNADDRESSED:"Not addressed"};
+
+async function api(path) {
+  if (CFG && CFG.static) {
+    const key = path.split("?")[0].replace("/api/", "");
+    if (key.startsWith("entity/")) return null;
+    return DATA[key];
+  }
+  const r = await fetch(path, {headers: {"Accept": "application/json"}});
+  if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`);
+  return r.json();
+}
+async function post(path, body) {
+  const r = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json", "X-NSMPA-Token": CFG.token}, body: JSON.stringify(body)});
+  return r.json();
+}
+
+// Horizontal bar chart: single series => no legend, direct value labels, hover title per bar.
+function barChart(pairs, color = "var(--s1)") {
+  pairs = pairs.filter(p => p[1] > 0);
+  if (!pairs.length) return `<div class="empty">No data yet</div>`;
+  const max = Math.max(...pairs.map(p => p[1])), rowH = 24, labelW = 190, w = 430, barW = w - labelW - 40;
+  const h = pairs.length * rowH + 6;
+  return `<svg class="chart" viewBox="0 0 ${w} ${h}" width="100%" style="max-width:${w}px" role="img">` + pairs.map(([label, v], i) => {
+    const y = i * rowH + 4, bw = Math.max(2, barW * v / max);
+    return `<g><title>${esc(label)}: ${v}</title><text x="${labelW - 8}" y="${y + 14}" text-anchor="end">${esc(label)}</text>
+      <rect class="b" x="${labelW}" y="${y + 3}" width="${bw}" height="16" rx="4" fill="${color}"></rect>
+      <text class="val" x="${labelW + bw + 6}" y="${y + 15}">${v}</text></g>`;
+  }).join("") + `</svg>`;
+}
+
+function kpi(label, value, sub = "") { return `<div class="card"><h2>${esc(label)}</h2><div class="kpi">${fmt(value)}<small>${esc(sub)}</small></div></div>`; }
+
+function runCard(h) {
+  const s = h.state || {}, pct = s.total ? Math.round(100 * s.completed / s.total) : 0;
+  const status = h.active ? `<span class="dot live"></span>running` : h.finished ? `<span class="dot idle"></span>finished` : `<span class="dot stale"></span>no heartbeat ${h.age_seconds}s`;
+  const stances = Object.entries(s.stances || {}).map(([k, v]) => [STANCE_LABEL[k] || k, v]);
+  return `<div class="card">
+    <h3>${esc(h.title)} <span class="muted" style="font-weight:400;font-size:12px">${esc(s.universe || "")}</span></h3>
+    <div class="muted" style="font-size:12px">${status} · ${esc(h.run_id)}</div>
+    <div class="bar"><i style="width:${pct}%"></i></div>
+    <div style="display:flex;justify-content:space-between;font-size:12px"><span>${fmt(s.completed)} / ${fmt(s.total)} (${pct}%)</span><span class="muted">ETA ${hms(s.eta_seconds)}</span></div>
+    <div class="kv" style="margin-top:10px">
+      <span>Current</span><span>${esc(s.current || "–")}${s.active > 1 ? ` <span class="muted">(+${s.active - 1} more)</span>` : ""}</span>
+      <span>Phase</span><span>${esc(s.phase || "–")}</span>
+      ${s.step_total ? `<span>Entity steps</span><span><div class="bar steps" style="margin:4px 0"><i style="width:${Math.round(100 * s.step_done / s.step_total)}%"></i></div></span>` : ""}
+      <span>Searches</span><span>${fmt(s.searches_live)} live · ${fmt(s.searches_cached)} cached · ${fmt(s.credits_estimated)}${s.budget_limit ? " / " + fmt(s.budget_limit) : ""} credits</span>
+      <span>Pages</span><span>${fmt(s.pages_fetched)} fetched · ${fmt(s.robots_blocked)} robots · ${fmt(s.access_blocked)} blocked</span>
+      <span>Evidence</span><span>${fmt(s.evidence_unique)} unique · ${fmt(s.high_similarity)} high similarity</span>
+      <span>Errors</span><span>${s.errors ? `<b style="color:var(--bad)">${fmt(s.errors)}</b>` : "0"} · retries ${fmt(s.retries)}</span>
+      <span>Rate</span><span>${(s.rate_per_min || 0).toFixed(1)}/min · elapsed ${hms(s.elapsed_seconds)}</span>
+    </div>
+    ${stances.length ? `<div style="margin-top:8px">${barChart(stances)}</div>` : ""}
+    ${s.stop_message ? `<div class="banner" style="margin-top:8px">${esc(s.stop_message)}</div>` : ""}
+    <div class="recent" style="margin-top:8px">${(s.recent || []).map(esc).join("\n") || "No discoveries yet"}</div>
+  </div>`;
+}
+
+async function loadLive() {
+  const o = await api("/api/overview");
+  $("#meta").textContent = `v${o.version} · schema v${o.schema} · ${o.database}${CFG.static ? "" : " · updated " + new Date().toLocaleTimeString()}`;
+  const c = o.counts;
+  $("#kpis").innerHTML = kpi("Organizations researched", c.researched, `of ${fmt(c.entities)}`) + kpi("Unique evidence excerpts", c.evidence)
+    + kpi("Student publications", c.publications, `of ${fmt(c.institutions)} institutions`) + kpi("Open review items", c.open_reviews)
+    + kpi("Search credits used", c.credits || 0, `${fmt(c.cache_hits)} cache hits`) + kpi("Expert voices", c.voices);
+  const active = o.heartbeats.filter(h => h.active), recent = o.heartbeats.filter(h => !h.active).slice(0, 2);
+  $("#active-note").innerHTML = active.length ? "" : `<div class="banner">No job is running right now.${recent.length ? " Showing the most recent runs." : " Start one with <code>nsmpa research …</code>; it will appear here within a few seconds."}</div>`;
+  $("#active").innerHTML = (active.length ? active : recent).map(runCard).join("");
+  $("#runs").innerHTML = `<table><tr><th>Run</th><th>Mode</th><th>Status</th><th class="num">Done</th><th class="num">Live searches</th><th class="num">Cached</th><th class="num">Credits</th><th>Started</th><th>Note</th></tr>` +
+    o.runs.map(r => `<tr><td>${esc(r.id)}</td><td>${esc(r.mode)}</td><td>${badgeFor(r.status)}</td><td class="num">${r.done}/${r.total}</td><td class="num">${fmt(r.searches_live)}</td><td class="num">${fmt(r.searches_cached)}</td><td class="num">${fmt(r.credits_estimated)}</td><td>${esc(r.started_at)}</td><td class="muted">${esc(r.status_reason || "")}</td></tr>`).join("") + `</table>`;
+}
+function badgeFor(st) { const cls = {completed:"good",running:"good",interrupted:"warn",budget_exhausted:"warn",failed:"bad",excluded:""}[st] ?? ""; return `<span class="badge ${cls}">${esc(st)}</span>`; }
+
+async function loadResults() {
+  const r = await api("/api/results");
+  $("#cohorts").innerHTML = r.cohorts.map(c => {
+    const modes = Object.entries(c.relief_modes).map(([k, v]) => [MODE_LABEL[k] || k, v]);
+    const stances = Object.entries(c.stances).map(([k, v]) => [STANCE_LABEL[k] || k, v]);
+    return `<div class="card" style="grid-column:span 1">
+      <h3>${esc(c.label)}</h3>
+      <div><span class="badge ${c.valid ? "good" : "warn"}">${c.valid ? "VALIDATED" : "PRELIMINARY — counts only"}</span>
+        <span class="muted"> ${fmt(c.researched)} researched of ${fmt(c.denominator)}</span></div>
+      <h2 style="margin-top:14px">Overall position</h2>${barChart(modes, "var(--s1)")}
+      <h2 style="margin-top:10px">Written-policy stance</h2>${barChart(stances, "var(--s3)")}
+      <details style="margin-top:8px"><summary class="muted">Validation gates (${c.gates.filter(g => g.passed).length}/${c.gates.length} passing)</summary>
+        <table>${c.gates.map(g => `<tr><td>${esc(g.name)}</td><td class="num">${g.value == null ? "–" : (+g.value).toFixed(3)}</td><td class="muted">${g.comparator} ${g.threshold}</td><td>${g.passed ? '<span class="badge good">pass</span>' : '<span class="badge bad">fail</span>'}</td></tr>`).join("")}</table></details>
+    </div>`;
+  }).join("") || `<div class="card empty">No cohorts yet.</div>`;
+}
+
+async function loadEvidence() {
+  let rows, total;
+  if (CFG.static) {
+    const q = $("#f-q").value.toLowerCase(), co = $("#f-cohort").value, d = $("#f-direction").value, k = $("#f-klass").value;
+    rows = DATA.evidence.rows.filter(r => (!q || (r.excerpt + r.entity).toLowerCase().includes(q)) && (!co || r.cohort === co) && (!d || r.direction === d) && (!k || r.evidence_class === k));
+    total = rows.length;
+  } else {
+    const p = new URLSearchParams({q: $("#f-q").value, cohort: $("#f-cohort").value, direction: $("#f-direction").value, klass: $("#f-klass").value, sort: $("#f-sort").value, limit: 200});
+    const res = await api("/api/evidence?" + p); rows = res.rows; total = res.total;
+  }
+  $("#ev-count").textContent = `${total.toLocaleString()} matching excerpts${rows.length < total ? ` (showing ${rows.length})` : ""}`;
+  $("#ev-table").innerHTML = rows.length ? `<table><tr><th>Organization</th><th>Direction</th><th>Type</th><th class="num">Match</th><th>Verified</th><th>Excerpt</th><th>Source</th></tr>` + rows.map(r =>
+    `<tr class="click dir-${esc(r.direction)}" data-ev='${esc(JSON.stringify(r))}'><td>${esc(r.entity)}<div class="muted">${esc(r.cohort)}</div></td><td>${esc(r.direction)}</td><td>${esc(r.statement_type)}</td><td class="num">${(r.case_match_score || 0).toFixed(0)}</td><td>${esc(r.verification_status)}</td><td class="excerpt">${esc(r.excerpt.slice(0, 280))}</td><td>${link(r.source_url)}</td></tr>`).join("") + `</table>` : `<div class="empty">No evidence matches.</div>`;
+}
+function showEvidence(r) {
+  $("#detail").innerHTML = `<button class="act" onclick="document.getElementById('detail').classList.remove('on')">Close</button>
+    <h3 style="margin-top:14px">${esc(r.entity)}</h3><div class="muted">${esc(r.cohort)} · ${esc(r.evidence_class)} · ${esc(r.statement_type)} · ${esc(r.direction)}</div>
+    <p style="font-size:15px;line-height:1.55" class="dir-${esc(r.direction)}">${esc(r.excerpt)}</p>
+    <div class="kv"><span>Source</span><span>${link(r.source_url)}</span><span>Fetched</span><span>${esc(r.fetched_at)}</span>
+      <span>Page SHA-256</span><span style="word-break:break-all">${esc(r.page_sha256 || "–")}</span><span>Positions</span><span>${esc(r.actions_json)}</span>
+      <span>Classifier cues</span><span>${esc(r.rationale || "")}</span><span>Evidence ID</span><span>${esc(r.id)}</span></div>`;
+  $("#detail").classList.add("on");
+}
+
+async function loadReview() {
+  const r = await api("/api/review");
+  $("#rv").innerHTML = r.items.length ? `<table><tr><th class="num">Priority</th><th>Organization</th><th>Stance</th><th>Why</th><th>Rationale</th>${CFG.static ? "" : "<th>Decision</th>"}</tr>` + r.items.map(i =>
+    `<tr><td class="num">${(+i.priority).toFixed(0)}</td><td>${esc(i.entity_name || i.item_type + " " + i.item_id)}<div class="muted">${esc(i.cohort || "")}</div>${i.homepage_url ? link(i.homepage_url) : ""}</td>
+     <td>${esc(STANCE_LABEL[i.stance] || i.stance || "–")}${i.confidence != null ? `<div class="muted">conf ${(+i.confidence).toFixed(2)}</div>` : ""}</td>
+     <td class="muted" style="max-width:240px">${esc(JSON.parse(i.reasons_json || "[]").join(", "))}</td><td class="excerpt">${esc(i.rationale || "")}</td>
+     ${CFG.static ? "" : `<td style="white-space:nowrap"><input placeholder="note" data-note="${i.id}" size="14"> <button class="act ok" data-decide="${i.id}" data-d="accept">Accept</button> <button class="act no" data-decide="${i.id}" data-d="reject">Reject</button> <button class="act" data-decide="${i.id}" data-d="skip">Skip</button></td>`}</tr>`).join("") + `</table>`
+    : `<div class="empty">Nothing waiting for review.</div>`;
+}
+
+function tbl(rows, cols) {
+  if (!rows || !rows.length) return `<div class="empty">None yet</div>`;
+  return `<table><tr>${cols.map(c => `<th>${esc(c[1])}</th>`).join("")}</tr>` + rows.map(r => `<tr>${cols.map(([k]) => {
+    const v = r[k]; return `<td>${typeof v === "string" && /^https?:/.test(v) ? link(v) : esc(typeof v === "number" ? v.toLocaleString() : (v ?? ""))}</td>`; }).join("")}</tr>`).join("") + `</table>`;
+}
+
+async function loadInsights() {
+  const d = await api("/api/insights");
+  const acc = d.accuracy.report;
+  $("#ins").innerHTML = `
+    <div class="card"><h2>Accuracy (hand-checked sample)</h2>${acc ? `<pre class="recent" style="max-height:none">${esc(d.accuracy.text)}</pre>` : `<div class="empty">Not yet measured. Run <code>nsmpa audit sample</code>.</div>`}</div>
+    <div class="card"><h2>Wayback Machine checks</h2>${barChart(d.wayback.by_status.map(r => [r.status, r.n]))}</div>
+    <div class="card"><h2>AI second opinion vs. rules</h2>${barChart(d.ai.by_agreement.map(r => [r.agreement, r.n]), "var(--s2)")}</div>
+    <div class="card" style="grid-column:1/-1"><h2>Archive changes</h2>${tbl(d.wayback.changed.map(r => ({...r, what: summarizeObs(r.observations_json)})), [["entity","Organization"],["what","What changed (names withheld)"],["earliest_ts","Earliest capture"],["url","Current URL"],["archive_url","Archived copy"]])}</div>
+    <div class="card" style="grid-column:1/-1"><h2>AI disagreements & additional findings</h2>${tbl(d.ai.disagreements, [["entity","Organization"],["action","Action"],["position","Position"],["direction","Direction"],["quote","Verified quote"]])}</div>
+    <div class="card" style="grid-column:1/-1"><h2>Expert voices</h2>${tbl(d.voices, [["person_name","Person"],["role","Role (verify)"],["direction","Direction"],["verification_status","Verified"],["quote","Quote"],["source_url","Source"]])}</div>
+    <div class="card"><h2>Named precedents</h2>${tbl(d.precedents, [["organization","Organization"],["title","Program"],["approx_year","Year"],["status","Status"]])}</div>
+    <div class="card"><h2>Legal context</h2>${tbl(d.legal, [["jurisdiction","Jurisdiction"],["title","Law / decision"],["status","Status"]])}</div>
+    <div class="card"><h2>Policy changes over time</h2>${tbl(d.policy_changes, [["entity","Organization"],["detected_at","Detected"],["similarity","Similarity"],["summary","Summary"]])}</div>
+    <div class="card"><h2>Outreach</h2>${tbl(d.outreach, [["campaign","Campaign"],["status","Status"],["n","Count"]])}</div>`;
+}
+function summarizeObs(js) {
+  try { return JSON.parse(js || "[]").map(o => ({names_removed: `${o.count} name(s) removed`, noindex_added: "noindex added", unpublished: `now HTTP ${o.current_status}`, content_altered: `text changed (${o.text_similarity})`, title_changed: "headline changed"}[o.type] || o.type)).join("; "); } catch { return ""; }
+}
+
+async function loadOps() {
+  const d = await api("/api/ops");
+  $("#opsg").innerHTML = `
+    <div class="card"><h2>Page access results</h2>${barChart(d.access.map(r => [r.access, r.n]))}</div>
+    <div class="card"><h2>Errors by stage</h2>${tbl(d.errors, [["stage","Stage"],["error_type","Type"],["n","Count"]])}</div>
+    <div class="card" style="grid-column:1/-1"><h2>Search usage by purpose</h2>${tbl(d.queries, [["purpose","Purpose"],["n","Queries"],["cached","Cached"],["failed","Failed"],["credits","Credits"],["useful","Produced evidence"]])}</div>
+    <div class="card" style="grid-column:1/-1"><h2>Recent searches</h2>${tbl(d.recent_queries, [["created_at","When"],["purpose","Purpose"],["query","Query"],["status","Status"],["was_cached","Cached"],["result_count","Results"],["produced_evidence","Useful"]])}</div>
+    <div class="card" style="grid-column:1/-1"><h2>Failed items</h2>${tbl(d.failed_items, [["run_id","Run"],["item_type","Type"],["item_key","Key"],["error","Error"]])}</div>`;
+}
+
+const loaders = {live: loadLive, results: loadResults, evidence: loadEvidence, review: loadReview, insights: loadInsights, ops: loadOps};
+let current = "live";
+async function show(tab) {
+  current = tab;
+  document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("on", b.dataset.tab === tab));
+  document.querySelectorAll("main section").forEach(s => s.classList.toggle("on", s.id === tab));
+  try { await loaders[tab](); } catch (e) { $("#" + tab).insertAdjacentHTML("afterbegin", `<div class="banner">Could not load: ${esc(e.message)}</div>`); }
+}
+document.getElementById("tabs").addEventListener("click", e => { if (e.target.dataset.tab) { try { history.replaceState(null, "", "#" + e.target.dataset.tab); } catch (_) {} show(e.target.dataset.tab); } });
+["#f-q", "#f-cohort", "#f-direction", "#f-klass", "#f-sort"].forEach(s => $(s).addEventListener(s === "#f-q" ? "input" : "change", () => loadEvidence()));
+document.addEventListener("click", async e => {
+  const tr = e.target.closest("tr[data-ev]"); if (tr) showEvidence(JSON.parse(tr.dataset.ev));
+  const b = e.target.closest("button[data-decide]");
+  if (b) { const id = b.dataset.decide, note = (document.querySelector(`[data-note="${id}"]`) || {}).value || "";
+    const res = await post(`/api/review/${id}`, {decision: b.dataset.d, note}); if (res.error) alert(res.error); loadReview(); }
+});
+if (CFG.static) { $("#static-banner").hidden = false; $("#snap-time").textContent = DATA.overview.generated; }
+show(loaders[location.hash.slice(1)] ? location.hash.slice(1) : "live");
+if (!CFG.static) setInterval(() => { if (current === "live") loadLive(); }, 2000);
+</script>
+</body>
+</html>
