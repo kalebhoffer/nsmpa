@@ -34,6 +34,14 @@ def test_core_commands(cfg):
         run(*cmd, "--config", cfg) if cmd[-1] not in {"--help", "version"} else run(*cmd)
 
 
+def test_estimate_and_pilot_help(cfg):
+    run("init", "--config", cfg)
+    run("research-setup", "--config", cfg)
+    out = run("estimate", "--config", cfg, "--cohort", "support_org", "--json")
+    assert '"total_credits_low"' in out
+    assert "budget" in run("pilot", "--help")
+
+
 def test_schedule_prints_plist(cfg):
     out = run("schedule", "--config", cfg)
     assert "com.nsmpa.recheck" in out and "recheck" in out
