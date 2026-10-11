@@ -28,13 +28,11 @@ a position on old stories clear enough to classify** (hand-picked broadcasters a
 
 | Published position | Organizations |
 |---|---:|
-| Allow removal, de-indexing or anonymization in at least some cases, or review each request individually | 73 |
-| Allow some forms of relief and refuse others | 20 |
-| Offer only updates, follow-up stories or editor's notes | 24 |
+| Offer some level of post-publication relief (removal, de-indexing, anonymization, case-by-case review, or updates and editor's notes) | 117 |
 | Refuse any change beyond correcting errors | 19 |
 
-- **A hard refusal is the minority position.** 93 of the 136 allow at least some form of relief. Only 19, about one
-  in seven, rule out everything beyond correcting errors.
+- **A hard refusal is the minority position.** 117 of the 136 offer some level of post-publication relief. Only 19,
+  about one in seven, rule out everything beyond correcting errors.
 - **De-indexing is the least contested remedy.** 23 organizations explicitly offer it, including the Associated Press
   ("the AP would also request that Google 'deindex' the stories, removing them from its search results"), Hearst's
   newspapers (the San Francisco Chronicle, Houston Chronicle, San Antonio Express-News and others: "applying
@@ -49,7 +47,6 @@ a position on old stories clear enough to classify** (hand-picked broadcasters a
   not be read well enough to tell (most are dead, parked or blocked sites). Neither group is counted for or against
   relief. A policy that is not published cannot be checked, applied consistently, or cited by the person it is
   applied to.
-- **The newspaper in the author's own case** publishes no policy the tool could find.
 
 By group:
 
@@ -83,11 +80,10 @@ How to read these numbers:
 ## Why this exists (disclosure)
 
 <!-- DRAFT: the author reviews and edits this section before publishing. -->
-I built this tool while preparing my own request to a student newspaper,
-about a 2012 article that concerns me. **I am asking for the article to be de-indexed from search engines, not
-unpublished.** It would stay on the newspaper's website, unchanged, for anyone who looks for it there. The
-newspaper has told me that a policy rules out the request, but that policy is not published, so it cannot be compared
-with the policies documented here.
+I built this tool while preparing my own request to a student newspaper about a 2012 article that concerns me. **I am
+asking for the article to be de-indexed from search engines, not unpublished.** It would stay on the newspaper's
+website, unchanged, for anyone who looks for it there. The newspaper has told me that a policy rules out the request,
+but that policy is not published, so it cannot be compared with the policies documented here.
 
 I have a personal interest in the answer, so the tool is designed to make that interest irrelevant: it looks for
 opposing evidence as hard as supporting evidence, publishes the opposing evidence alongside the rest, labels every
