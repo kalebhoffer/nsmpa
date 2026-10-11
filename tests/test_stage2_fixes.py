@@ -296,3 +296,56 @@ async def test_directory_student_paper_without_a_college_is_never_moved_by_name(
     await research_all(db, s, rid, cohort="student_media", quiet=True, provider=provider, fetcher=f)
     assert db.scalar("SELECT homepage_url FROM research_entities WHERE name='The Hornet'") == "https://deadpaper.example/"
     assert db.scalar("SELECT stance FROM entity_stances WHERE run_id=?", (rid,)) == "UNDETERMINED"
+
+
+def test_stage3_absolute_refusals_arguments_and_refused_request_lists():
+    assert classify_statement("Under no circumstances will The Rocket remove, modify, or edit archived blotters from the "
+                              "web.").statement_type == "relief_rejected"
+    assert classify_statement("If these policies did not exist, people could alter the public record by modifying or "
+                              "withdrawing what they have said.").statement_type == "mention"
+    refused = ("Various groups have asked us to do things that don’t adhere to our policies. This includes taking down "
+               "photos, retracting names and statements, and reviewing our coverage before publication.")
+    assert classify_statement("This includes taking down photos, retracting names and statements, and reviewing our "
+                              "coverage before publication.", refused).statement_type == "mention"
+    # research passes the neighbouring sentences without the sentence itself
+    assert classify_statement("This includes taking down photos and retracting names.", "Groups asked us to do things that "
+                              "don’t adhere to our policies. We want to explain why.").statement_type == "mention"
+    offered = "Our editors may update stories. This includes reviewing requests to remove old stories case by case."
+    assert classify_statement("This includes reviewing requests to remove old stories case by case.",
+                              offered).statement_type == "case_by_case"
+
+
+def _page(title, text="", links=()):
+    from types import SimpleNamespace
+    return SimpleNamespace(title=title, full_text=text or title * 3, links=list(links))
+
+
+def test_student_identity_accepts_platform_papers_and_rejects_takeovers():
+    from nsmpa.identity import check_identity
+
+    def ent(name, url, parent=None):
+        return {"name": name, "homepage_url": url, "cohort": "student_media", "parent_name": parent,
+                "domain": url.split("//")[1].strip("/")}
+    assert check_identity(ent("The Red and Black", "https://redandblack.com/"), {}, "ok", _page(
+        "redandblack.com | An independent, student-led, nonprofit news organization", "The Red & Black covers Athens.")).proceed
+    assert check_identity(ent("The Torch", "https://torchbcc.com/"), {}, "ok", _page(
+        "Discover the latest news and events at Bergen Community College with The Torch")).proceed
+    assert check_identity(ent("The Crimson", "https://crimson.fit.edu/", "Florida Institute of Technology"), {}, "ok",
+                          _page("The Florida Tech Crimson")).proceed
+    # takeovers keep failing, including ones whose title happens to carry the old name or "University"
+    assert not check_identity(ent("University Chronicle", "https://universitychronicle.net/"), {}, "ok", _page(
+        "Is Satellite Internet the Future for Remote Areas in Australia? | University Chronicle")).proceed
+    assert not check_identity(ent("The Pan American", "https://panamericanonline.com/"), {}, "ok", _page(
+        "How to Write an Essay Fast with Panamerican University")).proceed
+    assert not check_identity(ent("The Beacon", "https://wilkesbeacon.com/"), {}, "ok", _page(
+        "Wilkes Beacon Insurance - Home, Car, and Health Insurance Information")).proceed
+
+
+def test_navigation_rails_are_not_policy():
+    assert classify_statement("Previous Post Ole Miss campus rules prohibit Juuls Next Post Returning experience a major "
+                              "factor Related Posts News Jack crowned Mr. Ole Miss, updated October 8").statement_type == "mention"
+    assert classify_statement("Scott Rada Most Popular Karen Hall: Why Texas Avenue medians should be removed "
+                              "Although the medians were installed").statement_type == "mention"
+    # a real policy sentence next to a rail still counts
+    assert classify_statement("Top Stories We will consider requests to remove old crime stories when charges are "
+                              "dismissed.").statement_type != "mention"

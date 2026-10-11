@@ -79,6 +79,34 @@ def _newsy(text: str, page) -> bool:
     return structure >= 3 or vocab >= 3
 
 
+# Platform sites (BLOX, SNO) often say only "student-led" or "the student news site of …" on the homepage.
+STUDENT_EXTRA = re.compile(r"\bstudent[-\s](?:led|operated|edited|managed)\b|\bstudent news site\b", re.I)
+COLLEGE_WORD = re.compile(r"\b(?:university|college)\b", re.I)    # "The O'Colly, at Oklahoma State University since 1895"
+
+
+def _college_outside_name(names: list[str], title: str) -> bool:
+    """'University'/'College' in the title other than as part of the paper's own name ("University Chronicle")."""
+    t = normalize_for_hash(title)
+    for n in names:
+        t = re.sub(rf"\b{re.escape(n)}\b", " ", t)
+    return bool(COLLEGE_WORD.search(t))
+
+
+HIJACKED_TITLE = re.compile(r"\b(?:casinos?|slots?|gacor|togel|toto|sweepstakes|betting|bet\s?\d+|poker|essays?|how to|"
+                            r"insurance|loans?|crypto|dating|escort|viagra)\b", re.I)
+
+
+def _name_words_in_title(names: list[str], title: str) -> bool:
+    """Every word of a two-plus-word name in the page title, in any order ("Independent Alligator" in "The Independent
+    Florida Alligator"). One-word names ("Beacon") are too common to match this loosely."""
+    words = set(normalize_for_hash(title.replace("&", " and ")).split())
+    for n in names:
+        toks = [t for t in n.split() if len(t) >= 3 and t != "and"]
+        if len(toks) >= 2 and all(t in words for t in toks):
+            return True
+    return False
+
+
 ATHLETICS_TITLE = re.compile(r"\bathletics\b|\bofficial (?:athletic|sports) (?:web)?site\b", re.I)
 
 
@@ -106,13 +134,20 @@ def check_identity(entity, metadata: dict, access_class: str, page=None) -> Iden
     norm = normalize_for_hash(text)
     if PARKED.search(text) or len(norm) < 60:
         return Identity("mismatch", "parked, for-sale, empty or placeholder domain", {"chars": len(norm)})
+    if HIJACKED_TITLE.search(page.title or "") and entity["cohort"] in {"student_media", "professional_newsroom",
+                                                                         "broadcast_newsroom"}:
+        return Identity("mismatch", "the domain now carries unrelated content (gambling, essays, ads)",
+                        {"title": (page.title or "")[:120]})
     if ATHLETICS_TITLE.search(page.title or ""):
         # "UC Riverside Athletics - Official Athletics Website" carries the team name "Highlanders" and dated news
         return Identity("mismatch", "an athletics website, not the publication", {"title": (page.title or "")[:120]})
-    name_hit = any(re.search(rf"\b{re.escape(n)}\b", norm) for n in _names(entity, metadata))
+    norm = normalize_for_hash(text.replace("&", " and "))           # "The Red & Black"
+    names = _names(entity, metadata)
+    name_hit = any(re.search(rf"\b{re.escape(n)}\b", norm) for n in names) or _name_words_in_title(names, page.title or "")
     cohort = entity["cohort"]
     if cohort == "student_media":
-        student = bool(VERIFY_STUDENT.search(text) or STRONG_STUDENT_TERMS.search(text))
+        student = bool(VERIFY_STUDENT.search(text) or STRONG_STUDENT_TERMS.search(text) or STUDENT_EXTRA.search(text)
+                       or re.search(r"\bstudents?\b", page.title or "", re.I))
         inst = institution_base_name(entity["parent_name"] or "")
         inst_norm = normalize_for_hash(inst)
         toks = _name_tokens(inst)
@@ -126,9 +161,10 @@ def check_identity(entity, metadata: dict, access_class: str, page=None) -> Iden
         sig = {"student_signal": student, "institution_named": inst_hit, "name_on_page": name_hit}
         if student and (inst_hit or name_hit):
             return Identity("ok", "site identifies as a student publication of the institution", sig)
-        if student or inst_hit:
+        on_edu = dom.endswith(".edu")
+        if student or inst_hit or (on_edu and name_hit):
             return Identity("weak", "partial student-publication signals; verify", sig)
-        if not inst and name_hit and _newsy(text, page):
+        if not inst and name_hit and (_newsy(text, page) or on_edu or _college_outside_name(names, page.title or "")):
             # No linked institution to look for (unmatched directory paper): own name plus a working news site.
             return Identity("weak", "publication name and news-site structure, but no institution on record; verify", sig)
         return Identity("mismatch", "no student-media signal: the domain no longer appears to be this student "
