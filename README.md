@@ -32,17 +32,23 @@ check the results.
 
 ## What the evidence shows so far
 
-This is an early snapshot, not a national result. As of 8 October 2026:
+This is an early snapshot, not a national result. As of 10 October 2026:
 
-- **67 organizations have been researched; 31 have a determined position.** Stage 1 of the national run covered all
-  50 standards and support organizations: 24 publish no relevant guidance, and the rest range from support for relief
-  (e.g. the National Press Club Journalism Institute on removing names while keeping stories online) to updates-only
-  and archive-first advice. Among newsrooms there are clear relief programs: the Associated Press considers requests to
-  block old minor-crime stories and asks Google to de-index them; the Philadelphia Inquirer's "Up for Review" makes
-  de-indexing its main remedy; the Chicago Sun-Times, Bangor Daily News, Atlanta Journal-Constitution and four
-  broadcasters review requests. Five student papers say they update stories but do not remove them. Both sides are in
-  the workbook, and 103 further named precedents (such as the Boston Globe's Fresh Start) are listed with the sources
-  NSMPA read.
+- **Stage 2 covered all 1,244 professional newsrooms on the list; 69 have a determined position.** 44 permit removal,
+  de-indexing or anonymization in some cases: 25 when circumstances change (charges dropped, a conviction expunged),
+  10 case by case and 9 more generally. Examples include the Hearst newspapers' standards (de-indexing "where an update
+  or correction is insufficient"), the Chicago Sun-Times' de-indexing review panel, the Times-Picayune / New Orleans
+  Advocate's "Reviewing the Record", Bangor Daily News' request form, Boston.com's Fresh Start and the Petaluma
+  Argus-Courier, which has removed stories when charges were later dropped. The other 25 are the opposing side: 8 keep
+  a strict archive (e.g. the Sarasota Herald-Tribune: "we do not remove content from our news pages"), 7 offer only
+  updates (e.g. the Pittsburgh Post-Gazette) and 10 say both. 719 publish nothing relevant that the tool could find;
+  456 could not be determined (site gone or taken over, only a page or two reachable, or automated access blocked),
+  and those count neither way.
+- **Stage 1 covered all 50 standards and support organizations:** 28 publish no relevant guidance, 6 take a position
+  (e.g. the National Press Club Journalism Institute on removing names while keeping stories online), the rest could
+  not be determined. Student media (Stage 3) and broadcasters are next; so far only a handful have been researched.
+  103 further named precedents (such as the Associated Press and the Philadelphia Inquirer's "Up for Review") are
+  listed with the sources NSMPA read.
 - **A hand-built index of 130 organizations was used as a check on the tool.** NSMPA read every linked source itself:
   it confirmed 63 of the 69 strongest entries, and from only each organization's name and homepage it found the policy
   page for 10 of 10 tested organizations.

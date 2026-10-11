@@ -3,25 +3,25 @@
 Each dated folder is a snapshot of what NSMPA has collected, generated from the research database with
 `nsmpa packet --redact-names`. Nothing in these files is edited by hand.
 
-## 2026-10-08 (NSMPA 0.7.4; includes Stage 1 of the national run)
+## 2026-10-10 (NSMPA 0.8.2; includes Stages 1 and 2 of the national run)
 
 | File | What it is |
 |---|---|
-| [`NSMPA_evidence.xlsx`](2026-10-08/NSMPA_evidence.xlsx) | The workbook: every excerpt with its source link, fetch time, page hash, classification, and verification status. Start with the **Read Me** sheet. |
-| [`NSMPA_presentation.pptx`](2026-10-08/NSMPA_presentation.pptx) | A 19-slide summary deck built from the same data. |
-| [`summary.md`](2026-10-08/summary.md) | Counts by group. |
-| [`evidence_index.csv`](2026-10-08/evidence_index.csv) | A hand-built list of 130 organizations with links to their policies or to reporting about them (tiers A–C), compiled independently of the tool. |
-| [`evidence_index_check.csv`](2026-10-08/evidence_index_check.csv) | What NSMPA found when it read each of those links itself: sources found or not, and the strongest supportive excerpt. |
+| [`NSMPA_evidence.xlsx`](2026-10-10/NSMPA_evidence.xlsx) | The workbook: every excerpt with its source link, fetch time, page hash, classification, and verification status. Start with the **Read Me** sheet. |
+| [`NSMPA_presentation.pptx`](2026-10-10/NSMPA_presentation.pptx) | A 19-slide summary deck built from the same data. |
+| [`summary.md`](2026-10-10/summary.md) | Counts by group. |
+| [`evidence_index.csv`](2026-10-10/evidence_index.csv) | A hand-built list of 130 organizations with links to their policies or to reporting about them (tiers A–C), compiled independently of the tool. |
+| [`evidence_index_check.csv`](2026-10-10/evidence_index_check.csv) | What NSMPA found when it read each of those links itself: sources found or not, and the strongest supportive excerpt. |
 
 ### What this snapshot is, and is not
 
-- **An early sample, not a national rate.** 67 organizations have been researched by the tool so far (31 with a
-  determined position), including all 50 standards and support organizations (Stage 1), plus 131 listed precedents
-  whose sources it read. Every group's percentages are withheld until
-  it passes its validation gates (`docs/validation.md`).
-- **Not yet human-verified.** Classification is automated. None of the 1,346 excerpts has been checked against its
+- **An early sample, not a national rate.** 1,305 organizations have been researched by the tool so far (82 with a
+  determined position): all 1,244 professional newsrooms on the list (Stage 2, 69 determined), all 50 standards and
+  support organizations (Stage 1), and a few student papers and broadcasters, plus 131 listed precedents whose sources
+  it read. Every group's percentages are withheld until it passes its validation gates (`docs/validation.md`).
+- **Not yet human-verified.** Classification is automated. None of the 4,990 excerpts has been checked against its
   source by a person yet; each row's `Verified?` column says so. Check the source before quoting any excerpt.
-- **Both directions.** 336 opposing excerpts (refusals, "historical record" principles, errors-only exceptions) are
+- **Both directions.** 626 opposing excerpts (refusals, "historical record" principles, errors-only exceptions) are
   included and have their own sheet.
 - **Selected organizations are labelled.** Organizations added because the hand-built index lists them are marked
   "Counted in rates? = no": they were chosen for having policies and are never part of a percentage.
@@ -30,10 +30,10 @@ Each dated folder is a snapshot of what NSMPA has collected, generated from the 
 
 ### Privacy and withholding
 
-- Names of private individuals are replaced with `[name withheld]` by automated redaction (781 replacements).
+- Names of private individuals are replaced with `[name withheld]` by automated redaction (7,626 replacements).
   Journalists, editors, experts and organizations quoted in their professional roles are kept. Links whose address
   contains a withheld name are also withheld.
-- **3 rows are withheld from this copy because they concern the researcher's own case** (see the disclosure in the
+- **2 rows are withheld from this copy because they concern the researcher's own case** (see the disclosure in the
   main README). The Read Me sheet states this too.
 - The private database keeps original text, links and hashes, so any excerpt can be checked on request by its ID.
 
