@@ -20,9 +20,9 @@ Each dated folder is a snapshot of what NSMPA has collected, generated from the 
   27 hand-picked broadcasters (17 determined) and all 50 standards and support organizations (Stage 1, 6
   determined), plus 131 listed precedents whose sources it read. Every group's percentages are withheld until it
   passes its validation gates (`docs/validation.md`).
-- **Not yet human-verified.** Classification is automated. None of the 6,652 excerpts has been checked against its
+- **Not yet human-verified.** Classification is automated. None of the 6,846 excerpts has been checked against its
   source by a person yet; each row's `Verified?` column says so. Check the source before quoting any excerpt.
-- **Both directions.** 802 opposing excerpts (refusals, "historical record" principles, errors-only exceptions) are
+- **Both directions.** 815 opposing excerpts (refusals, "historical record" principles, errors-only exceptions) are
   included and have their own sheet.
 - **Selected organizations are labelled.** Organizations added because the hand-built index lists them are marked
   "Counted in rates? = no": they were chosen for having policies and are never part of a percentage.
@@ -31,7 +31,7 @@ Each dated folder is a snapshot of what NSMPA has collected, generated from the 
 
 ### Privacy and withholding
 
-- Names of private individuals are replaced with `[name withheld]` by automated redaction (10,265 replacements).
+- Names of private individuals are replaced with `[name withheld]` by automated redaction (10,595 replacements).
   Journalists, editors, experts and organizations quoted in their professional roles are kept. Links whose address
   contains a withheld name are also withheld.
 - **3 rows are withheld from this copy because they concern the researcher's own case** (see the disclosure in the
