@@ -79,6 +79,9 @@ def _newsy(text: str, page) -> bool:
     return structure >= 3 or vocab >= 3
 
 
+ATHLETICS_TITLE = re.compile(r"\bathletics\b|\bofficial (?:athletic|sports) (?:web)?site\b", re.I)
+
+
 # Directories and aggregators that list many newspapers: never a newspaper's own homepage.
 DIRECTORY_SITES = {"thepaperboy.com", "newspapers.com", "usnpl.com", "onlinenewspapers.com", "mondotimes.com", "newslink.org",
                    "pressreader.com", "issuu.com", "newspaperarchive.com", "newsbank.com", "worldnewspapers.com",
@@ -103,6 +106,9 @@ def check_identity(entity, metadata: dict, access_class: str, page=None) -> Iden
     norm = normalize_for_hash(text)
     if PARKED.search(text) or len(norm) < 60:
         return Identity("mismatch", "parked, for-sale, empty or placeholder domain", {"chars": len(norm)})
+    if ATHLETICS_TITLE.search(page.title or ""):
+        # "UC Riverside Athletics - Official Athletics Website" carries the team name "Highlanders" and dated news
+        return Identity("mismatch", "an athletics website, not the publication", {"title": (page.title or "")[:120]})
     name_hit = any(re.search(rf"\b{re.escape(n)}\b", norm) for n in _names(entity, metadata))
     cohort = entity["cohort"]
     if cohort == "student_media":

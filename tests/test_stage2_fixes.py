@@ -261,3 +261,38 @@ async def test_recovery_never_moves_a_generic_masthead_to_another_paper(tmp_path
     ent = db.execute("SELECT * FROM research_entities WHERE name='Herald Tribune'").fetchone()
     assert ent["domain"] == "deadpaper.example"
     assert db.scalar("SELECT stance FROM entity_stances WHERE run_id=?", (rid,)) == "UNDETERMINED"
+
+
+def test_athletics_site_is_not_the_student_paper():
+    from types import SimpleNamespace
+
+    from nsmpa.identity import check_identity
+    page = SimpleNamespace(title="UC Riverside Athletics - Official Athletics Website", links=[("News", "/news/2026/10/1/")],
+                           full_text="Highlanders news, schedules, tickets and rosters. " * 10)
+    ent = {"name": "Highlander", "homepage_url": "https://gohighlanders.com/", "cohort": "student_media", "parent_name": None,
+           "domain": "gohighlanders.com"}
+    assert check_identity(ent, {}, "ok", page).status == "mismatch"
+
+
+async def test_directory_student_paper_without_a_college_is_never_moved_by_name(tmp_path, db, monkeypatch):
+    import httpx
+    from conftest import make_settings, public_resolver
+    from test_pilot_fixes import WEB, handler
+    from test_pipeline import PAGE, FakeSearch
+
+    from nsmpa.fetch import HardenedFetcher
+    from nsmpa.research import import_entities_csv, research_all, start_research
+    # Another school's "Hornet" (pilot: Fullerton College's paper was moved to Sacramento State's).
+    monkeypatch.setitem(WEB, "https://statehornet.example/", PAGE.format(title="The State Hornet | student newspaper", body=(
+        "<p>The State Hornet is the student-run newspaper of Sacramento State.</p><a href='/news/'>News</a>"
+        "<a href='/sports/'>Sports</a><a href='/opinion/'>Opinion</a>")))
+    p = tmp_path / "s.csv"
+    p.write_text("name,url,state\nThe Hornet,https://deadpaper.example/,CA\n")
+    import_entities_csv(db, p, "student_media", "t")
+    s = make_settings(tmp_path, max_retries=0, research_practice_dig="never")
+    rid, _ = start_research(db, s, cohort="student_media", limit=None, run_id=None, max_searches=None, command="t")
+    f = HardenedFetcher(s, transport=httpx.MockTransport(handler), resolver=public_resolver)
+    provider = FakeSearch({'"The Hornet" student newspaper CA': [("https://statehornet.example/", "The State Hornet", "Hornet")]})
+    await research_all(db, s, rid, cohort="student_media", quiet=True, provider=provider, fetcher=f)
+    assert db.scalar("SELECT homepage_url FROM research_entities WHERE name='The Hornet'") == "https://deadpaper.example/"
+    assert db.scalar("SELECT stance FROM entity_stances WHERE run_id=?", (rid,)) == "UNDETERMINED"

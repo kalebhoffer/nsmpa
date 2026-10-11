@@ -983,6 +983,8 @@ class EntityResearcher:
                 return None
             query = f'"{pub}" newspaper {entity["state"] or ""}'.strip()
         else:
+            # Student papers are found through their college; with no college on record, a name search ("Hornet",
+            # "Pioneer", "Spartan") lands on another school's paper too often to be evidence, so there is no recovery.
             return None
         self.dash.update(phase="finding the publication's current website")
         results, qid, _ = await self.broker.search(query, purpose="research:recover_site", entity_id=int(entity["id"]))
