@@ -535,7 +535,36 @@ def score_target(entity, url: str, title: str, snippet: str, rank: int, spec: Qu
 # Result sites that describe a publication but are never its home: encyclopedias, library/archive collections,
 # university news offices, rankings and podcast hosts.
 RECOVERY_SKIP = re.compile(r"(?:wikipedia\.org|//(?:news|library|libraries|content\.libraries|mabel|calendar|today)\.|"
-                           r"onlinebooks\.|niche\.com|podbean\.com|archive\.org|/digital/collection/)", re.I)
+                           r"onlinebooks\.|niche\.com|podbean\.com|archive\.org|/digital/collection/|"
+                           # listings, directories and reference sites that name a paper but are not its website
+                           r"yelp\.|yellowpages\.|muckrack\.|newspapers\.com|ancestry\.|stparchive\.|britannica\.|indeed\.|"
+                           r"nextdoor\.|alignable\.|findglocal\.|allsides\.|sagepub\.|medium\.com|worldorgs\.|usnewsdeserts\.|"
+                           r"historicnewspapers\.|cdnc\.ucr\.edu|azlibrary\.|encyclopedia|books\.com)", re.I)
+# Masthead words shared by hundreds of papers: "Herald Tribune" names Sarasota's paper as readily as Batesville's.
+_MASTHEAD_WORDS = ("the", "daily", "weekly", "news", "times", "herald", "tribune", "standard", "mercury", "observer",
+                   "progress", "statesman", "world", "journal", "courier", "gazette", "press", "record", "post", "star",
+                   "sun", "leader", "independent", "enterprise", "reporter", "citizen", "advocate", "express", "democrat",
+                   "republican", "chronicle", "review", "examiner", "sentinel", "monitor", "bulletin", "voice", "beacon",
+                   "online", "county", "newspaper", "dispatch", "telegraph", "messenger", "register", "argus", "eagle",
+                   "and", "of", "com", "net", "org", "www")
+
+
+def distinctive_marks(entity) -> list[str]:
+    """What tells this paper apart from others with the same masthead: name words that are not masthead words, and
+    what remains of the listed domain once masthead words are cut out ("batesvilleheraldtribune" -> "batesville")."""
+    generic = set(_MASTHEAD_WORDS)
+    marks = [t for t in re.findall(r"[a-z]{4,}", (entity["name"] or "").lower()) if t not in generic]
+    label = registrableish_domain(entity["homepage_url"] or "").split(".")[0].lower()
+    for word in sorted(generic, key=len, reverse=True):
+        if len(word) >= 3:
+            label = label.replace(word, " ")
+    marks += [t for t in re.findall(r"[a-z]{4,}", label) if t not in generic]
+    return list(dict.fromkeys(marks))
+
+
+def carries_mark(marks: list[str], domain: str, text: str = "") -> bool:
+    flat = re.sub(r"[^a-z]", "", f"{domain} {text}".lower())
+    return any(m in flat for m in marks)
 
 
 class _SilentDashboard:
@@ -922,6 +951,21 @@ class EntityResearcher:
         return {"stance": "UNDETERMINED", "confidence": 0.0, "queries": 0, "escalated": False, "max_similarity": 0.0,
                 "supportive": 0, "adverse": 0, "relief_mode": "UNADDRESSED", "identity": ident.status}
 
+    def _adopt_redirect(self, entity, final_url: str):
+        """Make the redirect destination the publication's current homepage (previous URL kept in metadata)."""
+        parts = urlsplit(final_url)
+        path = parts.path if parts.path not in {"", "/"} else "/"
+        new_home = f"{parts.scheme}://{parts.netloc}{path}"
+        meta = json_meta(entity)
+        meta.setdefault("previous_urls", []).append(entity["homepage_url"])
+        meta["redirected"] = {"from": entity["homepage_url"], "to": new_home}
+        dom = registrableish_domain(new_home)
+        self.db.execute("UPDATE research_entities SET homepage_url=?, domain=?, metadata_json=?, updated_at=CURRENT_TIMESTAMP "
+                        "WHERE id=?", (new_home, dom, json.dumps(meta), entity["id"]))
+        self.db.conn.commit()
+        self.dash.add_recent(f"↪ {entity['name']}: listed site redirects to {dom}")
+        return self.db.execute("SELECT * FROM research_entities WHERE id=?", (entity["id"],)).fetchone()
+
     async def _recover_site(self, entity, ident, budget: int):
         """The directory URL is dead or repurposed: look for where the publication lives now (1 search).
 
@@ -954,6 +998,9 @@ class EntityResearcher:
             host = urlsplit(url).netloc.lower()
             if dom == old_dom or host in seen:
                 continue
+            if entity["cohort"] in {"professional_newsroom", "broadcast_newsroom"} and (
+                    dom.endswith(".edu") or "library" in dom):
+                continue  # a college or library page about the paper is not the paper
             seen.add(host)
             blob = f"{res.title} {res.snippet}".lower()
             score = (2 if pub_toks and any(t in blob for t in pub_toks) else 0) + (1 if "student" in blob else 0)
@@ -961,6 +1008,9 @@ class EntityResearcher:
         # Best-named candidate first (title/snippet naming the publication beats an umbrella or committee page that
         # merely mentions it); a site that blocks robots is accepted, unverified, only when the result names it.
         chosen = None
+        # A newsroom's masthead is rarely unique, so the new site must also carry something distinctive (the town in
+        # the old domain, a non-masthead name word); an unverifiable (blocked) site must carry it in its own domain.
+        marks = distinctive_marks(entity) if entity["cohort"] in {"professional_newsroom", "broadcast_newsroom"} else None
         for _neg, _, url in sorted(cands)[:3]:
             root = f"{urlsplit(url).scheme}://{urlsplit(url).netloc}/"
             r = await self.fetcher.fetch_safe(root)
@@ -968,9 +1018,11 @@ class EntityResearcher:
             trial = dict(entity)
             trial["homepage_url"], trial["domain"] = root, registrableish_domain(root)
             got = check_identity(trial, meta, r.access_class, page)
-            if got.status == "ok" and (-_neg >= 2 or got.signals.get("name_on_page")):
+            page_text = f"{page.title} {page.full_text[:30000]}" if page is not None else ""
+            if got.status == "ok" and (-_neg >= 2 or got.signals.get("name_on_page")) and (
+                    marks is None or carries_mark(marks, trial["domain"], page_text)):
                 chosen = (root, trial, True)
-            elif got.status == "blocked" and -_neg >= 2:
+            elif got.status == "blocked" and -_neg >= 2 and (marks is None or carries_mark(marks, trial["domain"])):
                 chosen = (root, trial, False)
             if chosen:
                 break
@@ -1057,6 +1109,16 @@ class EntityResearcher:
         step()
         if ident.status == "blocked" and self.settings.blocked_fallback:
             return await self._research_blocked(entity, ident, budget_per_entity)
+        if ident.proceed and r_home is not None and r_home.final_url and not is_first_party(entity, r_home.final_url):
+            # The listed homepage redirects to another site (merger, rebrand, absorbed by a sister paper, or a lapsed
+            # domain). Follow it only when the destination plainly identifies as this publication.
+            if ident.status == "ok" and not _recovered:
+                moved = self._adopt_redirect(entity, r_home.final_url)
+                return await self.research(moved, budget_per_entity, _recovered=True)
+            from .identity import Identity
+            return self._stop_for_identity(entity, Identity(
+                "mismatch", f"the listed homepage redirects to {registrableish_domain(r_home.final_url)}, which does not "
+                            "clearly identify as this publication", ident.signals))
         if not ident.proceed:
             recovered = None
             if searching and self.settings.research_recover_stale_sites and not _recovered and ident.status in {"mismatch", "unreachable"}:

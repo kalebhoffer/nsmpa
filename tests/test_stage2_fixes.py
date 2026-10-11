@@ -176,3 +176,88 @@ def test_directory_site_is_not_a_newspapers_homepage():
     ent = {"name": "Bryant Daily", "cohort": "professional_newsroom", "homepage_url": "https://www.thepaperboy.com/",
            "parent_name": None}
     assert check_identity(ent, {}, "ok", None).status == "mismatch"
+
+
+async def test_homepage_redirects_are_followed_only_to_the_same_publication(tmp_path, db):
+    import httpx
+    from conftest import make_settings, public_resolver
+    from test_pipeline import PAGE, FakeSearch
+
+    from nsmpa.fetch import HardenedFetcher
+    from nsmpa.research import import_entities_csv, research_all, start_research
+    news = PAGE.format(title="Gorge Weekly | Local news", body=(
+        "<p>Gorge Weekly local news, sports, opinion and obituaries. Subscribe to the e-edition. Letters to the editor.</p>"
+        "<a href='/news/'>News</a><a href='/sports/'>Sports</a><a href='/opinion/'>Opinion</a>"))
+    junk = PAGE.format(title="Family photo generator", body="<p>" + "Free family formals list generator for photographers. " * 5 + "</p>")
+
+    def handler(req):
+        if req.url.path == "/robots.txt":
+            return httpx.Response(404)
+        if req.url.host == "oldgorge.example":
+            return httpx.Response(301, headers={"location": "https://gorgeweekly.example/"})
+        if req.url.host == "deadpaper.example":
+            return httpx.Response(301, headers={"location": "https://photos.example/"})
+        if req.url.host == "gorgeweekly.example" and req.url.path == "/":
+            return httpx.Response(200, headers={"content-type": "text/html"}, content=news.encode())
+        if req.url.host == "photos.example":
+            return httpx.Response(200, headers={"content-type": "text/html"}, content=junk.encode())
+        return httpx.Response(404)
+    p = tmp_path / "e.csv"
+    p.write_text("name,url\nGorge Weekly,https://oldgorge.example/\nClayton Record,https://deadpaper.example/\n")
+    import_entities_csv(db, p, "professional_newsroom", "t")
+    s = make_settings(tmp_path, research_recover_stale_sites=False, max_retries=0, research_practice_dig="never")
+    rid, _ = start_research(db, s, cohort="professional_newsroom", limit=None, run_id=None, max_searches=None, command="t")
+    f = HardenedFetcher(s, transport=httpx.MockTransport(handler), resolver=public_resolver)
+    await research_all(db, s, rid, cohort="professional_newsroom", quiet=True, provider=FakeSearch({}), fetcher=f)
+    gorge = db.execute("SELECT * FROM research_entities WHERE name='Gorge Weekly'").fetchone()
+    assert gorge["domain"] == "gorgeweekly.example" and "oldgorge.example" in gorge["metadata_json"]
+    dead = db.execute("SELECT * FROM research_entities WHERE name='Clayton Record'").fetchone()
+    assert dead["domain"] == "deadpaper.example"
+    st = db.scalar("SELECT rationale FROM entity_stances WHERE entity_id=?", (dead["id"],))
+    assert "does not clearly identify" in st or "no longer appears" in st or "neither" in st
+
+
+def test_protecting_the_individuals_privacy_in_a_story_is_relief():
+    fresh_start = ("We'll consider each case individually and, if warranted, take steps to update the story and protect "
+                   "the privacy of the individual.")
+    assert classify_statement(fresh_start).statement_type in {"case_by_case", "changed_circumstance_relief"}
+    # Website privacy language and source protection are not relief for published journalism.
+    assert classify_statement("We protect the privacy of the people who visit our website and will delete your data "
+                              "on request.").statement_type == "mention"
+    assert classify_statement("Reporters should protect the identity of sources who face danger.").statement_type == "mention"
+
+
+def test_distinctive_marks_separate_same_masthead_papers():
+    from nsmpa.research import carries_mark, distinctive_marks
+    batesville = {"name": "Herald Tribune", "homepage_url": "https://batesvilleheraldtribune.com/"}
+    assert distinctive_marks(batesville) == ["batesville"]
+    assert not carries_mark(["batesville"], "heraldtribune.com", "Sarasota Herald-Tribune: Florida news")
+    sounder = {"name": "Arctic Sounder", "homepage_url": "https://thearcticsounder.com/"}
+    assert carries_mark(distinctive_marks(sounder), "adn.com", "The Arctic Sounder | Anchorage Daily News")
+    assert distinctive_marks({"name": "Mercury", "homepage_url": "https://smmercury.com/"}) == []   # nothing to verify by
+
+
+async def test_recovery_never_moves_a_generic_masthead_to_another_paper(tmp_path, db, monkeypatch):
+    import httpx
+    from conftest import make_settings, public_resolver
+    from test_pilot_fixes import WEB, handler
+    from test_pipeline import PAGE, FakeSearch
+
+    from nsmpa.fetch import HardenedFetcher
+    from nsmpa.research import import_entities_csv, research_all, start_research
+    monkeypatch.setitem(WEB, "https://sarasota.example/", PAGE.format(title="Herald Tribune | Sarasota news", body=(
+        "<p>Herald Tribune: Sarasota and Manatee news, sports and opinion.</p><a href='/news/'>News</a>"
+        "<a href='/sports/'>Sports</a><a href='/opinion/'>Opinion</a>")))
+    monkeypatch.setitem(WEB, "https://www.yelp.com/", PAGE.format(title="Herald Tribune - Yelp", body="<p>Herald Tribune reviews</p>"))
+    p = tmp_path / "e.csv"
+    p.write_text("name,url,state\nHerald Tribune,https://deadpaper.example/,IN\n")
+    import_entities_csv(db, p, "professional_newsroom", "t")
+    s = make_settings(tmp_path, max_retries=0, research_practice_dig="never")
+    rid, _ = start_research(db, s, cohort="professional_newsroom", limit=None, run_id=None, max_searches=None, command="t")
+    f = HardenedFetcher(s, transport=httpx.MockTransport(handler), resolver=public_resolver)
+    routes = {'"Herald Tribune" newspaper IN': [("https://www.yelp.com/biz/herald-tribune", "Herald Tribune - Yelp", "Herald Tribune"),
+                                                ("https://sarasota.example/", "Herald Tribune", "Herald Tribune Sarasota news")]}
+    await research_all(db, s, rid, cohort="professional_newsroom", quiet=True, provider=FakeSearch(routes), fetcher=f)
+    ent = db.execute("SELECT * FROM research_entities WHERE name='Herald Tribune'").fetchone()
+    assert ent["domain"] == "deadpaper.example"
+    assert db.scalar("SELECT stance FROM entity_stances WHERE run_id=?", (rid,)) == "UNDETERMINED"

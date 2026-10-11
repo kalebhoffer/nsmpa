@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.8.1 — Stage 2 completion fixes
+
+- Site recovery ("where does this dead site live now?") no longer accepts a listing or an unrelated paper. The new
+  site must carry something distinctive to the paper (the town in its old domain, a non-masthead name word), not just
+  a shared masthead: "Herald Tribune" had moved Batesville, Indiana's paper to Sarasota's site, "Statesman" to
+  Austin's, "Mercury" (San Marcos) to UT Dallas's student paper. A site that cannot be verified (blocks robots) must
+  carry the mark in its own domain; listings and reference sites (Yelp, Muck Rack, newspapers.com, Ancestry, library
+  archives, encyclopedias, booksellers) and, for professional newsrooms, college and library sites are skipped. 142
+  Stage 2 newsrooms were reverted and re-researched; four false positions and two double counts disappeared.
+- A listed homepage that redirects to the same publication is followed and adopted (old URL kept in metadata);
+  a redirect to a different site stops with an identity mismatch.
+- "Protect the privacy of the individual" in a story (Boston.com Fresh Start) is anonymizing relief, and "consider
+  each case/request individually" is case-by-case review.
+
 ## 0.8.0 — AI veto on decisive excerpts; Stage 2 batch 1 fixes
 
 - AI check (`ai_gate.py`, `nsmpa ai-gate`, on by default in research): before a position is accepted, the excerpts
