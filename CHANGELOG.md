@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.8.5 — Second pass over undetermined organizations
+
+- `research_probe_policy_paths`: after the identity check, read first-party policy and about pages listed in the
+  site's sitemap; if the sitemap lists none, try common paths (`/ethics`, `/corrections`, `/standards`…). Policy pages
+  that nothing links to and search does not index are now found.
+- `research_retry_failed`: with `research --fresh`, pages that failed for a passing reason (timeout, network error,
+  5xx, rate limit) and pages set aside by an identity check are fetched again. `--fresh` now resets only the selected
+  organizations, not the whole run.
+- `blocked_fallback_tier2`: for sites that block automated access, the search-snippet fallback also runs the second
+  tier of first-party searches.
+- Recovery never moves a student paper to its college's own homepage (the Wooster Voice had been moved to
+  wooster.edu). A second recovery search (`"<paper>" <state> local news`) was tried and removed: it chose the wrong
+  site 11 times out of 12.
+- Second pass over 653 undetermined organizations (2,852 search credits): 37 now have enough of their site read to
+  show no relevant guidance; one new position (Gonzales Tribune, the same chain policy as the Gilroy Dispatch). The
+  false findings (headline rails, a casino page, a municipal code, a store refund policy) were vetoed by hand, and
+  13 wrong site moves were reverted.
+
 ## 0.8.4 — Stage 3 fixes
 
 - Student identity: "student-led" / "student news site" wording, the paper's name words in the page title in any

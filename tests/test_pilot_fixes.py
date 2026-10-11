@@ -117,3 +117,17 @@ def test_news_stories_about_others_are_not_policy_targets():
                              "Our standards: we do not remove stories", 2, TIER1[1])
     plain, _ = score_target(ent, "https://apnews.com/hub/sports", "Sports", "Scores", 1, TIER1[0])
     assert story < 0.28 <= policy and plain < 0.28
+
+
+
+async def test_recovery_never_moves_a_student_paper_to_its_college_homepage(tmp_path, db):
+    WEB["https://www.npu-college.edu/"] = PAGE.format(title="Northern Plains University | Students, faculty and alumni",
+                                                      body="<p>Students at Northern Plains University run The Northerner.</p>")
+    try:
+        routes = {'"Northern Plains University" student newspaper': [
+            ("https://www.npu-college.edu/", "Northern Plains University", "Students write for The Northerner, the student newspaper")]}
+        student_entity(db, tmp_path, "https://northerneronline.com/")
+        await run(db, make_settings(tmp_path), routes)
+        assert db.scalar("SELECT homepage_url FROM research_entities") == "https://northerneronline.com/"
+    finally:
+        WEB.pop("https://www.npu-college.edu/")

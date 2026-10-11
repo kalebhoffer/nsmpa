@@ -381,7 +381,10 @@ class BlockedSiteFallback:
         # 2. Search snippets (tier 1) -> leads + archive their pages.
         searching = self.r.broker.provider.name != "none"
         if searching and self.settings.blocked_fallback_snippets and self.used < self.budget:
-            u, _ = await self.r._search_tier(e, plan_queries(self.settings, e, 1), self.budget - self.used)
+            specs = plan_queries(self.settings, e, 1)
+            if self.settings.blocked_fallback_tier2:
+                specs += [s for s in plan_queries(self.settings, e, 2) if not s.third_party]
+            u, _ = await self.r._search_tier(e, specs, self.budget - self.used)
             self.used += u
             self.store_snippets()
             targets = self.db.execute(
