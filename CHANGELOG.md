@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.3 — Stage 3 pilot fixes
+
+- An athletics website ("UC Riverside Athletics - Official Athletics Website", which carries the team name and dated
+  news) is never accepted as a publication's homepage.
+- Student papers with no college on record are not moved to a new site by a name search: in the pilot it matched
+  another school's paper 7 times out of 10 (Fullerton College's "Hornet" to Sacramento State's). A dead site stays
+  undetermined instead.
+
 ## 0.8.2 — Redaction fixes; evidence snapshot with Stage 2
 
 - Redaction trims words that only border a name ("By", "Updated", "If", "We", month abbreviations) and judges what
