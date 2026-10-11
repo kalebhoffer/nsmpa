@@ -239,6 +239,12 @@ def page_kind(url: str, title: str, is_pdf: bool, is_listing: bool) -> str:
     return "other"
 
 
+# Failures worth a second attempt: the site may simply have been slow or briefly down.
+TRANSIENT_FAILURES = ("timeout", "network_error", "server_error", "rate_limited", "host_unavailable", "redirect_error",
+                      "unexpected_status", "skipped_host_unavailable")
+# Where newsrooms usually keep standards pages; read only when the sitemap and homepage links found none.
+PROBE_PATHS = ("/about", "/about-us", "/policies", "/ethics", "/ethics-policy", "/editorial-policy", "/corrections",
+               "/corrections-policy", "/standards", "/contact")
 POLICY_URL_PATH = re.compile(r"/(?:about(?:-us)?|policies|policy|standards|ethics|corrections|help|faq|contact|"
                              r"who-we-are|editorial-(?:policy|standards|guidelines)|guidelines|principles|hc/)", re.I)
 # The newsroom speaking for itself inside a story: first person, an editor's note, or "this story/article was ...".
@@ -587,6 +593,8 @@ class EntityResearcher:
         self.snapshot_root = settings.research_snapshot_dir
         self.ai_fallback_calls = 0
         self._gate = None
+        self._sitemap_urls: dict[int, list[str]] = {}
+        self._refetch: dict[int, set[str]] = {}
 
     # ---------------------------------------------------------------- targets
     def _store_target(self, entity, url: str, title: str, snippet: str, rank: int, spec: QuerySpec | None,
@@ -688,12 +696,54 @@ class EntityResearcher:
              json.dumps(["first_party", topic]), "fetched" if topic == "homepage" else "candidate"))
         return cur.rowcount > 0
 
+    def _prepare_retry(self, entity) -> None:
+        """Second pass: failed-for-transient-reasons targets become candidates again, and so do targets an earlier identity
+        stop skipped (their evidence was set aside as unattributable; it is re-extracted when the pages are read again)."""
+        eid = entity["id"]
+        marks = ",".join("?" * len(TRANSIENT_FAILURES))
+        self.db.execute(f"UPDATE research_targets SET status='candidate' WHERE run_id=? AND entity_id=? "
+                        f"AND status IN ({marks},'skipped_identity')", (self.run_id, eid, *TRANSIENT_FAILURES))
+        stale = self.db.execute("SELECT DISTINCT p.requested_url FROM evidence_items e JOIN research_pages p ON p.id=e.page_id "
+                                "WHERE e.run_id=? AND e.entity_id=? AND e.evidence_class='unattributable_site'",
+                                (self.run_id, eid)).fetchall()
+        if stale:
+            self.db.execute("DELETE FROM evidence_items WHERE run_id=? AND entity_id=? AND evidence_class='unattributable_site'",
+                            (self.run_id, eid))
+            self._refetch[int(eid)] = {r["requested_url"] for r in stale}
+            for r in stale:
+                self.db.execute("UPDATE research_targets SET status='candidate' WHERE run_id=? AND entity_id=? AND url=?",
+                                (self.run_id, eid, r["requested_url"]))
+                self._store_target_direct(entity, r["requested_url"], "first_party_link", 0.6)
+        self.db.conn.commit()
+
+    async def _probe_policy_paths(self, entity, home: str) -> int:
+        """Free first-party discovery beyond homepage links: policy/about URLs listed in the sitemap, else common paths."""
+        from .practice import site_article_urls
+        origin = f"{urlsplit(home).scheme}://{urlsplit(home).netloc}"
+        self.dash.update(phase="sitemap + common policy paths")
+        urls = await site_article_urls(self.fetcher, home)
+        self._sitemap_urls[int(entity["id"])] = urls
+        found = sorted({u for u in urls if is_first_party(entity, u) and not ARTICLE_PATH_RE.search(u)
+                        and (POLICY_URL_PATH.search(urlsplit(u).path) or POLICY_PAGE_RE.search(urlsplit(u).path))
+                        and not LEGAL_BOILERPLATE_RE.search(urlsplit(u).path)}, key=lambda u: (
+            not re.search(r"polic|ethic|standard|correction|unpublish|takedown|remov", u, re.I), len(u)))
+        added = 0
+        for u in found[:6]:
+            added += self._store_target_direct(entity, u, "sitemap_policy_page", 0.8)
+        if not found:
+            for path in PROBE_PATHS:
+                added += self._store_target_direct(entity, origin + path, "probe_path", 0.5)
+        return added
+
     async def _fetch_targets(self, entity) -> None:
         rows = self.db.execute(
             "SELECT * FROM research_targets WHERE run_id=? AND entity_id=? AND status='candidate' ORDER BY score DESC, id",
             (self.run_id, entity["id"])).fetchall()
+        retry = self.settings.research_retry_failed
         seen: set[str] = {r["requested_url"] for r in self.db.execute(
-            "SELECT requested_url FROM research_pages WHERE run_id=? AND entity_id=?", (self.run_id, entity["id"]))}
+            "SELECT requested_url, access_class FROM research_pages WHERE run_id=? AND entity_id=?", (self.run_id, entity["id"]))
+            if not (retry and (r["access_class"] or "") in TRANSIENT_FAILURES)}
+        seen -= self._refetch.pop(int(entity["id"]), set())
         fp_budget = self.settings.research_fetch_top_targets
         tp_budget = self.settings.research_third_party_fetch_limit
         for t in rows:
@@ -880,7 +930,9 @@ class EntityResearcher:
         if self.settings.research_crime_article_sample <= 0:
             return used
         self.dash.update(phase="archive: reading sitemaps")
-        urls = await site_article_urls(self.fetcher, home)
+        urls = self._sitemap_urls.pop(int(entity["id"]), None)
+        if urls is None:
+            urls = await site_article_urls(self.fetcher, home)
         crime, baseline = choose_samples(urls, self.settings.research_crime_article_sample,
                                          self.settings.research_baseline_article_sample)
         self.dash.log(f"  archive sample: {len(urls)} sitemap URLs -> {len(crime)} crime/arrest, {len(baseline)} baseline")
@@ -1003,6 +1055,8 @@ class EntityResearcher:
             if entity["cohort"] in {"professional_newsroom", "broadcast_newsroom"} and (
                     dom.endswith(".edu") or "library" in dom):
                 continue  # a college or library page about the paper is not the paper
+            if dom.endswith(".edu") and host in {dom, f"www.{dom}"}:
+                continue  # a college's own homepage mentions its students and its name, but it is not the paper
             seen.add(host)
             blob = f"{res.title} {res.snippet}".lower()
             score = (2 if pub_toks and any(t in blob for t in pub_toks) else 0) + (1 if "student" in blob else 0)
@@ -1100,6 +1154,8 @@ class EntityResearcher:
         depth = self.settings.research_depth
         searching = self.broker.provider.name != "none"
         used, signal = 0, False
+        if self.settings.research_retry_failed:
+            self._prepare_retry(entity)
         steps = iter(range(1, 9))
         step = lambda: self.dash.update(step_done=next(steps, 8), step_total=8)  # noqa: E731
         self.dash.update(step_done=0, step_total=8)
@@ -1128,6 +1184,8 @@ class EntityResearcher:
             if recovered is not None:
                 return await self.research(recovered, budget_per_entity, _recovered=True)
             return self._stop_for_identity(entity, ident)
+        if self.settings.research_probe_policy_paths and r_home is not None and r_home.final_url and not self.stop.force:
+            await self._probe_policy_paths(entity, r_home.final_url)
         if searching:
             used, signal = await self._search_tier(entity, plan_queries(self.settings, entity, 1), budget_per_entity)
         step()
@@ -1205,7 +1263,8 @@ async def research_all(db: Database, settings: Settings, run_id: str, cohort: st
     keys = [str(r["id"]) for r in rows]
     register_items(db, run_id, "entity", keys)
     if fresh:
-        db.execute("UPDATE run_items SET status='pending' WHERE run_id=? AND item_type='entity'", (run_id,))
+        db.executemany("UPDATE run_items SET status='pending' WHERE run_id=? AND item_type='entity' AND item_key=?",
+                       [(run_id, k) for k in keys])
         db.conn.commit()
     completed = done_keys(db, run_id, "entity")
     todo = [r for r in rows if str(r["id"]) not in completed]

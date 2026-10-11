@@ -3,7 +3,7 @@
 Each dated folder is a snapshot of what NSMPA has collected, generated from the research database with
 `nsmpa packet --redact-names`. Nothing in these files is edited by hand.
 
-## 2026-10-11 (NSMPA 0.8.4; includes Stages 1, 2 and 3 of the national run)
+## 2026-10-11 (NSMPA 0.8.5; includes Stages 1, 2 and 3 of the national run)
 
 | File | What it is |
 |---|---|

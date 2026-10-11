@@ -186,6 +186,10 @@ class Settings(BaseModel):
     # --- v0.4 deep practice digging -------------------------------------------------------
     research_practice_dig: Literal["never", "auto", "always"] = "always"
     research_recover_stale_sites: bool = True
+    # Second-pass settings for organizations a first pass left undetermined.
+    research_probe_policy_paths: bool = False     # read policy/about URLs from the sitemap and common paths (/about, /ethics...)
+    research_retry_failed: bool = False           # refetch pages that failed for transient reasons (timeouts, network errors)
+    blocked_fallback_tier2: bool = False          # blocked sites: also run tier-2 searches for snippets and archived pages
     # Sites that block automated access: archived copies -> search snippets (leads) -> AI search (leads, confirmed
     # word-for-word) -> standards published elsewhere. Never bypasses the block itself.
     blocked_fallback: bool = True
