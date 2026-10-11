@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.8.4 — Stage 3 fixes
+
+- Student identity: "student-led" / "student news site" wording, the paper's name words in the page title in any
+  order ("Independent Alligator" in "The Independent Florida Alligator"), "&" read as "and", a college's own .edu
+  domain, and "University"/"College" in the title outside the paper's own name all count; six live papers that had
+  been rejected are now researched. Titles of taken-over domains (casinos, slots, essays, insurance, crypto) are
+  rejected for every newsroom group.
+- Classifier: "Under no circumstances will X remove" is a refusal; hypothetical arguments ("If these policies did
+  not exist, people could alter…") and lists of refused requests ("…don't adhere to our policies. This includes
+  taking down photos…") are not permissions; post-to-post navigation and teaser rails are not policy.
+- Manual vetoes, recorded in `ai_gate_checks` with model `manual-review`, stand in for the AI check when it is
+  unavailable.
+
 ## 0.8.3 — Stage 3 pilot fixes
 
 - An athletics website ("UC Riverside Athletics - Official Athletics Website", which carries the team name and dated

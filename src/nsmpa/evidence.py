@@ -397,7 +397,9 @@ class _Signals:
             has_object=bool(CONTENT_OBJECT.search(sentence)),
             relief=RELIEF_ACTION.search(sentence),
             update=UPDATE_ACTION.search(sentence),
-            permissive=PERMISSIVE.search(sentence) or (IMPERATIVE.match(sentence) if not neg else None),
+            # "Under no circumstances will The Rocket remove…": the modal is inside an absolute refusal
+            permissive=None if _ABSOLUTE_NO.search(sentence) else (
+                PERMISSIVE.search(sentence) or (IMPERATIVE.match(sentence) if not neg else None)),
             process=PROCESS.search(sentence),
             prohibitive=neg,
             narrow=NARROW_EXCEPTION.search(sentence),
@@ -454,6 +456,34 @@ _LEGAL_ACTOR_ON_RECORDS = re.compile(
     r"statute)\b", re.I)
 _NEWSROOM_UNIT = re.compile(r"\b(?:articles?|stor(?:y|ies)|news(?:paper|room)?s?|publications?|reporters?|coverage|"
                             r"our (?:site|website|archive))\b", re.I)
+# Post-to-post navigation and teaser rails ("Previous Post … Next Post … Related Posts … Top Stories").
+_NAVIGATION = re.compile(r"\b(?:Previous Post|Next Post|Related Posts|Top Stories|Trending Now|Most Popular|Read Next)\b")
+# ...unless the text also states the publication's own position ("We will consider requests to remove…").
+_POLICY_WORDS = re.compile(r"\b(?:we (?:will|may|do not|don['’]t|never|generally|review|consider)|our (?:policy|practice)|"
+                           r"requests? (?:to|for) (?:remove|removal|unpublish|update|de-?index|anonymi))", re.I)
+_ABSOLUTE_NO = re.compile(r"\b(?:under no circumstances|in no (?:case|event)|at no time)\b", re.I)
+# "If these policies did not exist, people could alter the public record…": an argument, not a permission.
+_COUNTERFACTUAL = re.compile(r"^\s*(?:if|were)\b[^.]{0,60}\b(?:did not|didn'?t|were not|weren'?t|was not|wasn'?t)\s+"
+                             r"(?:exist|in place|there)\b|^\s*without (?:these|this|such|our) (?:polic|rule|standard)", re.I)
+# "…asked us to do things that don't adhere to our policies. This includes taking down photos…"
+_INCLUDES_LIST = re.compile(r"^\s*(?:this|these|that|those|such requests?)\s+(?:includes?|included|including|means?)\b", re.I)
+_REFUSAL = re.compile(r"\b(?:don['’]?t|do not|does not|doesn['’]?t|won['’]?t|will not|not adhere|refus\w*|declin\w*|reject\w*)\b",
+                      re.I)
+
+
+def _refusal_before(s) -> bool:
+    """A refusal in the text that leads into "This includes…". Research passes the two sentences before and one after
+    (the sentence itself omitted), so without the sentence in the context the final sentence is dropped."""
+    ctx = s.context or ""
+    i = ctx.find(s.sentence[:40])
+    if i >= 0:
+        before = ctx[:i]
+    else:
+        parts = re.split(r"(?<=[.!?])\s+", ctx.strip())
+        before = " ".join(parts[:-1]) if len(parts) > 1 else ""
+    return bool(_REFUSAL.search(before[-300:]))
+
+
 _REPORTING_ETHICS = re.compile(r"\b(?:suppress\w*|withhold\w*|conceal\w*)\s+(?:essential\s+|relevant\s+|the\s+|any\s+)?"
                                r"(?:information|facts|news|truth)\b|\bfalsif\w+", re.I)
 _CONDUCT = re.compile(r"\b(?:code of conduct|conduct violation|strictly prohibited|prohibited behaviou?r|"
@@ -508,6 +538,10 @@ _SCOPE_RULES: tuple[tuple[str | None, Callable[[_Signals], bool], object], ...] 
     ("record_not_journalism", lambda s: bool(_NON_JOURNALISM_RECORD.search(s.sentence)) and not re.search(
         r"\b(?:articles?|stor(?:y|ies)|coverage|our archive|news archive)\b", s.sentence, re.I), ("mention", 0.2)),
     ("conduct_code_not_relief", lambda s: bool(_CONDUCT.search(s.sentence)), ("mention", 0.2)),
+    ("counterfactual_argument", lambda s: bool(_COUNTERFACTUAL.search(s.sentence)), ("mention", 0.2)),
+    ("site_navigation", lambda s: len(_NAVIGATION.findall(s.sentence)) >= 1 and not _POLICY_WORDS.search(s.sentence),
+     ("mention", 0.2)),
+    ("list_of_refused_requests", lambda s: bool(_INCLUDES_LIST.match(s.sentence)) and _refusal_before(s), ("mention", 0.2)),
     ("reporting_ethics_not_archive", lambda s: bool(_REPORTING_ETHICS.search(s.sentence)) and not re.search(
         r"\b(?:archives?|old (?:stories|articles)|published (?:stories|articles)|after publication)\b", s.sentence, re.I),
      ("mention", 0.2)),
