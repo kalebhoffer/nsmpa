@@ -902,9 +902,16 @@ def build_packet(db: Database, settings: Settings, out_dir: Path, *, run_id: str
           f"- Presentation: `{pptx.name}` ({slides} slides)", ""]
     if data.get("withheld", {}).get("rows"):
         md += [f"{data['withheld']['rows']} row(s) withheld from this copy: {data['withheld']['reason']}.", ""]
+    listed: dict[str, int] = {}
+    for e in data["entities"]:
+        if e["counted_in_rates"] != "yes":
+            listed[e["cohort"]] = listed.get(e["cohort"], 0) + 1
     for c in data["cohorts"]:
         a = data["actions"].get(c, {})
         m = data["metrics"][c]
+        if not a.get("researched") and listed.get(c):
+            md.append(f"- {COHORT_SHORT.get(c, c)}: {listed[c]} hand-picked and shown in the workbook; none counted in rates")
+            continue
         md.append(f"- {COHORT_SHORT.get(c, c)} ({'validated' if m.valid_for_percentages else 'preliminary'}): "
                   f"{a.get('researched', 0)} researched; {a.get('preserving_relief', 0)} archive-preserving relief; "
                   f"{a.get('relief_without_written_policy', 0)} practice without written policy; "

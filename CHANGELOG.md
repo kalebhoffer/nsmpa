@@ -17,6 +17,9 @@
   show no relevant guidance; one new position (Gonzales Tribune, the same chain policy as the Gilroy Dispatch). The
   false findings (headline rails, a casino page, a municipal code, a store refund policy) were vetoed by hand, and
   13 wrong site moves were reverted.
+- The snapshot summary lists hand-picked groups (the 27 broadcasters) instead of showing them as 0 researched.
+- README leads with the findings: of 136 organizations with a published position, 93 allow some relief, 19 refuse
+  any change beyond corrections, and 3 explicitly refuse de-indexing.
 
 ## 0.8.4 — Stage 3 fixes
 
