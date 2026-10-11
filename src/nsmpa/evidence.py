@@ -48,7 +48,8 @@ TAGS: dict[str, re.Pattern[str]] = {k: re.compile(v, re.I) for k, v in {
     "safety": r"\b(?:physical )?safety\b|\bthreat(?:s|ened)? of (?:violence|harm)\b|\bdanger\b|\bstalk(?:ing|er)\b|\bdomestic violence\b",
     "minimize_harm": r"\bminimi[sz](?:e|ing) harm\b|\bharm(?:s)? (?:to|caused)\b|\bcompassion\b",
     "public_interest": r"\bpublic interest\b|\bnewsworth(?:y|iness)\b|\bpublic (?:figure|official)s?\b",
-    "case_by_case": r"\bcase[- ]by[- ]case\b|\bon an individual basis\b|\beach (?:request|case) (?:is|will be) (?:reviewed|considered|evaluated)\b",
+    "case_by_case": r"\bcase[- ]by[- ]case\b|\bon an individual basis\b|\beach (?:request|case) (?:is|will be) (?:reviewed|considered|evaluated)\b|"
+                    r"\bconsider each (?:request|case) individually\b",
     "discretion": r"\b(?:sole |editorial |editor'?s? |editors'? )discretion\b|\bat the discretion\b",
     "update_note": r"\beditor'?s'? notes?\b|\b(?:update|updated|updating|append(?:ed)?|addend(?:um|a))\b|\bfollow[- ]?up (?:story|coverage|article)\b|\boutcome of the case\b|\bdisposition\b",
     "correction": r"\bcorrect(?:ion|ions|ed|ing)\b|\bclarification\b|\berrors?\b|\binaccura(?:te|cy|cies)\b",
@@ -71,7 +72,9 @@ CONTENT_OBJECT = re.compile(
 RELIEF_ACTION = re.compile(
     r"\b(?:unpublish\w*|remov(?:e|ed|es|al|ing)|delet(?:e|ed|es|ion|ing)|take[sn]? down|taking down|"
     r"de-?\s?index\w*|no-?index\w*|anonymi[sz]\w*|redact\w*|withdraw\w*|suppress\w*|"
-    r"replac\w* (?:the |a )?names?|block\w* (?:from )?search|hide|hidden from search)\b",
+    r"replac\w* (?:the |a )?names?|block\w* (?:from )?search|hide|hidden from search|"
+    # "update the story and protect the privacy of the individual" (Boston.com Fresh Start): anonymizing a story
+    r"protect\w* the (?:privacy|identity|identities) of (?:the |an? )?(?:individuals?|persons?|people|subjects?))\b",
     re.I,
 )
 UPDATE_ACTION = re.compile(
