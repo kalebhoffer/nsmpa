@@ -48,6 +48,16 @@ NOT_PERSON |= {
     "Atlanta", "Miami", "Houston", "Dallas", "Austin", "Detroit", "Cleveland", "Baltimore", "Pittsburgh", "Minneapolis",
 }
 NOT_PERSON |= {w for state in ["Alabama", "Alaska", "Arizona", "Arkansas", "California", "Colorado", "Connecticut", "Delaware", "Florida", "Georgia", "Hawaii", "Idaho", "Illinois", "Indiana", "Iowa", "Kansas", "Kentucky", "Louisiana", "Maine", "Maryland", "Massachusetts", "Michigan", "Minnesota", "Mississippi", "Missouri", "Montana", "Nebraska", "Nevada", "Hampshire", "Jersey", "Mexico", "York", "Carolina", "Dakota", "Ohio", "Oklahoma", "Oregon", "Pennsylvania", "Rhode", "Island", "Tennessee", "Texas", "Utah", "Vermont", "Virginia", "Washington", "Wisconsin", "Wyoming", "Columbia"] for w in [state]}
+NOT_PERSON |= {"Enterprise", "Announcements", "Democrats", "Republicans", "Democratic", "Congress", "Senate"}
+# Words that only border a name ("By Oscar Rodriguez", "Jeremy Roebuck Updated", "Updates We may…"): trimmed off the
+# edges of a match, and what remains is judged on its own, so a byline's name is still withheld.
+EDGE_WORDS = {"We", "Our", "Us", "It", "Its", "He", "She", "His", "Her", "They", "Their", "If", "Or", "And", "But", "As",
+              "By", "Of", "To", "Is", "No", "Do", "So", "Are", "Not", "Was", "Were", "Has", "Have", "Can", "You", "Your",
+              "What", "How", "Why", "Who", "Call", "Report", "Updates", "Updated", "Corrections", "Correction",
+              "Clarification", "Most", "About", "Key", "Points", "Policies", "Unpublishing", "Jan", "Feb", "Mar", "Apr",
+              "Jun", "Jul", "Aug", "Sep", "Sept", "Oct", "Nov", "Dec"}
+# "Mr. Doggett": a title before a single surname marks a person the two-word pattern cannot see.
+_TITLED = re.compile(r"\b(?:Mr|Mrs|Ms|Miss|Mx|Dr)\.?\s+((?:Mc|Mac|O'|D')?[A-Z][a-z]{1,25}(?:-[A-Z][a-z]{1,20})?)\b")
 URL_SAFE_PLACEHOLDER = "[URL withheld: contains a redacted name; available on request with evidence ID]"
 
 
@@ -110,7 +120,12 @@ class Redactor:
             return False
         if self.common_words and all(w.rstrip(".").lower() in self.common_words for w in words):
             return False  # every word is ordinary language: a capitalized headline phrase, not a person
-        return _norm(cand) not in self.keep
+        norm = _norm(cand).split()
+        for i in range(len(norm) - 1):  # "Davis Enterprise Announcements" contains a kept name
+            for j in range(i + 2, len(norm) + 1):
+                if " ".join(norm[i:j]) in self.keep:
+                    return False
+        return True
 
     def text(self, value, *, speaker: str | None = None):
         """Redact person names in a string. ``speaker`` (an attributed quote's own author) is kept."""
@@ -121,6 +136,24 @@ class Redactor:
 
         def repl(m: re.Match) -> str:
             cand = m.group(1)
+            words = cand.split()
+            lo, hi = 0, len(words)
+            while lo < hi and words[lo] in EDGE_WORDS:
+                lo += 1
+            while hi > lo and words[hi - 1] in EDGE_WORDS:
+                hi -= 1
+            if (lo, hi) != (0, len(words)):
+                core = words[lo:hi]
+                single = len(core) == 1 and core[0] not in NOT_PERSON and _norm(core[0]) not in self.keep and (
+                    core[0].lower() not in self.common_words)          # "If Cuvelier": a surname alone
+                if not core or (len(core) == 1 and not single) or (len(core) > 1 and not self._is_person(" ".join(core))):
+                    return m.group(0)
+                if _norm(" ".join(core)) in keep_extra:
+                    return m.group(0)
+                surnames.add(core[-1])
+                self.redacted_tokens.update(p.lower().rstrip(".") for p in core if len(p) > 2)
+                self.count += 1
+                return m.group(0).replace(" ".join(core), PLACEHOLDER, 1)
             if not self._is_person(cand) or _norm(cand) in keep_extra:
                 return m.group(0)
             parts = cand.split()
@@ -130,6 +163,16 @@ class Redactor:
             return PLACEHOLDER
 
         out = _NAME.sub(repl, value)
+
+        def titled(m: re.Match) -> str:
+            sn = m.group(1)
+            if sn in NOT_PERSON or _norm(sn) in self.keep or _norm(sn) in keep_extra:
+                return m.group(0)
+            surnames.add(sn)
+            self.redacted_tokens.add(sn.lower())
+            self.count += 1
+            return m.group(0).replace(sn, PLACEHOLDER)
+        out = _TITLED.sub(titled, out)
         # Later bare-surname references to a redacted person ("Smithers was charged").
         for sn in surnames:
             if _norm(sn) not in self.keep and sn not in NOT_PERSON:

@@ -78,3 +78,20 @@ def test_headline_phrases_are_not_names_but_people_still_are():
                  "Police arrested John Brown on Tuesday.")
     assert "A Case Study" in out and "Publishing Principles" in out and "Anonymity Policies" in out
     assert "John Brown" not in out and "[name withheld]" in out          # a common surname does not save a real name
+
+
+def test_edge_words_are_trimmed_and_the_name_inside_still_judged():
+    r = Redactor({"Davis Enterprise"})
+    r.learn_common_words(["we may update a developing story", "report it to the editor"])
+    assert r.text("Updates We may update a developing story.") == "Updates We may update a developing story."
+    assert r.text("Davis Enterprise Announcements, Online") == "Davis Enterprise Announcements, Online"
+    assert r.text("By Oscar Rodriguez") == f"By {PLACEHOLDER}"                  # bylines still withheld
+    assert r.text("Jeremy Roebuck Updated Oct 3") == f"{PLACEHOLDER} Updated Oct 3"
+    assert r.text("Mike Deak Nov. 6, 2017") == f"{PLACEHOLDER} Nov. 6, 2017"
+    assert r.text("If Cuvelier wins the appeal") == f"If {PLACEHOLDER} wins the appeal"
+
+
+def test_titled_surname_is_withheld():
+    r = Redactor()
+    out = r.text("Editor's Note: Mr. Doggett was later cleared. Doggett's record was expunged.")
+    assert "Doggett" not in out and out.startswith(f"Editor's Note: Mr. {PLACEHOLDER}")

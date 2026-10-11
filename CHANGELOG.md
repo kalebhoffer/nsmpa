@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.2 — Redaction fixes; evidence snapshot with Stage 2
+
+- Redaction trims words that only border a name ("By", "Updated", "If", "We", month abbreviations) and judges what
+  remains, so "Updates We may update a developing story" is no longer withheld while a byline's name still is; a
+  capitalized run that contains a kept organization name ("Davis Enterprise Announcements") is kept; a title before a
+  surname ("Mr. Doggett") is withheld, along with later mentions of that surname.
+- Evidence snapshot `evidence/2026-10-10`: Stages 1 and 2 (1,305 organizations researched, 82 with a determined
+  position; 4,990 excerpts, 626 opposing), with the researcher's own case still withheld.
+
 ## 0.8.1 — Stage 2 completion fixes
 
 - Site recovery ("where does this dead site live now?") no longer accepts a listing or an unrelated paper. The new
