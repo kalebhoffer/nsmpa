@@ -23,7 +23,7 @@ quotes every finding word for word with its source, and publishes the opposing e
 
 ## Key findings (11 October 2026)
 
-NSMPA has researched **1,805 organizations**. Of the newsrooms and journalism organizations among them, **135 publish
+NSMPA has researched **1,800 organizations**. Of the newsrooms and journalism organizations among them, **135 publish
 a position on old stories clear enough to classify** (hand-picked broadcasters are reported separately below):
 
 | Published position | Organizations |
@@ -31,7 +31,9 @@ a position on old stories clear enough to classify** (hand-picked broadcasters a
 | Offer some level of post-publication relief (removal, de-indexing, anonymization, case-by-case review, or updates and editor's notes) | 116 |
 | Refuse any change beyond correcting errors | 19 |
 
-The Whitworthian appears twice in the 11 October snapshot (two entries for the same site); it is counted once here.
+Five student papers appear twice in the 11 October snapshot (The Whitworthian, The Daily Texan, The Vista, The Pioneer Log
+and The Auburn Plainsman, which is also listed as a professional newsroom). Each is counted once in this README, so
+the snapshot's 1,805 entries are 1,800 organizations.
 
 - **A hard refusal is the minority position.** 116 of the 135 offer some level of post-publication relief. Only 19,
   about one in seven, rule out everything beyond correcting errors.
@@ -45,20 +47,20 @@ The Whitworthian appears twice in the 11 October snapshot (two entries for the s
   ASNE and APME): "You can also anonymize that person's name; update the old information; de-index/obscure it from
   Google search results; or add an editor's note to existing content." The Reynolds Journalism Institute: "the nature of
   the content may make anonymizing the person an innocuous change."
-- **Most organizations publish nothing at all.** 1,021 have no relevant policy the tool could find, and 631 could
+- **Most organizations publish nothing at all.** 1,019 have no relevant policy the tool could find, and 629 could
   not be read well enough to tell (most are dead, parked or blocked sites). Neither group is counted for or against
   relief. A policy that is not published cannot be checked, applied consistently, or cited by the person it is
   applied to.
 
 By group:
 
-- **Professional newsrooms (Stage 2, 1,244 researched):** 44 allow relief in some cases (e.g. the Associated Press,
+- **Professional newsrooms (Stage 2, 1,243 researched):** 44 allow relief in some cases (e.g. the Associated Press,
   Hearst's papers, the Philadelphia Inquirer, the Chicago Sun-Times, Boston.com's Fresh Start), 10 say both, and 15
   refuse or offer only updates (e.g. The Denver Post, the Pittsburgh Post-Gazette). 763 publish nothing the tool could
-  find; 412 could not be determined.
-- **Student media (Stage 3, 484 researched):** 24 allow relief (e.g. UMass's Daily Collegian name-removal form, the
+  find; 411 could not be determined.
+- **Student media (Stage 3, 480 researched):** 24 allow relief (e.g. UMass's Daily Collegian name-removal form, the
   Diamondback on expungement, the Hoya), 9 say both, and 27 refuse or offer only updates (e.g. the GW Hatchet,
-  Vanderbilt Hustler, Daily Tar Heel). 225 publish nothing the tool could find; 198 could not be determined.
+  Vanderbilt Hustler, Daily Tar Heel). 223 publish nothing the tool could find; 197 could not be determined.
 - **Broadcasters (27, hand-picked):** 17 allow relief, from 5 distinct policies; 13 NBCUniversal stations share one
   that excludes violent crimes, sex crimes, crimes against children and public corruption. None refuses.
 - **Standards and support organizations (Stage 1, all 50):** 6 take a position, mostly describing options

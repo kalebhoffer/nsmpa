@@ -15,14 +15,14 @@ Each dated folder is a snapshot of what NSMPA has collected, generated from the 
 
 ### What this snapshot is, and is not
 
-- **Counts, not national rates.** 1,805 organizations have been researched (152 with a determined position): all
-  1,244 professional newsrooms on the list (Stage 2, 69 determined), 484 student papers (Stage 3, 60 determined),
+- **Counts, not national rates.** 1,800 organizations have been researched (152 with a determined position): all
+  1,243 professional newsrooms on the list (Stage 2, 69 determined), 480 student papers (Stage 3, 60 determined),
   27 hand-picked broadcasters (17 determined) and all 50 standards and support organizations (Stage 1, 6
   determined), plus 131 listed precedents whose sources it read. Of the 135 newsrooms and organizations with a
   determined position (broadcasters aside), 72 allow relief in some cases or review requests individually, 20 say
   both, 24 offer only updates and 19 refuse any change beyond correcting errors. 23 explicitly offer de-indexing;
-  3 explicitly refuse it. (The Whitworthian has two rows in the workbook; these counts include it
-  once.) Every group's percentages are withheld until it passes its validation gates
+  3 explicitly refuse it. (Five student papers have two rows in the workbook, 1,805 rows in all;
+  these counts include each once.) Every group's percentages are withheld until it passes its validation gates
   (`docs/validation.md`).
 - **Not yet human-verified.** Classification is automated. None of the 6,846 excerpts has been checked against its
   source by a person yet; each row's `Verified?` column says so. Check the source before quoting any excerpt.
