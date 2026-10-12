@@ -1450,7 +1450,7 @@ def estimate_cmd(cohort: str | None = typer.Option(None, "--cohort"), limit: int
 def pilot_cmd(budget: int = typer.Option(25, "--budget", min=0, help="Total search credits for the whole pilot"),
               ai_calls: int = typer.Option(10, "--ai-calls", min=0), support: int = typer.Option(1, "--support", min=0),
               newsrooms: int = typer.Option(2, "--newsrooms", min=0), schools: int = typer.Option(2, "--schools", min=0),
-              unitid: list[str] = typer.Option([], "--unitid", help="Institutions for discovery (default WSU)"),
+              unitid: list[str] = typer.Option([], "--unitid", help="Institutions for discovery (default: pilot_schools in config.yml)"),
               quiet: bool = QuietOpt, verbose: bool = VerboseOpt, config: Path | None = ConfigOpt) -> None:
     """One capped end-to-end trial with a plain-language report (output/pilot_<UTC>/pilot_report.md)."""
     from .pilot import run_pilot

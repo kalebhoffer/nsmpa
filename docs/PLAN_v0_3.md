@@ -87,7 +87,7 @@ Not run: the user chose to skip spending credits in this session. Zero-credit li
 
 - Research, 3 support orgs (ACP, CMA, SPLC): 14 pages fetched, 0 errors; after the null-provider fix all three
   correctly return `UNDETERMINED` ("no targeted searches were run") instead of a false `NO_RELEVANT_GUIDANCE`.
-- Discovery, 4 WA institutions (site inspection only): 0 candidates. One institution's site does not link its student paper
+- Discovery, 4 pilot institutions (site inspection only): 0 candidates. One institution's site does not link its student paper
   from its hub pages within the page budget; Gonzaga's WAF returns 403 to non-browser clients (recorded as
   `blocked`, circuit breaker engaged). Conclusion: discovery requires Serper; site inspection is a fallback.
 - Real SIGINT during a 12-entity run: in-flight entities finished, 7 done / 5 pending, run `interrupted`,

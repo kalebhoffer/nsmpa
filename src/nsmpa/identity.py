@@ -151,8 +151,8 @@ def check_identity(entity, metadata: dict, access_class: str, page=None) -> Iden
         inst = institution_base_name(entity["parent_name"] or "")
         inst_norm = normalize_for_hash(inst)
         toks = _name_tokens(inst)
-        # Whole-word phrase matches only: "northern" must not match inside "Northerner", and scattered words ("Eastern" in
-        # one travel article, "Washington" in another) are not the institution's name.
+        # Whole-word phrase matches only: "northern" must not match inside "Northerner", and scattered words ("Northern"
+        # in one travel article, "Plains" in another) are not the institution's name.
         inst_hit = bool(inst_norm and re.search(rf"\b{re.escape(inst_norm)}\b", norm)) or (
             len(toks) >= 2 and re.search(r"\b" + r"\W+(?:\w+\W+)?".join(map(re.escape, toks)) + r"\b", norm) is not None)
         acro = _acronym(inst)
