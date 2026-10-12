@@ -107,3 +107,14 @@ def test_withheld_rows_are_dropped_everywhere_and_counted():
     n = withhold_rows(data, ["/973/news/arrest-story"], "concerns the researcher's own case")
     assert n == 2 and len(data["all_evidence"]) == 1 and data["sources"] == []
     assert data["withheld"] == {"rows": 2, "reason": "concerns the researcher's own case"}
+
+
+def test_withholding_a_site_drops_the_organization_row_too():
+    from nsmpa.packet import withhold_rows
+    data = {"entities": [{"name": "Own Paper", "homepage_url": "https://ownpaper.example/"},
+                         {"name": "Other Paper", "homepage_url": "https://other.example/"}],
+            "voices": [{"person_name": "Own Paper", "source_url": "https://ownpaper.example/editorial-policy/"}],
+            "ledger": [{"entity": "Own Paper", "query": "editorial policy"}, {"entity": "Other Paper", "query": "x"}]}
+    assert withhold_rows(data, ["ownpaper.example"], "concerns the researcher's own case") == 3
+    assert [e["name"] for e in data["entities"]] == ["Other Paper"] and data["voices"] == []
+    assert [r["entity"] for r in data["ledger"]] == ["Other Paper"]          # named rows go too, even without a URL

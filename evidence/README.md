@@ -21,8 +21,7 @@ Each dated folder is a snapshot of what NSMPA has collected, generated from the 
   determined), plus 131 listed precedents whose sources it read. Of the 135 newsrooms and organizations with a
   determined position (broadcasters aside), 72 allow relief in some cases or review requests individually, 20 say
   both, 24 offer only updates and 19 refuse any change beyond correcting errors. 23 explicitly offer de-indexing;
-  3 explicitly refuse it. (Five student papers have two rows in the workbook, 1,805 rows in all;
-  these counts include each once.) Every group's percentages are withheld until it passes its validation gates
+  3 explicitly refuse it. Every group's percentages are withheld until it passes its validation gates
   (`docs/validation.md`).
 - **Not yet human-verified.** Classification is automated. None of the 6,846 excerpts has been checked against its
   source by a person yet; each row's `Verified?` column says so. Check the source before quoting any excerpt.
@@ -38,8 +37,9 @@ Each dated folder is a snapshot of what NSMPA has collected, generated from the 
 - Names of private individuals are replaced with `[name withheld]` by automated redaction (10,595 replacements).
   Journalists, editors, experts and organizations quoted in their professional roles are kept. Links whose address
   contains a withheld name are also withheld.
-- **3 rows are withheld from this copy because they concern the researcher's own case** (see the disclosure in the
-  main README). The Read Me sheet states this too.
+- **120 rows are withheld from this copy because they concern the researcher's own case** (see the disclosure in
+  the main README): every row from or about the newspaper involved. It is researched and counted in the totals above
+  but not shown, so the Entities sheet lists 1,799 of the 1,800 organizations. The Read Me sheet states this too.
 - The private database keeps original text, links and hashes, so any excerpt can be checked on request by its ID.
 
 ### Checking a row

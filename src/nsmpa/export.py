@@ -139,6 +139,7 @@ def export_run(db: Database, run_id: str, out_dir: str | Path) -> dict[str, int]
 
 # --------------------------------------------------------------------------- v0.3 research exports
 
+# Merged duplicates (active=0, merged_into set) are left out of entity, evidence and stance exports.
 RESEARCH_EXPORTS: dict[str, str] = {
     "entities": """
         SELECT re.id AS entity_id, re.cohort, re.name, re.parent_name, re.homepage_url, re.domain, re.state, re.source,
@@ -146,6 +147,7 @@ RESEARCH_EXPORTS: dict[str, str] = {
                (SELECT group_concat(es.source, ';') FROM entity_sources es WHERE es.entity_id=re.id) AS provenance_sources
         FROM research_entities re
         WHERE re.id IN (SELECT CAST(item_key AS INTEGER) FROM run_items WHERE run_id=:run AND item_type='entity')
+          AND re.active=1 AND re.merged_into IS NULL
         ORDER BY re.cohort, re.name""",
     "search_queries": """
         SELECT q.id AS query_id, q.created_at, q.run_id, q.entity_id, re.name AS entity_name, q.unitid, q.provider, q.purpose,
@@ -175,7 +177,7 @@ RESEARCH_EXPORTS: dict[str, str] = {
                e.query_id, q.query AS search_query, e.rationale AS classifier_cues, e.run_id
         FROM evidence_items e JOIN research_entities re ON re.id=e.entity_id
         LEFT JOIN search_queries q ON q.id=e.query_id
-        WHERE e.run_id=:run ORDER BY e.similarity_score DESC, e.id""",
+        WHERE e.run_id=:run AND re.active=1 AND re.merged_into IS NULL ORDER BY e.similarity_score DESC, e.id""",
     "entity_stances": """
         SELECT s.entity_id, re.cohort, re.name, re.parent_name, re.homepage_url, s.stance, s.confidence, s.rationale,
                s.evidence_count, s.supportive_count, s.adverse_count, s.max_similarity_score,
@@ -186,7 +188,7 @@ RESEARCH_EXPORTS: dict[str, str] = {
         FROM entity_stances s JOIN research_entities re ON re.id=s.entity_id
         LEFT JOIN evidence_items sup ON sup.id=s.strongest_supportive_id
         LEFT JOIN evidence_items adv ON adv.id=s.strongest_adverse_id
-        WHERE s.run_id=:run ORDER BY re.cohort, s.stance, re.name""",
+        WHERE s.run_id=:run AND re.active=1 AND re.merged_into IS NULL ORDER BY re.cohort, s.stance, re.name""",
     "human_review_queue": """
         SELECT q.id AS review_id, q.priority, q.status, q.cohort, re.name AS entity_name, s.stance, s.confidence,
                q.reasons_json, s.rationale, re.homepage_url
@@ -206,7 +208,7 @@ def export_research(db: Database, run_id: str, out_dir: str | Path) -> dict[str,
     run = db.execute("SELECT * FROM research_runs WHERE id=?", (run_id,)).fetchone()
     stance_rows = db.execute(
         "SELECT re.cohort, s.stance, COUNT(*) n FROM entity_stances s JOIN research_entities re ON re.id=s.entity_id "
-        "WHERE s.run_id=? GROUP BY re.cohort, s.stance ORDER BY re.cohort, s.stance", (run_id,)).fetchall()
+        "WHERE s.run_id=? AND re.active=1 AND re.merged_into IS NULL GROUP BY re.cohort, s.stance ORDER BY re.cohort, s.stance", (run_id,)).fetchall()
     by_cohort: dict[str, dict[str, int]] = {}
     for r in stance_rows:
         by_cohort.setdefault(r["cohort"], {})[r["stance"]] = r["n"]
