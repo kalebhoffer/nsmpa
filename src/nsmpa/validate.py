@@ -23,6 +23,14 @@ def counted_in_rates(alias: str = "") -> str:
 
 NOT_SELECTED = counted_in_rates()
 
+
+def live_entity(alias: str = "re") -> str:
+    """SQL condition: the entity has not been retired or merged into another (a duplicate never counts twice)."""
+    return f"{alias}.active=1 AND {alias}.merged_into IS NULL"
+
+
+LIVE_ENTITY_IDS = "(SELECT id FROM research_entities WHERE active=1 AND merged_into IS NULL)"
+
 COHORT_LABELS = {
     "student_media": "Student journalism",
     "professional_newsroom": "Professional journalism",
@@ -37,10 +45,12 @@ COHORT_LABELS = {
 def latest_stances_sql(run_id: str | None) -> tuple[str, list]:
     """SQL (as a subquery) selecting one current stance row per entity."""
     if run_id:
-        return ("SELECT s.* FROM entity_stances s WHERE s.run_id=? AND s.stance_version='0.3'", [run_id])
+        return (f"SELECT s.* FROM entity_stances s WHERE s.run_id=? AND s.stance_version='0.3' "
+                f"AND s.entity_id IN {LIVE_ENTITY_IDS}", [run_id])
     return ("""SELECT s.* FROM entity_stances s
                JOIN (SELECT entity_id, MAX(id) mid FROM entity_stances
                      WHERE stance_version='0.3' AND run_id NOT IN (SELECT id FROM v_excluded_runs)
+                       AND entity_id IN """ + LIVE_ENTITY_IDS + """
                      GROUP BY entity_id) m
                  ON m.mid=s.id""", [])
 

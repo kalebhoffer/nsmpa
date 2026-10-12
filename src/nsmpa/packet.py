@@ -19,7 +19,7 @@ from . import __version__
 from .config import Settings
 from .db import Database
 from .utils import sha256_text
-from .validate import all_cohorts, cohort_metrics, counted_in_rates, latest_stances_sql
+from .validate import all_cohorts, cohort_metrics, counted_in_rates, latest_stances_sql, live_entity
 
 # Validated categorical slots (dataviz reference palette, light mode; first three validate all-pairs).
 SERIES = ["2A78D6", "EB6834", "1BAF7A"]
@@ -78,7 +78,7 @@ def gather(db: Database, settings: Settings, run_id: str | None = None) -> dict:
     lim = settings.packet_max_rows_per_sheet
 
     def ev(where: str, order: str, limit: int = lim, extra: list | None = None) -> list[dict]:
-        sql = (f"SELECT {EVIDENCE_COLS} {EVIDENCE_FROM} WHERE e.duplicate_of IS NULL AND ({scope}) AND ({where}) "
+        sql = (f"SELECT {EVIDENCE_COLS} {EVIDENCE_FROM} WHERE e.duplicate_of IS NULL AND {live_entity()} AND ({scope}) AND ({where}) "
                f"ORDER BY {order} LIMIT ?")
         return [dict(r) for r in db.execute(sql, sparams + (extra or []) + [limit])]
 
@@ -157,40 +157,41 @@ def gather(db: Database, settings: Settings, run_id: str | None = None) -> dict:
                ORDER BY CASE WHEN x.id IS NULL THEN 1 ELSE 0 END, CASE v.verification_status WHEN 'verified' THEN 0 ELSE 1 END,
                         CASE v.direction WHEN 'supportive' THEN 0 WHEN 'adverse' THEN 1 ELSE 2 END, v.case_match_score DESC""")],
         "sources": [dict(r) for r in db.execute(
-            """SELECT p.id AS page_id, re.cohort, re.name AS entity, p.page_kind, p.first_party, p.access_class, p.http_status,
+            f"""SELECT p.id AS page_id, re.cohort, re.name AS entity, p.page_kind, p.first_party, p.access_class, p.http_status,
                       p.requested_url, p.final_url, p.title, p.author, p.published_date, p.fetched_at, p.content_sha256, p.text_sha256,
                       p.snapshot_path, p.meta_robots, p.x_robots_tag, p.noindex, p.run_id,
                       COALESCE(p.acquisition, 'live') AS acquisition, p.archive_url
                FROM research_pages p JOIN research_entities re ON re.id=p.entity_id
-               WHERE p.run_id NOT IN (SELECT id FROM v_excluded_runs) ORDER BY re.cohort, re.name, p.id LIMIT ?""", (lim,))],
+               WHERE p.run_id NOT IN (SELECT id FROM v_excluded_runs) AND {live_entity()}
+               ORDER BY re.cohort, re.name, p.id LIMIT ?""", (lim,))],
         "legal": [dict(r) for r in db.execute(
             """SELECT jurisdiction, topic, title, citation, status, prior_confidence, claim, best_excerpt, best_source, primary_url,
                       status_note, last_checked_at FROM legal_context
                ORDER BY CASE status WHEN 'human_verified' THEN 0 WHEN 'sources_found' THEN 1 ELSE 2 END,
                         CASE WHEN key LIKE 'state_%' THEN 1 ELSE 0 END, id""")],
         "wayback": [dict(r) for r in db.execute(
-            """SELECT re.cohort, re.name AS entity, w.url, w.status, w.snapshots, w.earliest_ts, w.compared_ts, w.archive_url,
+            f"""SELECT re.cohort, re.name AS entity, w.url, w.status, w.snapshots, w.earliest_ts, w.compared_ts, w.archive_url,
                       w.observations_json, w.run_id
                FROM wayback_checks w JOIN research_entities re ON re.id=w.entity_id
-               WHERE w.run_id NOT IN (SELECT id FROM v_excluded_runs)
+               WHERE w.run_id NOT IN (SELECT id FROM v_excluded_runs) AND {live_entity()}
                ORDER BY CASE w.status WHEN 'changed' THEN 0 ELSE 1 END, re.name LIMIT ?""", (lim,))],
         "ai": [dict(r) for r in db.execute(
-            """SELECT re.cohort, re.name AS entity, f.agreement, f.kind, f.action, f.position, f.direction, f.conditions,
+            f"""SELECT re.cohort, re.name AS entity, f.agreement, f.kind, f.action, f.position, f.direction, f.conditions,
                       f.speaker, f.speaker_role, f.quote, p.final_url AS source_url, f.matched_evidence_id, r.model, r.prompt_version,
                       r.run_id AS ai_run_id
                FROM ai_findings f JOIN ai_reviews r ON r.id=f.review_id JOIN research_entities re ON re.id=f.entity_id
                LEFT JOIN research_pages p ON p.id=f.page_id
-               WHERE f.quote_verified=1
+               WHERE f.quote_verified=1 AND {live_entity()}
                ORDER BY CASE f.agreement WHEN 'disagree' THEN 0 WHEN 'ai_only' THEN 1 ELSE 2 END, re.name LIMIT ?""", (lim,))],
         "captures": [dict(r) for r in db.execute(
-            """SELECT c.id AS capture_id, re.cohort, re.name AS entity, c.url, c.title, c.captured_by, c.captured_at,
+            f"""SELECT c.id AS capture_id, re.cohort, re.name AS entity, c.url, c.title, c.captured_by, c.captured_at,
                       c.first_party, c.evidence_count, c.text_sha256, c.note
-               FROM captures c JOIN research_entities re ON re.id=c.entity_id ORDER BY c.id""")],
+               FROM captures c JOIN research_entities re ON re.id=c.entity_id WHERE {live_entity()} ORDER BY c.id""")],
         "ai_leads": [dict(r) for r in db.execute(
-            """SELECT l.id AS lead_id, re.cohort, re.name AS entity, l.status, l.confirmed_via, l.confirmed_url, l.claimed_url,
+            f"""SELECT l.id AS lead_id, re.cohort, re.name AS entity, l.status, l.confirmed_via, l.confirmed_url, l.claimed_url,
                       l.quote, l.summary, l.evidence_id, l.model, l.created_at
                FROM ai_leads l JOIN research_entities re ON re.id=l.entity_id
-               WHERE l.run_id IS NULL OR l.run_id NOT IN (SELECT id FROM v_excluded_runs)
+               WHERE (l.run_id IS NULL OR l.run_id NOT IN (SELECT id FROM v_excluded_runs)) AND {live_entity()}
                ORDER BY CASE l.status WHEN 'confirmed' THEN 0 WHEN 'unconfirmed' THEN 1 ELSE 2 END, re.name LIMIT ?""", (lim,))],
         "ledger": [dict(r) for r in db.execute(
             """SELECT q.id AS query_id, q.created_at, q.run_id, re.name AS entity, q.purpose, q.query, q.status, q.was_cached,
@@ -854,7 +855,7 @@ def ai_summaries(db: Database, settings: Settings, data: dict, client=None) -> d
 
 # =========================================================================== entry point
 
-_URL_KEYS = ("source_url", "final_url", "requested_url", "url", "strongest_supportive_url", "strongest_adverse_url",
+_URL_KEYS = ("source_url", "final_url", "requested_url", "url", "homepage_url", "strongest_supportive_url", "strongest_adverse_url",
              "confirmed_url", "claimed_url", "archive_url")
 
 
@@ -866,10 +867,16 @@ def withhold_rows(data: dict, patterns: list[str], reason: str) -> int:
     pats = [p.lower() for p in patterns if p]
     if not pats:
         return 0
+    def hit(r: dict) -> bool:
+        return any(p in str(r.get(k) or "").lower() for k in _URL_KEYS for p in pats)
+
+    # An organization whose own site is withheld is withheld everywhere it is named, including rows with no URL
+    # (the search ledger, AI findings).
+    names = {str(r["name"]) for r in data.get("entities", []) if isinstance(r, dict) and r.get("name") and hit(r)}
     dropped = 0
     for key, val in list(data.items()):
         if isinstance(val, list) and val and isinstance(val[0], dict):
-            keep = [r for r in val if not any(p in str(r.get(k) or "").lower() for k in _URL_KEYS for p in pats)]
+            keep = [r for r in val if not hit(r) and str(r.get("entity") or "") not in names]
             dropped += len(val) - len(keep)
             data[key] = keep
     data["withheld"] = {"rows": dropped, "reason": reason}

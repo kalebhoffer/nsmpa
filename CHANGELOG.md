@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Five publications entered twice were merged into one entity each, with their provenance moved to the survivor: The
+  Whitworthian, The Daily Texan, The Vista, The Pioneer Log (the directory's mistaken Idaho entry) and The Auburn
+  Plainsman (also filed as a professional newsroom). The snapshot lists 1,800 organizations, one row each.
+- Merged entities (`active=0`, `merged_into` set) are left out of current-stance counts, the evidence snapshot
+  (entities, evidence, sources, archive checks, AI findings, captures, leads) and run exports.
+- README spells out NSMPA: the National Student Media Policy Audit.
+- Withholding a site from a shared packet also drops its organization row and every row that names it (search
+  ledger, AI findings), not only rows whose links match.
+
 ## 0.8.5 — Second pass over undetermined organizations
 
 - `research_probe_policy_paths`: after the identity check, read first-party policy and about pages listed in the

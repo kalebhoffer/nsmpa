@@ -9,10 +9,11 @@ newsrooms have a written answer for that moment, and **most of those answers all
 from search engines, removing a name, or adding an update, while the archive itself stays intact. Refusing everything
 is the minority position.
 
-**NSMPA is an open, reproducible evidence engine that documents those policies across U.S. journalism**: student
-newspapers (every four-year college, from federal IPEDS data), professional newsrooms, broadcasters, and the standards
-organizations that advise them. It searches with equal effort for evidence *for and against* post-publication relief,
-quotes every finding word for word with its source, and publishes the opposing evidence alongside the rest.
+**NSMPA, the National Student Media Policy Audit, is an open, reproducible evidence engine that documents those
+policies across U.S. journalism.** It began with student newspapers (every four-year college, from federal IPEDS
+data) and now also covers professional newsrooms, broadcasters, and the standards organizations that advise them.
+It searches with equal effort for evidence *for and against* post-publication relief, quotes every finding word for
+word with its source, and publishes the opposing evidence alongside the rest.
 
 - **The evidence** is in [`evidence/`](evidence/): a redacted Excel workbook and slide deck, with every excerpt
   linked to its source.
@@ -30,10 +31,6 @@ a position on old stories clear enough to classify** (hand-picked broadcasters a
 |---|---:|
 | Offer some level of post-publication relief (removal, de-indexing, anonymization, case-by-case review, or updates and editor's notes) | 116 |
 | Refuse any change beyond correcting errors | 19 |
-
-Five student papers appear twice in the 11 October snapshot (The Whitworthian, The Daily Texan, The Vista, The Pioneer Log
-and The Auburn Plainsman, which is also listed as a professional newsroom). Each is counted once in this README, so
-the snapshot's 1,805 entries are 1,800 organizations.
 
 - **A hard refusal is the minority position.** 116 of the 135 offer some level of post-publication relief. Only 19,
   about one in seven, rule out everything beyond correcting errors.
