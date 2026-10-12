@@ -85,28 +85,9 @@ class PeerGroup(BaseModel):
     unitids: list[str] = Field(default_factory=list)
 
 
-REGION_COUNTIES = [
-    "Adams County", "Asotin County", "Benton County", "Chelan County", "Columbia County", "Douglas County",
-    "Ferry County", "Franklin County", "Garfield County", "Grant County", "Kittitas County", "Klickitat County",
-    "Lincoln County", "Okanogan County", "Pend Oreille County", "Spokane County", "Stevens County",
-    "Walla Walla County", "Whitman County", "Yakima County",
-]
-
-
 def default_peer_groups() -> dict[str, PeerGroup]:
-    return {
-        "washington": PeerGroup(label="Washington institutions", states=["WA"]),
-        "regional": PeerGroup(
-            label="regional institutions",
-            description="Institutions in a configured set of counties",
-            states=["WA"], counties=REGION_COUNTIES),
-        "regional_comparables_proxy": PeerGroup(
-            label="Regional comparables (proxy)",
-            description=("Proxy definition, edit to match an official peer list: public Master's Colleges & "
-                         "Universities: Larger Programs (Carnegie 2021 basic=18), 5,000-19,999 students "
-                         "(IPEDS INSTSIZE 3-4), Rocky Mountain/Far West regions (OBEREG 7-8), plus any institutions listed in unitids."),
-            control=[1], carnegie_basic=[18], size_categories=[3, 4], obe_regions=[7, 8], unitids=[]),
-    }
+    """No built-in peer groups: define the comparison groups for your study in config.yml (`peer_groups`)."""
+    return {}
 
 
 class ValidationThresholds(BaseModel):
@@ -183,6 +164,8 @@ class Settings(BaseModel):
     # --- v0.3 validation gates (reports refuse national percentages below these) ----------
     validation: ValidationThresholds = Field(default_factory=lambda: ValidationThresholds())
     peer_groups: dict[str, PeerGroup] = Field(default_factory=default_peer_groups)
+    # IPEDS unitids the pilot researches when none are passed on the command line.
+    pilot_schools: list[str] = Field(default_factory=list)
     # --- v0.4 deep practice digging -------------------------------------------------------
     research_practice_dig: Literal["never", "auto", "always"] = "always"
     research_recover_stale_sites: bool = True

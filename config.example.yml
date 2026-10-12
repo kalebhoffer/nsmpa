@@ -136,8 +136,14 @@ validation:
   min_entities_for_percentages: 30
 
 # --- peer groups (student media). Filters are ANDed; unitids always included. -----------
-# Omit this block to use the built-in defaults (washington, regional, regional_comparables_proxy).
+# There are no built-in groups; reports list only the groups defined here.
 # peer_groups:
-#   npu_official_peers:
+#   official_peers:
 #     label: "Official peer list"
-#     unitids: ["..."]
+#     unitids: ["123456", "..."]
+#   in_state:
+#     label: "Institutions in the state"
+#     states: ["XX"]
+#
+# Schools the pilot researches when none are given with --unitid:
+# pilot_schools: ["123456"]

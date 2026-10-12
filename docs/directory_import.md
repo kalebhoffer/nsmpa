@@ -5,7 +5,7 @@ nsmpa import-directory ~/Downloads/US_newspaper_directory.csv     # backup first
 nsmpa match-directory-homepages                                   # free: read unmatched student papers' homepages
 # review output/US_newspaper_directory_ipeds_matches.csv in Excel (confirm y/n, correct UNITID), then:
 nsmpa apply-directory-review output/US_newspaper_directory_ipeds_matches.csv ~/Downloads/US_newspaper_directory.csv
-nsmpa research --max-priority 2 --max-searches 100                # WA student papers first
+nsmpa research --max-priority 2 --max-searches 100                # highest-priority entities first
 nsmpa export-directory ~/Downloads/US_newspaper_directory.csv     # your CSV back, policy columns filled in
 ```
 

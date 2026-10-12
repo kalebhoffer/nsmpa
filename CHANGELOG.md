@@ -271,7 +271,7 @@ Hardening and methodology release. Existing data preserved; schema migrated addi
 - Research planner v2: tiered adaptive queries (tier 1 always; tier 2 on signal / guidance orgs / deep; tier 3 deep), free first-party homepage policy-link discovery, bounded entity concurrency.
 - Discovery v2: specified query ladder with early stop, free site inspection between ladder steps, candidate homepage verification (student identity vs institutional PR), ambiguity detection, cleaned publication names, relationship and discovery method, human/manual verifications never overwritten.
 - Human review queue with documented priority scoring; `review`, `verify-evidence`.
-- Validation gates and `validate`; national `report` (Markdown/JSON/CSV) with peer groups (WA, regional, regional comparables proxy, control, region, size, R1/R2, core stratum, imported attributes) and precedent tables.
+- Validation gates and `validate`; national `report` (Markdown/JSON/CSV) with peer groups (state, region, a comparables proxy, control, region, size, R1/R2, core stratum, imported attributes) and precedent tables.
 - Professional universe provenance (`entity_sources`), domain-level merge on import, `merge-duplicates`, `import-peer-attributes`.
 - Commands: `doctor`, `status` (expanded), `runs`, `query-stats`, `errors`, `resume`, `validate`, `report`, `review`, `verify-evidence`, `version`; `.env` loading; `./config.yml` auto-detected.
 - SQL views: `v_institution_peer`, `v_evidence_unique`, `v_cohort_stance_counts`, `v_query_usefulness`.

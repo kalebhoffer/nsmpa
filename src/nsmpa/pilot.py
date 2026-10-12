@@ -17,9 +17,6 @@ from pathlib import Path
 from .config import Settings
 from .db import Database
 
-DEFAULT_SCHOOLS = ["236939"]
-
-
 class _SkipDiscovery(Exception):
     pass
 
@@ -73,13 +70,13 @@ async def run_pilot(db: Database, settings: Settings, *, budget: int = 25, ai_ca
     # 2. seed + estimate
     try:
         seed_support_orgs(db), seed_benchmark_newsrooms(db), seed_precedents(db), seed_experts(db), seed_legal(db)
-        school_ids = (unitids or DEFAULT_SCHOOLS)[:schools]
+        school_ids = (unitids or settings.pilot_schools)[:schools]
         est = estimate_all(db, settings, entity_ids=_pick_entities(db, "support_org", support, ["Student Press Law Center"])
                            + _pick_entities(db, "professional_newsroom", newsrooms), institutions=None)
         step("seed_and_estimate", "ok", f"research estimate {est['research']['credits_low']}–{est['research']['credits_high']} credits",
              estimate=est)
     except Exception as exc:
-        school_ids = (unitids or DEFAULT_SCHOOLS)[:schools]
+        school_ids = (unitids or settings.pilot_schools)[:schools]
         step("seed_and_estimate", "failed", f"{type(exc).__name__}: {exc}")
 
     # 3. discovery (skipped for institutions whose paper is already known, e.g. from the directory import)
