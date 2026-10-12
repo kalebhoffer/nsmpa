@@ -23,15 +23,17 @@ quotes every finding word for word with its source, and publishes the opposing e
 
 ## Key findings (11 October 2026)
 
-NSMPA has researched **1,805 organizations**. Of the newsrooms and journalism organizations among them, **136 publish
+NSMPA has researched **1,805 organizations**. Of the newsrooms and journalism organizations among them, **135 publish
 a position on old stories clear enough to classify** (hand-picked broadcasters are reported separately below):
 
 | Published position | Organizations |
 |---|---:|
-| Offer some level of post-publication relief (removal, de-indexing, anonymization, case-by-case review, or updates and editor's notes) | 117 |
+| Offer some level of post-publication relief (removal, de-indexing, anonymization, case-by-case review, or updates and editor's notes) | 116 |
 | Refuse any change beyond correcting errors | 19 |
 
-- **A hard refusal is the minority position.** 117 of the 136 offer some level of post-publication relief. Only 19,
+The Whitworthian appears twice in the 11 October snapshot (two entries for the same site); it is counted once here.
+
+- **A hard refusal is the minority position.** 116 of the 135 offer some level of post-publication relief. Only 19,
   about one in seven, rule out everything beyond correcting errors.
 - **De-indexing is the least contested remedy.** 23 organizations explicitly offer it, including the Associated Press
   ("the AP would also request that Google 'deindex' the stories, removing them from its search results"), Hearst's
@@ -54,7 +56,7 @@ By group:
   Hearst's papers, the Philadelphia Inquirer, the Chicago Sun-Times, Boston.com's Fresh Start), 10 say both, and 15
   refuse or offer only updates (e.g. The Denver Post, the Pittsburgh Post-Gazette). 763 publish nothing the tool could
   find; 412 could not be determined.
-- **Student media (Stage 3, 484 researched):** 25 allow relief (e.g. UMass's Daily Collegian name-removal form, the
+- **Student media (Stage 3, 484 researched):** 24 allow relief (e.g. UMass's Daily Collegian name-removal form, the
   Diamondback on expungement, the Hoya), 9 say both, and 27 refuse or offer only updates (e.g. the GW Hatchet,
   Vanderbilt Hustler, Daily Tar Heel). 225 publish nothing the tool could find; 198 could not be determined.
 - **Broadcasters (27, hand-picked):** 17 allow relief, from 5 distinct policies; 13 NBCUniversal stations share one
