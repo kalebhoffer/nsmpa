@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Shared packets (`--redact-names`) are shaped for publication: no case-profile slide, no "Closest to My Case" sheet
+  and no match-to-my-case scores; news stories keep only their domain (address, headline and archived copy withheld),
+  while policy pages and coverage of the topic itself are unchanged. The 2026-10-11 workbook and deck are regenerated
+  this way (34,022 story rows masked).
 - Five publications entered twice were merged into one entity each, with their provenance moved to the survivor: The
   Whitworthian, The Daily Texan, The Vista, The Pioneer Log (the directory's mistaken Idaho entry) and The Auburn
   Plainsman (also filed as a professional newsroom). The snapshot lists 1,800 organizations, one row each.

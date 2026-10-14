@@ -118,3 +118,77 @@ def test_withholding_a_site_drops_the_organization_row_too():
     assert withhold_rows(data, ["ownpaper.example"], "concerns the researcher's own case") == 3
     assert [e["name"] for e in data["entities"]] == ["Other Paper"] and data["voices"] == []
     assert [r["entity"] for r in data["ledger"]] == ["Other Paper"]          # named rows go too, even without a URL
+
+
+def test_public_copy_masks_news_stories_and_drops_the_case_profile():
+    from nsmpa.packet import make_public
+    data = {
+        "closest": [{"entity": "A", "case_match_score": 80, "authority_score": 1, "verification_status": "unverified"},
+                    {"entity": "B", "case_match_score": 10, "authority_score": 5, "verification_status": "unverified"}],
+        "sources": [
+            {"final_url": "https://komu.com/news/man-charged-in-bomb-threat-at-high-school", "title": "Man charged in bomb threat",
+             "archive_url": "https://web.archive.org/web/2026/https://komu.com/news/man-charged-in-bomb-threat-at-high-school"},
+            {"final_url": "https://www.example-news.com/2019/04/02/local-man-arrested/", "title": "Local man arrested", "archive_url": None},
+            {"final_url": "https://www.ap.org/contact-us/minor-crimes/", "title": "Minor crimes", "archive_url": None},
+            {"final_url": "https://www.bangordailynews.com/2021/01/25/news/were-changing-our-policy-on-old-crime-stories/",
+             "title": "We're changing our policy", "archive_url": None},
+            {"final_url": "https://www.theguardian.com/us-news/2025/jan/04/newspaper-crime-stories",
+             "title": "US newspapers are deleting old crime stories", "archive_url": None},
+        ],
+        "all_evidence": [{"source_url": "https://komu.com/news/man-charged-in-bomb-threat-at-high-school", "source_title": "Man charged",
+                          "case_match_score": 70, "case_match_factors": "[]"}],
+    }
+    assert make_public(data) == 3
+    src = data["sources"]
+    assert src[0]["final_url"].startswith("https://komu.com/") and "withheld" in src[0]["final_url"]
+    assert src[0]["title"] == "[news story; title withheld]" and src[0]["archive_url"] is None
+    assert "withheld" in src[1]["final_url"]
+    # Policy pages and coverage of the topic itself are kept in full.
+    assert src[2]["final_url"] == "https://www.ap.org/contact-us/minor-crimes/"
+    assert src[3]["final_url"].endswith("old-crime-stories/") and src[4]["title"].startswith("US newspapers")
+    ev = data["all_evidence"][0]
+    assert "case_match_score" not in ev and "case_match_factors" not in ev
+    assert [r["entity"] for r in data["closest"]] == ["B", "A"] and data["public"] is True
+
+
+async def test_shared_packet_has_no_case_sheet_or_profile_slide(tmp_path, db):
+    s = await populate(tmp_path, db)
+    res = build_packet(db, s, s.output_dir, redact=True)
+    wb = load_workbook(res["workbook"])
+    assert "Closest to My Case" not in wb.sheetnames
+    for ws in wb.worksheets:
+        for row in ws.iter_rows(min_row=1, max_row=4, values_only=True):
+            assert not any(isinstance(v, str) and "Match to my case" in v for v in row), ws.title
+    deck = Presentation(res["presentation"])
+    texts = " ".join(sh.text_frame.text for sl in deck.slides for sh in sl.shapes if sh.has_text_frame)
+    assert "Case profile" not in texts and "match to case" not in texts.lower()
+
+
+def test_public_copy_masks_already_withheld_and_labelled_stories_but_not_homepages():
+    from nsmpa.packet import make_public
+    data = {
+        "sources": [
+            {"final_url": "[URL withheld: contains a redacted name; available on request with evidence ID]",
+             "title": "[name withheld] for DUI – NBC 6", "page_kind": "crime_article", "archive_url": None},
+            {"final_url": "https://www.nbcnewyork.com/news/local/12345/", "title": "Police say", "page_kind": "crime_article", "archive_url": None},
+            {"final_url": "https://www.nbcnewyork.com/news/local/nbc-standards/", "title": "Standards", "page_kind": "policy", "archive_url": None},
+        ],
+        "entities": [{"name": "Paper", "homepage_url": "https://paper.example/",
+                      "strongest_supportive_url": "[URL withheld: contains a redacted name; available on request with evidence ID]"}],
+    }
+    make_public(data)
+    assert data["sources"][0]["title"] == "[news story; title withheld]"
+    assert "withheld" in data["sources"][1]["final_url"] and data["sources"][1]["title"] == "[news story; title withheld]"
+    assert data["sources"][2]["final_url"].endswith("/nbc-standards/") and data["sources"][2]["title"] == "Standards"
+    assert data["entities"][0]["homepage_url"] == "https://paper.example/"
+
+
+def test_public_copy_story_detection_edge_cases():
+    from nsmpa.packet import _is_news_story
+    assert _is_news_story("https://www.nbcphiladelphia.com/news/local/high-school-coach-accused-of-attacking-girlfriend/99322/")
+    assert _is_news_story("https://www.postandcourier.com/aikenstandard/news/aiken-man-charged-with-5-counts/article_bc5b.html")
+    assert not _is_news_story("https://www.inquirer.com/about/inq2/up-for-review-inquirer-policy-20230201.html")
+    assert not _is_news_story("https://chicago.suntimes.com/right-to-be-forgotten-policy")
+    assert _is_news_story("https://ptleader.com/articles/archives/davis-gets-17-months-for-high-speed-dui-crash/", "Davis gets 17 months")
+    assert _is_news_story("https://www.vaildaily.com/news/eagle-county-man-gets-four-years-in-community-corrections/", "Man gets four years")
+    assert not _is_news_story("https://www.sacbee.com/news/local/article257776293.html", "'Clean Slate': Sacramento Bee reviews old crime, arrest stories")

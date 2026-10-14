@@ -34,9 +34,14 @@ Each dated folder is a snapshot of what NSMPA has collected, generated from the 
 
 ### Privacy and withholding
 
-- Names of private individuals are replaced with `[name withheld]` by automated redaction (10,595 replacements).
+- Names of private individuals are replaced with `[name withheld]` by automated redaction (10,569 replacements).
   Journalists, editors, experts and organizations quoted in their professional roles are kept. Links whose address
   contains a withheld name are also withheld.
+- **News stories keep only their site.** For the 34,022 rows that are news stories NSMPA read (usually about named
+  people, often crime coverage), the full address, headline and archived-copy link are withheld; the site's domain is
+  kept. Policy pages and coverage of the topic itself (for example, reporting on unpublishing programs) are shown in full.
+- **The researcher's own case profile is not included**: no case-profile slide, no "Closest to My Case" sheet, and no
+  "match to my case" scores. The public copy ranks precedents by authority instead.
 - **120 rows are withheld from this copy because they concern the researcher's own case** (see the disclosure in
   the main README): every row from or about the newspaper involved. It is researched and counted in the totals above
   but not shown, so the Entities sheet lists 1,799 of the 1,800 organizations. The Read Me sheet states this too.

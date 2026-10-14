@@ -307,6 +307,9 @@ def build_workbook(data: dict, path: Path) -> None:
          "before sharing outside your review team.", data.get("redacted", False)),
         *([(f"{data['withheld']['rows']} row(s) across all sheets were withheld from this copy: {data['withheld']['reason']}.",
             True)] if data.get("withheld", {}).get("rows") else []),
+        *([(f"News stories NSMPA read keep only their site in this copy: the full address, title and archived copy are "
+            f"withheld ({data.get('stories_masked', 0)} rows), because they usually concern named people. Policy pages and "
+            "coverage of the topic itself are shown in full. Originals are retained privately.", False)] if data.get("public") else []),
         ("", False),
         ("Rules used", True),
         ("• Student media, professional newsrooms and standards organizations are separate groups with separate denominators; "
@@ -319,7 +322,7 @@ def build_workbook(data: dict, path: Path) -> None:
         ("• Percentages are shown only for groups that pass the validation gates (coverage, review, verification).", False),
         ("", False),
         ("Sheets", True),
-        ("Summary · Closest to My Case · De-index vs Unpublish · Named Precedents · Professional Guidance · Expert Voices · "
+        (("Summary · " if data.get("public") else "Summary · Closest to My Case · ") + "De-index vs Unpublish · Named Precedents · Professional Guidance · Expert Voices · "
          "Documented Practice · Opposing Evidence · Legal Context · Archive Changes · AI Second Opinion · Accuracy · Entities · All Evidence · "
          "Sources · Search Ledger", False),
     ]
@@ -366,8 +369,11 @@ def build_workbook(data: dict, path: Path) -> None:
                ("acquisition", "How obtained", 14), ("archive_url", "Archived copy", 36), ("page_sha256", "Page SHA-256", 20),
                ("snapshot_path", "Snapshot", 30), ("found_by_query", "Found by search", 36), ("case_match_factors", "Matched facts", 40),
                ("classifier_cues", "Classifier cues", 30), ("run_id", "Run", 16)]
-    sheet("Closest to My Case", data["closest"], ev_cols,
-          note="All directions included, ranked by how many elements of my_case.yml each excerpt matches. Verified rows first.")
+    if data.get("public"):
+        ev_cols = [c for c in ev_cols if c[0] not in ("case_match_score", "case_match_factors")]
+    else:
+        sheet("Closest to My Case", data["closest"], ev_cols,
+              note="All directions included, ranked by how many elements of my_case.yml each excerpt matches. Verified rows first.")
 
     ent_rows = []
     for e in data["entities"]:
@@ -399,7 +405,8 @@ def build_workbook(data: dict, path: Path) -> None:
         ("person_name", "Person", 22), ("role", "Role (verify)", 24), ("affiliation", "Affiliation", 26), ("basis", "Basis", 22),
         ("direction", "Direction", 11), ("quote", "Quote", 80), ("source_url", "Source", 40), ("source_title", "Page title", 30),
         ("verification_status", "Verified?", 12), ("action_positions", "Positions by action", 26),
-        ("case_match_score", "Match to my case", 10), ("attribution_method", "How attributed", 18), ("voice_id", "ID", 7)],
+        *([] if data.get("public") else [("case_match_score", "Match to my case", 10)]),
+        ("attribution_method", "How attributed", 18), ("voice_id", "ID", 7)],
         note="Opinions in both directions. Attribution is automatic; confirm speaker, role and wording against the source before use.")
     sheet("Documented Practice", data["practice"], ev_cols,
           note="What newsrooms actually did: editor's notes, name removals, noindex on archived crime articles, documented refusals.")
@@ -565,21 +572,24 @@ def build_deck(data: dict, path: Path, *, title: str, max_precedent_slides: int)
     footer(s, f"Prepared with NSMPA {data['version']} · scope: {data['scope']}"
               + (" · names of private individuals withheld (automated redaction)" if data.get("redacted") else ""))
 
-    # 2. My situation
+    # 2. My situation (private copies only: it describes one person)
     mc = data["my_case"]
-    facts = [label for key, label in (
-        ("student_or_university_setting", "Student / university setting"), ("criminal_allegation_or_arrest", "Criminal allegation or arrest"),
-        ("charges_dismissed_or_dropped", "Charges dismissed or dropped"), ("acquittal_or_exoneration", "Acquittal or exoneration"),
-        ("conviction_vacated_or_plea_withdrawn", "Conviction vacated or plea withdrawn"), ("record_expunged_or_sealed", "Record expunged or sealed"),
-        ("substantial_time_passed", "Substantial time has passed"), ("private_individual_no_public_role", "Private individual, no public role"),
-        ("search_engine_prominence", "Article surfaces prominently in name searches"), ("reputational_consequences", "Continuing reputational harm"),
-    ) if getattr(mc, key)]
-    s = new("The situation this evidence is matched against", "Case profile")
-    text(s, 0.6, 1.8, 6.2, 4.8, ["Facts:"] + [f"• {f}" for f in facts], size=18, bold_first=True)
-    text(s, 7.0, 1.8, 5.7, 4.8, ["Relief requested:"] + [f"• {r}" for r in mc.relief_sought]
-         + ([""] + [mc.description] if mc.description else []), size=18, bold_first=True)
-    if not mc.configured:
-        footer(s, "Default profile — edit my_case.yml to describe the actual case before presenting.")
+    if data.get("public"):
+        mc = None
+    if mc is not None:
+        facts = [label for key, label in (
+            ("student_or_university_setting", "Student / university setting"), ("criminal_allegation_or_arrest", "Criminal allegation or arrest"),
+            ("charges_dismissed_or_dropped", "Charges dismissed or dropped"), ("acquittal_or_exoneration", "Acquittal or exoneration"),
+            ("conviction_vacated_or_plea_withdrawn", "Conviction vacated or plea withdrawn"), ("record_expunged_or_sealed", "Record expunged or sealed"),
+            ("substantial_time_passed", "Substantial time has passed"), ("private_individual_no_public_role", "Private individual, no public role"),
+            ("search_engine_prominence", "Article surfaces prominently in name searches"), ("reputational_consequences", "Continuing reputational harm"),
+        ) if getattr(mc, key)]
+        s = new("The situation this evidence is matched against", "Case profile")
+        text(s, 0.6, 1.8, 6.2, 4.8, ["Facts:"] + [f"• {f}" for f in facts], size=18, bold_first=True)
+        text(s, 7.0, 1.8, 5.7, 4.8, ["Relief requested:"] + [f"• {r}" for r in mc.relief_sought]
+             + ([""] + [mc.description] if mc.description else []), size=18, bold_first=True)
+        if not mc.configured:
+            footer(s, "Default profile — edit my_case.yml to describe the actual case before presenting.")
 
     # 3. Method
     s = new("How the evidence was gathered", "Method")
@@ -693,15 +703,17 @@ def build_deck(data: dict, path: Path, *, title: str, max_precedent_slides: int)
             continue
         shown += 1
         s = new(r["entity"] + (f" — {r['parent_or_institution']}" if r["parent_or_institution"] else ""),
-                f"Precedent {shown} · {COHORT_SHORT.get(r['cohort'], r['cohort'])} · match to case {r['case_match_score']:.0f}/100")
+                f"Precedent {shown} · {COHORT_SHORT.get(r['cohort'], r['cohort'])}"
+                + ("" if data.get("public") else f" · match to case {r['case_match_score']:.0f}/100"))
         observation = r["evidence_class"] == "technical"
         body = ("Observed: " + r["excerpt"][:600]) if observation else f"“{r['excerpt'][:600]}”"
         text(s, 0.9, 1.9, 11.5, 3.2, body, size=22, color=INK, italic=not observation)
-        factors = ", ".join(f["factor"].replace("_", " ") for f in json.loads(r["case_match_factors"] or "[]"))
+        factors = ", ".join(f["factor"].replace("_", " ") for f in json.loads(r.get("case_match_factors") or "[]"))
         how = {"archive": " (Internet Archive copy)", "capture": " (copied by a researcher)", "snippet": " (search snippet)"}.get(
             r.get("acquisition") or "live", "")
         text(s, 0.9, 5.2, 11.5, 1.4, [f"Source: {r['source_url']}{how}", f"Fetched {r['fetched_at']} · page SHA-256 {str(r['page_sha256'])[:16]}…",
-                                       f"Matches: {factors or '—'}", verified_tag(r["verification_status"])], size=12, color=INK_2)
+                                       *([] if data.get("public") else [f"Matches: {factors or '—'}"]), verified_tag(r["verification_status"])],
+             size=12, color=INK_2)
 
     # AI-drafted section summaries (optional)
     for summ in (data.get("ai_summaries") or {}).values():
@@ -883,6 +895,71 @@ def withhold_rows(data: dict, patterns: list[str], reason: str) -> int:
     return dropped
 
 
+# A dated path, a long numeric id, or a headline-length slug marks a news story rather than a policy page.
+_STORY_PATH = re.compile(r"/(19|20)\d\d/|/(19|20)\d{6}/|\d{6,}|article[_-]|(?:^|/)[^/?#]*(?:-[^/?#-]+){4,}(?:/|[?#]|$)", re.I)
+# Pages about the topic itself (a newsroom's policy, coverage of unpublishing) stay; stories about people go.
+# Words must start at a boundary, so "aikenstandard" in a path is not a standards page. Addresses need a policy
+# word; headlines need a phrase specific to unpublishing ("policies" alone also heads stories about crimes).
+_TOPICAL = re.compile(r"(?:^|[^a-z])(?:polic(?:y|ies)|ethic|standards|guidelines|unpublish|de-?index|right.to.be.forgotten|"
+                      r"fresh.start|clean.slate|takedown.(?:request|polic)|mugshot)", re.I)
+_TOPICAL_TITLE = re.compile(r"unpublish|de-?index|right to be forgotten|fresh start|clean slate|old (?:crime )?stor|"
+                            r"remov\w* (?:old )?(?:news |crime )?(?:stories|articles)|mugshot", re.I)
+_STORY_TITLE_KEYS = ("source_title", "title")
+# Page kinds NSMPA assigns to news stories (Sources sheet).
+_STORY_KINDS = {"article", "crime_article", "baseline_article"}
+# The address of the page a row describes (not an organization's homepage or another page it cites).
+_PAGE_URL_KEYS = ("final_url", "source_url", "url", "requested_url")
+
+
+def _is_news_story(url: str, title: str = "") -> bool:
+    if not url.startswith(("http://", "https://")):
+        return False
+    path = re.sub(r"^https?://[^/]+", "", url)
+    return bool(_STORY_PATH.search(path)) and not _TOPICAL.search(path) and not _TOPICAL_TITLE.search(title or "")
+
+
+def make_public(data: dict) -> int:
+    """Shape a shared packet for publication; return how many news-story rows were masked.
+
+    - The researcher's own case profile and every "match to my case" score are removed: they describe one person.
+    - News stories NSMPA read (usually about named people) keep their site but lose their full address, title and
+      archived copy. Policy pages and coverage of the topic itself are unchanged. The private database keeps everything.
+    """
+    masked = 0
+    for key, val in list(data.items()):
+        if not (isinstance(val, list) and val and isinstance(val[0], dict)):
+            continue
+        for r in val:
+            r.pop("case_match_score", None)
+            r.pop("case_match_factors", None)
+            title = " ".join(str(r.get(k) or "") for k in _STORY_TITLE_KEYS)
+            # A story if its address looks like one, NSMPA filed it as one, or redaction already withheld its
+            # address for containing a name (its headline usually names the same person).
+            page = [str(r.get(k) or "") for k in _PAGE_URL_KEYS]
+            by_kind = (any(u.startswith("[URL withheld") for u in page)
+                       or (r.get("page_kind") in _STORY_KINDS and not _TOPICAL_TITLE.search(title) and not any(_TOPICAL.search(u) for u in page)))
+            hit = by_kind
+            for k in _URL_KEYS:
+                u = str(r.get(k) or "")
+                if k == "archive_url" or not u.startswith(("http://", "https://")):
+                    continue
+                if _is_news_story(u, title) or (by_kind and k in _PAGE_URL_KEYS):
+                    r[k] = re.match(r"^https?://[^/]+/?", u).group(0).rstrip("/") + "/  (news story; full address withheld)"
+                    hit = True
+            if hit:
+                masked += 1
+                if "archive_url" in r:
+                    r["archive_url"] = None
+                for k in _STORY_TITLE_KEYS:
+                    if r.get(k):
+                        r[k] = "[news story; title withheld]"
+    # Precedents are ranked by authority instead of by resemblance to one person's case.
+    data["closest"] = sorted(data.get("closest", []), key=lambda r: (r.get("verification_status") != "verified", -(r.get("authority_score") or 0)))
+    data["public"] = True
+    data["stories_masked"] = masked
+    return masked
+
+
 def build_packet(db: Database, settings: Settings, out_dir: Path, *, run_id: str | None = None,
                  title: str = "Post-publication relief in U.S. journalism: the evidence", ai_summaries_on: bool = False,
                  ai_client=None, redact: bool = False, withhold: list[str] | None = None,
@@ -897,6 +974,7 @@ def build_packet(db: Database, settings: Settings, out_dir: Path, *, run_id: str
     if redact:
         from .redact import Redactor, redact_packet_data
         redact_packet_data(data, Redactor.from_db(db))
+        make_public(data)
     xlsx = out / "NSMPA_evidence.xlsx"
     pptx = out / "NSMPA_presentation.pptx"
     build_workbook(data, xlsx)
