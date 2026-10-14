@@ -171,6 +171,8 @@ nsmpa packet                     # output/packet_<UTC>/
 - `NSMPA_evidence.xlsx` — sheets: Read Me, Summary, Closest to My Case, De-index vs Unpublish, Named Precedents,
   Professional Guidance, Expert Voices, Documented Practice, **Opposing Evidence**, Archive Changes, AI Second
   Opinion, Accuracy, Entities, All Evidence, Sources, Search Ledger. Clickable source links; filters and frozen headers on every sheet.
+  Shared copies (`--redact-names`) leave out the Closest to My Case sheet, the case-profile slide and every
+  match-to-my-case score, and withhold the full address, headline and archived copy of news stories (the domain stays).
 - `NSMPA_presentation.pptx` — title, your case profile, method, de-index vs. unpublish chart, position by group,
   named precedents, one slide per closest precedent, expert voices (supportive and cautionary), the
   archive-integrity objection with the data on archive-preserving relief, and limitations.
