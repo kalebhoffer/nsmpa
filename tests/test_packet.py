@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import httpx
+from pathlib import Path
 import test_pipeline as tp
 import test_practice as pr
 import test_seeds as ts
@@ -192,3 +193,33 @@ def test_public_copy_story_detection_edge_cases():
     assert _is_news_story("https://ptleader.com/articles/archives/davis-gets-17-months-for-high-speed-dui-crash/", "Davis gets 17 months")
     assert _is_news_story("https://www.vaildaily.com/news/eagle-county-man-gets-four-years-in-community-corrections/", "Man gets four years")
     assert not _is_news_story("https://www.sacbee.com/news/local/article257776293.html", "'Clean Slate': Sacramento Bee reviews old crime, arrest stories")
+
+
+async def test_private_review_copy_keeps_verbatim_text_beside_the_redacted_one(tmp_path, db):
+    """The Archive Ethics Project's import verifies quotes against their sources, so its private copy
+    carries the page's own words and full addresses beside the redacted ones; a shared copy never does."""
+    s = await populate(tmp_path, db)
+    shared = build_packet(db, s, tmp_path / "shared", redact=True)
+    private = build_packet(db, s, tmp_path / "private", redact=True, private_columns=True)
+    assert private["private_columns"] and not shared["private_columns"]
+
+    def evidence_sheet(path):
+        wb = load_workbook(path)
+        ws = max((w for w in wb.worksheets if any(isinstance(v, str) and v == "Exact excerpt" for row in w.iter_rows(max_row=4, values_only=True) for v in row)),
+                 key=lambda w: w.max_row)
+        rows = list(ws.iter_rows(values_only=True))
+        hi = next(i for i, r in enumerate(rows) if "Exact excerpt" in r)
+        return rows[hi], rows[hi + 1:]
+
+    head, _ = evidence_sheet(shared["workbook"])
+    assert "Exact excerpt (unredacted)" not in head and "Source (unredacted)" not in head
+    head, body = evidence_sheet(private["workbook"])
+    for col in ("Exact excerpt (unredacted)", "Source (unredacted)", "Page title (unredacted)"):
+        assert col in head
+    ex, raw, src, raw_src = head.index("Exact excerpt"), head.index("Exact excerpt (unredacted)"), head.index("Source"), head.index("Source (unredacted)")
+    assert body and all(r[raw] for r in body if r[ex])
+    # Redaction and masking only ever touch the shared columns.
+    assert all(not str(r[raw] or "").count("[name withheld]") for r in body)
+    assert all("full address withheld" not in str(r[raw_src] or "") for r in body)
+    md = (Path(private["out_dir"]) / "case_packet.md").read_text()
+    assert "PRIVATE REVIEW COPY" in md

@@ -875,13 +875,18 @@ def packet_cmd(run_id: str | None = typer.Option(None, "--run-id"), out_dir: Pat
                withhold: list[str] = typer.Option([], "--withhold", help="Drop rows whose URL contains this text (repeatable)"),
                withhold_reason: str = typer.Option("withheld by the researcher", "--withhold-reason",
                                                    help="Stated in the packet's Read Me alongside the count"),
+               private_columns: bool = typer.Option(False, "--private-columns",
+                                                    help="Also keep each evidence row's unredacted excerpt, address and title "
+                                                         "(a private review copy for verifying quotes; never share it)"),
                config: Path | None = ConfigOpt) -> None:
     """Build the shareable case packet: Excel evidence workbook + PowerPoint deck + summary."""
     from .packet import build_packet
     db, settings = _db(config)
     try:
         res = build_packet(db, settings, out_dir or settings.output_dir, run_id=run_id, title=title, ai_summaries_on=ai_summaries,
-                           redact=redact_names, withhold=withhold, withhold_reason=withhold_reason)
+                           redact=redact_names, withhold=withhold, withhold_reason=withhold_reason, private_columns=private_columns)
+        if private_columns:
+            console.print("[yellow]Private review copy: unredacted excerpts and full addresses are in the workbook. Do not share it.[/yellow]")
         if not redact_names:
             console.print("[yellow]Not redacted: excerpts may name private individuals. Use --redact-names before sharing.[/yellow]")
         console.print_json(json.dumps(res))

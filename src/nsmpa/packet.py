@@ -375,6 +375,10 @@ def build_workbook(data: dict, path: Path) -> None:
         sheet("Closest to My Case", data["closest"], ev_cols,
               note="All directions included, ranked by how many elements of my_case.yml each excerpt matches. Verified rows first.")
 
+    # The private review copy's verbatim columns go on the All Evidence sheet only (build_packet).
+    all_cols = ev_cols + ([("excerpt_unredacted", "Exact excerpt (unredacted)", 80), ("source_url_unredacted", "Source (unredacted)", 40),
+                           ("source_title_unredacted", "Page title (unredacted)", 30)] if data.get("private_columns") else [])
+
     ent_rows = []
     for e in data["entities"]:
         a = json.loads(e["action_positions_json"] or "{}")
@@ -467,7 +471,7 @@ def build_workbook(data: dict, path: Path) -> None:
         ("strongest_supportive", "Strongest supportive", 60), ("strongest_supportive_url", "Source", 36),
         ("strongest_adverse", "Strongest opposing", 60), ("strongest_adverse_url", "Source", 36),
         ("review_status", "Human review", 14), ("run_id", "Run", 16)])
-    sheet("All Evidence", data["all_evidence"], ev_cols)
+    sheet("All Evidence", data["all_evidence"], all_cols)
     sheet("Sources", data["sources"], [
         ("page_id", "Page ID", 8), ("cohort", "Group", 16), ("entity", "Organization", 26), ("page_kind", "Page type", 14),
         ("first_party", "Own site?", 9), ("access_class", "Access", 14), ("http_status", "HTTP", 7), ("final_url", "URL", 50),
@@ -963,7 +967,7 @@ def make_public(data: dict) -> int:
 def build_packet(db: Database, settings: Settings, out_dir: Path, *, run_id: str | None = None,
                  title: str = "Post-publication relief in U.S. journalism: the evidence", ai_summaries_on: bool = False,
                  ai_client=None, redact: bool = False, withhold: list[str] | None = None,
-                 withhold_reason: str = "withheld by the researcher") -> dict:
+                 withhold_reason: str = "withheld by the researcher", private_columns: bool = False) -> dict:
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     out = Path(out_dir) / f"packet_{stamp}"
     out.mkdir(parents=True, exist_ok=True)
@@ -971,6 +975,15 @@ def build_packet(db: Database, settings: Settings, out_dir: Path, *, run_id: str
     if withhold:
         withhold_rows(data, withhold, withhold_reason)
     data["ai_summaries"] = ai_summaries(db, settings, data, ai_client) if ai_summaries_on else {}
+    if private_columns:
+        # A private review copy (the Archive Ethics Project's import): beside the redacted text and
+        # masked addresses, the evidence rows keep the page's own words and full address, so a
+        # reviewer can check the quote against its source. Never share a packet built this way.
+        for row in data["all_evidence"]:
+            row["excerpt_unredacted"] = row.get("excerpt")
+            row["source_url_unredacted"] = row.get("source_url")
+            row["source_title_unredacted"] = row.get("source_title")
+        data["private_columns"] = True
     if redact:
         from .redact import Redactor, redact_packet_data
         redact_packet_data(data, Redactor.from_db(db))
@@ -987,6 +1000,8 @@ def build_packet(db: Database, settings: Settings, out_dir: Path, *, run_id: str
           f"- Presentation: `{pptx.name}` ({slides} slides)", ""]
     if data.get("withheld", {}).get("rows"):
         md += [f"{data['withheld']['rows']} row(s) withheld from this copy: {data['withheld']['reason']}.", ""]
+    if data.get("private_columns"):
+        md += ["PRIVATE REVIEW COPY: the All Evidence sheet also carries unredacted excerpts and full addresses. Do not share.", ""]
     listed: dict[str, int] = {}
     for e in data["entities"]:
         if e["counted_in_rates"] != "yes":
@@ -1004,5 +1019,5 @@ def build_packet(db: Database, settings: Settings, out_dir: Path, *, run_id: str
     (out / "case_packet.md").write_text("\n".join(md) + "\n", encoding="utf-8")
     return {"out_dir": str(out), "workbook": str(xlsx), "presentation": str(pptx), "slides": slides,
             "redacted": bool(data.get("redacted")), "redactions": data.get("redaction_count", 0),
-            "withheld_rows": data.get("withheld", {}).get("rows", 0),
+            "withheld_rows": data.get("withheld", {}).get("rows", 0), "private_columns": bool(data.get("private_columns")),
             "evidence_rows": len(data["all_evidence"]), "voices": len(data["voices"]), "precedents": len(data["precedents"])}

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `nsmpa packet --private-columns`: a private review copy whose All Evidence sheet also keeps each row's unredacted
+  excerpt, full address and page title ("Exact excerpt (unredacted)", "Source (unredacted)", "Page title (unredacted)")
+  beside the redacted, masked ones, so quotes can be verified against their sources. Redaction never touches those
+  columns; the summary marks the copy as private. Shared packets never carry them.
 - Shared packets (`--redact-names`) are shaped for publication: no case-profile slide, no "Closest to My Case" sheet
   and no match-to-my-case scores; news stories keep only their domain (address, headline and archived copy withheld),
   while policy pages and coverage of the topic itself are unchanged. The 2026-10-11 workbook and deck are regenerated
